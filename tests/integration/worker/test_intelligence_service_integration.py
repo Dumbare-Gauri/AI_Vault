@@ -6,7 +6,7 @@ from urllib.parse import urlparse
 import pytest
 from cryptography.fernet import Fernet
 from sqlalchemy.orm import Session
-from vault_shared import get_settings
+from vault_shared import AIUnavailableError, get_settings
 from vault_shared.ai_gateway import AIGateway
 from vault_shared.ai_gateway.interfaces import CompletionResult, Message
 from vault_shared.ai_gateway.providers import ExtractiveCompletionProvider
@@ -101,16 +101,23 @@ class _RaisingCompletionProvider:
     name = "raising_completion_provider"
     model_name = "fake-model"
 
+    def __init__(self, error: Exception | None = None) -> None:
+        self._error = error or ValueError("simulated completion failure")
+
     def complete(
         self, *, messages: list[Message], context: str | None, max_tokens: int
     ) -> CompletionResult:
-        raise ValueError("simulated completion failure")
+        raise self._error
 
 
 def _gateway_with_completion(provider: object) -> AIGateway:
     from vault_shared.ai_gateway.providers import LocalEmbeddingProvider
 
-    return AIGateway(embedding_provider=LocalEmbeddingProvider(), completion_provider=provider)  # type: ignore[arg-type]
+    return AIGateway(
+        embedding_provider=LocalEmbeddingProvider(),
+        completion_provider=provider,  # type: ignore[arg-type]
+        sleep=lambda _seconds: None,
+    )
 
 
 def _stub_gateway() -> AIGateway:
@@ -295,8 +302,7 @@ def test_a_malformed_llm_response_is_recorded_as_a_failed_result_not_a_job_crash
     assert intelligence.error is not None
 
 
-@requires_infra
-def test_an_unexpected_provider_exception_fails_only_that_file_not_the_job(db: Session) -> None:
+def _run_with_provider_error(db: Session, error: Exception) -> tuple[uuid.UUID, Exception | None]:
     user = _provision_user(db)
     connector = _provision_connector(db, organization_id=user.organization_id, user_id=user.id)
     _provision_extracted_file(
@@ -304,16 +310,50 @@ def test_an_unexpected_provider_exception_fails_only_that_file_not_the_job(db: S
     )
     job = _create_job(db, connector_id=connector.id)
     service = IntelligenceService(
-        db, ai_gateway=_gateway_with_completion(_RaisingCompletionProvider())
+        db, ai_gateway=_gateway_with_completion(_RaisingCompletionProvider(error))
+    )
+    try:
+        service.run(job.id)
+    except Exception as raised:  # noqa: BLE001 - the test inspects whatever the job boundary raises
+        return job.id, raised
+    return job.id, None
+
+
+@requires_infra
+def test_an_unusable_ai_response_fails_only_that_file_not_the_job(db: Session) -> None:
+    job_id, raised = _run_with_provider_error(
+        db,
+        AIUnavailableError("bad body", reason=AIUnavailableError.INVALID_RESPONSE),
     )
 
-    service.run(job.id)
+    assert raised is None
+    job = IntelligenceJobRepository(db).get_by_id(job_id)
+    assert job.status == IntelligenceJobStatus.COMPLETED
+    assert job.progress.files_failed == 1
+    assert job.progress.files_processed == 0
 
-    completed_job = IntelligenceJobRepository(db).get_by_id(job.id)
-    assert completed_job.status == IntelligenceJobStatus.COMPLETED
-    progress = completed_job.progress
-    assert progress.files_failed == 1
-    assert progress.files_processed == 0
+
+@requires_infra
+def test_an_unexpected_provider_exception_is_retried_as_a_whole_job_condition(db: Session) -> None:
+    job_id, raised = _run_with_provider_error(db, ValueError("simulated completion failure"))
+
+    assert isinstance(raised, AIUnavailableError)
+    assert raised.reason == AIUnavailableError.PROVIDER_ERROR
+    assert raised.retryable is True
+    job = IntelligenceJobRepository(db).get_by_id(job_id)
+    assert job.status != IntelligenceJobStatus.COMPLETED
+
+
+@requires_infra
+def test_a_rejected_ai_key_fails_the_job_without_retry(db: Session) -> None:
+    job_id, raised = _run_with_provider_error(
+        db, AIUnavailableError("nope", reason=AIUnavailableError.AUTH_FAILED)
+    )
+
+    assert raised is None
+    job = IntelligenceJobRepository(db).get_by_id(job_id)
+    assert job.status == IntelligenceJobStatus.FAILED
+    assert AIUnavailableError.AUTH_FAILED in (job.error or "")
 
 
 @requires_infra

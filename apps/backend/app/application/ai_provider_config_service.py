@@ -2,19 +2,11 @@ import uuid
 
 from sqlalchemy.orm import Session
 
-from vault_shared import DependencyUnavailableError, UnauthorizedError, ValidationError
-from vault_shared.ai_gateway.interfaces import Message
-from vault_shared.ai_gateway.providers.openai_compatible_completion_provider import (
-    OpenAICompatibleCompletionProvider,
-)
+from vault_shared import ValidationError
+from vault_shared.ai_gateway.openrouter import check_connection
 from vault_shared.db.models import AIProviderConfig
 from vault_shared.db.repositories import AIProviderConfigRepository
 from vault_shared.security.encryption import decrypt_token, encrypt_token
-from vault_shared.settings import get_settings
-
-_OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
-_TEST_MAX_TOKENS = 10
-_TEST_MESSAGE = "Reply with exactly one word: OK."
 
 
 class AIProviderConfigService:
@@ -76,20 +68,4 @@ class AIProviderConfigService:
                 return False, "No API key is saved yet — enter one to test."
             resolved_key = decrypt_token(existing.api_key_encrypted)
 
-        provider = OpenAICompatibleCompletionProvider(
-            base_url=_OPENROUTER_BASE_URL,
-            api_key=resolved_key,
-            model_name=model_name,
-            timeout_seconds=get_settings().completion_request_timeout_seconds,
-        )
-        try:
-            provider.complete(
-                messages=[Message(role="user", content=_TEST_MESSAGE)],
-                context=None,
-                max_tokens=_TEST_MAX_TOKENS,
-            )
-        except UnauthorizedError:
-            return False, "That API key was rejected."
-        except DependencyUnavailableError as exc:
-            return False, str(exc)
-        return True, None
+        return check_connection(api_key=resolved_key, model_name=model_name)

@@ -12,8 +12,8 @@ from urllib.parse import urlparse
 import pytest
 from sqlalchemy.orm import Session
 
-from app.application.conversation_service import ConversationService
-from vault_shared import get_settings
+from app.application.conversation_service import _DEGRADED_NOTICE, ConversationService
+from vault_shared import AIUnavailableError, get_settings
 from vault_shared.ai_gateway import AIGateway
 from vault_shared.ai_gateway.interfaces import CompletionResult, Message
 from vault_shared.ai_gateway.providers import ExtractiveCompletionProvider, LocalEmbeddingProvider
@@ -276,3 +276,77 @@ def test_deterministic_formatter_answers_correctly_with_no_llm_configured(db: Se
     assert turn.assistant_message.tool_name == "get_storage_overview"
     assert "10.0 KB" in turn.assistant_message.content or "10 KB" in turn.assistant_message.content
     assert str(snapshot.total_files) in turn.assistant_message.content
+
+
+class _UnavailableCompletionProvider:
+    name = "unavailable_test_double"
+    model_name = "test"
+
+    def __init__(self, reason: str) -> None:
+        self._reason = reason
+
+    def complete(
+        self, *, messages: list[Message], context: str | None, max_tokens: int
+    ) -> CompletionResult:
+        raise AIUnavailableError("simulated outage", reason=self._reason)
+
+
+@requires_infra
+@pytest.mark.parametrize(
+    "reason",
+    [AIUnavailableError.AUTH_FAILED, AIUnavailableError.TIMEOUT, AIUnavailableError.QUOTA_EXCEEDED],
+)
+def test_a_tool_turn_still_answers_with_facts_when_the_ai_is_unavailable(
+    db: Session, reason: str
+) -> None:
+    org, user = _provision_org(db)
+    snapshot = _seed_snapshot(db, organization_id=org.id)
+    service = ConversationService(db, ai_gateway=_gateway(_UnavailableCompletionProvider(reason)))
+
+    turn = service.ask(
+        organization_id=org.id, user_id=user.id, conversation_id=None,
+        question="How much storage am I using?",
+    )
+
+    content = turn.assistant_message.content
+    assert content.startswith(_DEGRADED_NOTICE)
+    assert str(snapshot.total_files) in content
+    assert turn.assistant_message.tool_name == "get_storage_overview"
+    assert turn.assistant_message.provider == "extractive_fallback"
+
+
+@requires_infra
+def test_a_search_turn_is_answered_and_persisted_when_the_ai_is_unavailable(db: Session) -> None:
+    org, user = _provision_org(db)
+    service = ConversationService(
+        db, ai_gateway=_gateway(_UnavailableCompletionProvider(AIUnavailableError.UNREACHABLE))
+    )
+
+    turn = service.ask(
+        organization_id=org.id, user_id=user.id, conversation_id=None,
+        question="What does the payroll file say?",
+    )
+
+    assert turn.assistant_message.content.startswith(_DEGRADED_NOTICE)
+    assert turn.user_message.content == "What does the payroll file say?"
+    assert turn.conversation.id is not None
+
+
+@requires_infra
+def test_the_conversation_can_continue_after_an_ai_outage(db: Session) -> None:
+    org, user = _provision_org(db)
+    _seed_snapshot(db, organization_id=org.id)
+    service = ConversationService(
+        db, ai_gateway=_gateway(_UnavailableCompletionProvider(AIUnavailableError.TIMEOUT))
+    )
+    first = service.ask(
+        organization_id=org.id, user_id=user.id, conversation_id=None,
+        question="How much storage am I using?",
+    )
+
+    second = service.ask(
+        organization_id=org.id, user_id=user.id, conversation_id=first.conversation.id,
+        question="How much storage am I using now?",
+    )
+
+    assert second.conversation.id == first.conversation.id

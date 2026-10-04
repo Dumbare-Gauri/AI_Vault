@@ -2,17 +2,13 @@ import uuid
 
 from sqlalchemy.orm import Session
 
-from vault_shared import get_logger, get_settings
+from vault_shared import get_logger
 from vault_shared.ai_gateway.interfaces import CompletionProvider
-from vault_shared.ai_gateway.providers.openai_compatible_completion_provider import (
-    OpenAICompatibleCompletionProvider,
-)
+from vault_shared.ai_gateway.openrouter import build_provider
 from vault_shared.db.repositories import AIProviderConfigRepository
 from vault_shared.security.encryption import TokenEncryptionError, decrypt_token
 
 logger = get_logger("vault_shared.ai_gateway.org_completion_provider")
-
-_OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 
 
 def resolve_org_completion_provider(
@@ -25,10 +21,10 @@ def resolve_org_completion_provider(
     instance-wide default gateway when `None` — this function never
     fabricates a fallback provider itself, so the caller's own default
     stays the single source of truth for "what happens with no org
-    config." Resolved fresh from the DB on every call (constructing
-    `OpenAICompatibleCompletionProvider` is cheap — no model loading), so
-    an updated key takes effect on the very next request with no cache to
-    invalidate."""
+    config." Resolved fresh from the DB on every call (constructing the
+    provider is cheap — no model loading), so an updated key takes effect
+    on the very next request with no cache to invalidate. The base URL is
+    always OpenRouter's, never organization-controlled."""
     config = AIProviderConfigRepository(db).get_by_organization_id(organization_id)
     if config is None:
         return None
@@ -41,10 +37,4 @@ def resolve_org_completion_provider(
         )
         return None
 
-    settings = get_settings()
-    return OpenAICompatibleCompletionProvider(
-        base_url=_OPENROUTER_BASE_URL,
-        api_key=api_key,
-        model_name=config.model_name,
-        timeout_seconds=settings.completion_request_timeout_seconds,
-    )
+    return build_provider(api_key=api_key, model_name=config.model_name)

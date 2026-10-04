@@ -1,5 +1,6 @@
 from fastapi import APIRouter
 
+from app.presentation.api.v1.ai import ai_router
 from app.presentation.api.v1.approvals import approvals_router
 from app.presentation.api.v1.archives import archives_router
 from app.presentation.api.v1.auth import auth_router
@@ -30,6 +31,7 @@ v1_router.include_router(version_router)
 v1_router.include_router(auth_router)
 v1_router.include_router(users_router)
 v1_router.include_router(organizations_router)
+v1_router.include_router(ai_router)
 v1_router.include_router(connectors_router)
 v1_router.include_router(scans_router)
 v1_router.include_router(enrichment_router)

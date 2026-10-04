@@ -14,7 +14,7 @@ def test_prompt_establishes_identity() -> None:
 
 def test_prompt_forbids_fabrication() -> None:
     assert "never" in STORAGE_ASSISTANT_SYSTEM_PROMPT.lower()
-    assert "DATA block" in STORAGE_ASSISTANT_SYSTEM_PROMPT
+    assert "<untrusted_data>" in STORAGE_ASSISTANT_SYSTEM_PROMPT
 
 
 def test_prompt_forbids_deletion_recommendations() -> None:

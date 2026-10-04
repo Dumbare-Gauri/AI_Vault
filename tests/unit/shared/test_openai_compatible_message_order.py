@@ -1,8 +1,7 @@
-"""Regression coverage for the message-ordering fix in
-`OpenAICompatibleCompletionProvider.complete()` (ADR-024) — a persona/
-safety system message must precede retrieved `context`, never follow it,
-or the injection defense sits after the untrusted data it's meant to
-constrain."""
+"""Retrieved `context` is untrusted by definition (it is text from users'
+files). The provider must deliver it inside an `<untrusted_data>` wrapper in
+the final user turn — never as an additional system message, where a file
+saying "ignore previous instructions" would carry system-level weight."""
 
 from unittest.mock import MagicMock, patch
 
@@ -28,55 +27,65 @@ def _provider() -> OpenAICompatibleCompletionProvider:
     )
 
 
-def test_context_is_inserted_after_a_leading_persona_system_message() -> None:
+def _sent_messages(messages: list[Message], context: str | None) -> list[dict]:
     body = {"choices": [{"message": {"content": "ok"}}]}
     with patch("requests.post", return_value=_response(body)) as mock_post:
-        _provider().complete(
-            messages=[
-                Message(role="system", content="PERSONA"),
-                Message(role="user", content="What's in this file?"),
-            ],
-            context="DATA",
-            max_tokens=100,
-        )
-
-    messages = mock_post.call_args.kwargs["json"]["messages"]
-    assert [m["role"] for m in messages] == ["system", "system", "user"]
-    assert messages[0]["content"] == "PERSONA"
-    assert messages[1]["content"] == "DATA"
-    assert messages[2]["content"] == "What's in this file?"
+        _provider().complete(messages=messages, context=context, max_tokens=100)
+    return mock_post.call_args.kwargs["json"]["messages"]
 
 
-def test_context_still_lands_at_index_zero_with_no_leading_system_message() -> None:
-    """Backward compatibility: every caller before this fix passed no
-    leading system message, so `insert_at` must still resolve to 0."""
-    body = {"choices": [{"message": {"content": "ok"}}]}
-    with patch("requests.post", return_value=_response(body)) as mock_post:
-        _provider().complete(
-            messages=[Message(role="user", content="question")],
-            context="DATA",
-            max_tokens=100,
-        )
+def test_context_never_becomes_a_system_message() -> None:
+    sent = _sent_messages(
+        [Message(role="system", content="PERSONA"), Message(role="user", content="question")],
+        context="FILE TEXT",
+    )
 
-    messages = mock_post.call_args.kwargs["json"]["messages"]
-    assert messages[0] == {"role": "system", "content": "DATA"}
-    assert messages[1] == {"role": "user", "content": "question"}
+    assert [m["role"] for m in sent] == ["system", "user"]
+    assert sent[0]["content"] == "PERSONA"
+    assert "FILE TEXT" not in sent[0]["content"]
+
+
+def test_context_is_appended_to_the_last_user_turn_inside_the_untrusted_wrapper() -> None:
+    sent = _sent_messages(
+        [Message(role="system", content="PERSONA"), Message(role="user", content="question")],
+        context="FILE TEXT",
+    )
+
+    user_content = sent[-1]["content"]
+    assert user_content.startswith("question")
+    assert '<untrusted_data ref="context">' in user_content
+    assert "FILE TEXT" in user_content
+    assert user_content.rstrip().endswith("</untrusted_data>")
+
+
+def test_context_is_attached_to_the_latest_user_turn_not_earlier_history() -> None:
+    sent = _sent_messages(
+        [
+            Message(role="user", content="first question"),
+            Message(role="assistant", content="first answer"),
+            Message(role="user", content="second question"),
+        ],
+        context="FILE TEXT",
+    )
+
+    assert sent[0]["content"] == "first question"
+    assert "FILE TEXT" in sent[2]["content"]
+
+
+def test_context_with_no_user_message_becomes_a_user_message() -> None:
+    sent = _sent_messages([Message(role="system", content="PERSONA")], context="FILE TEXT")
+
+    assert [m["role"] for m in sent] == ["system", "user"]
+    assert "FILE TEXT" in sent[1]["content"]
 
 
 def test_no_context_leaves_messages_untouched() -> None:
-    body = {"choices": [{"message": {"content": "ok"}}]}
-    with patch("requests.post", return_value=_response(body)) as mock_post:
-        _provider().complete(
-            messages=[
-                Message(role="system", content="PERSONA"),
-                Message(role="user", content="question"),
-            ],
-            context=None,
-            max_tokens=100,
-        )
+    sent = _sent_messages(
+        [Message(role="system", content="PERSONA"), Message(role="user", content="question")],
+        context=None,
+    )
 
-    messages = mock_post.call_args.kwargs["json"]["messages"]
-    assert messages == [
+    assert sent == [
         {"role": "system", "content": "PERSONA"},
         {"role": "user", "content": "question"},
     ]

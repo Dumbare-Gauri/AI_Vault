@@ -118,6 +118,16 @@ class AIProviderConfigResponse(BaseModel):
         return cls(configured=True, model_name=config.model_name)
 
 
+class AIStatusResponse(BaseModel):
+    """Configuration state only — never carries key material, and reporting
+    it never calls the provider."""
+
+    mode: str
+    source: str
+    provider: str
+    model: str | None
+
+
 class AIProviderConfigUpdateRequest(BaseModel):
     """`api_key` blank/omitted keeps the organization's existing stored
     key — only `model_name` is required on every update."""
@@ -275,9 +285,9 @@ class FileListResponse(BaseModel):
 
 class FolderSummaryResponse(BaseModel):
     """Backs the Files browser's "Move to folder" picker — `provider_file_id`
-    is the value a `MOVE_FILE` plan's `new_parent_id` must carry (Drive's
-    own id, not this platform's `id`), since that's what
-    `GoogleDriveClient.move_file` is called with at execution time."""
+    is the value a `MOVE_FILE` plan's `new_parent_id` must carry (the
+    provider's own id, not this platform's `id`), since that's what
+    `StorageAdapter.move` is called with at execution time."""
 
     id: str
     provider_file_id: str

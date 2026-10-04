@@ -20,8 +20,9 @@ from app.application.context_builder_service import CitationCandidate, ContextBu
 from app.application.search_service import SearchService
 from app.infrastructure.cache.rate_limit_counter import check_rate_limit
 from app.infrastructure.cache.response_cache import get_cached_json, set_cached_json
-from vault_shared import NotFoundError, get_settings
+from vault_shared import AIUnavailableError, NotFoundError, get_logger, get_settings
 from vault_shared.ai_gateway import AIGateway, Message
+from vault_shared.ai_gateway.boundary import with_boundary_rules
 from vault_shared.ai_gateway.org_completion_provider import resolve_org_completion_provider
 from vault_shared.db.models import (
     Citation,
@@ -48,6 +49,16 @@ _MAX_GROUNDING_RESULTS = 6
 # tool result directly, rather than routing through the stub's generic
 # context echo (see `render_deterministic_answer`).
 _STUB_PROVIDER_NAME = "extractive_fallback"
+# Shown when the AI reasoning service fails mid-conversation: the storage
+# product must keep answering from its own deterministic data instead of
+# failing the request (and never leaks the provider's error text).
+_DEGRADED_NOTICE = (
+    "The AI assistant is temporarily unavailable, so this answer comes directly from your "
+    "indexed data without AI summarization.\n\n"
+)
+_NO_DEGRADED_CONTEXT = "No matching indexed content was found for this question."
+
+logger = get_logger("app.application.conversation_service")
 
 
 @dataclass(frozen=True)
@@ -265,14 +276,21 @@ class ConversationService:
             token_usage = None
         else:
             context_text = render_tool_context(results)
-            completion = ai_gateway.complete(
-                messages=completion_messages,
-                context=context_text,
-                max_tokens=self._settings.ai_max_output_tokens,
-            )
-            text = completion.text
-            provider = completion.provider
-            token_usage = completion.tokens_used
+            try:
+                completion = ai_gateway.complete(
+                    messages=completion_messages,
+                    context=context_text,
+                    max_tokens=self._settings.ai_max_output_tokens,
+                )
+                text = completion.text
+                provider = completion.provider
+                token_usage = completion.tokens_used
+            except AIUnavailableError as exc:
+                logger.warning("assistant_degraded_to_deterministic", extra={"reason": exc.reason})
+                record_assistant_tool_used("ai_degraded")
+                text = _DEGRADED_NOTICE + render_deterministic_answer(results)
+                provider = _STUB_PROVIDER_NAME
+                token_usage = None
 
         assistant_message = self._messages.create(
             conversation_id=conversation.id,
@@ -305,20 +323,31 @@ class ConversationService:
         )
         context_bundle = self._context_builder.build(results)
         completion_messages = self._build_completion_messages(history, question)
-        completion = ai_gateway.complete(
-            messages=completion_messages,
-            context=context_bundle.context_text or None,
-            max_tokens=self._settings.ai_max_output_tokens,
-        )
+        try:
+            completion = ai_gateway.complete(
+                messages=completion_messages,
+                context=context_bundle.context_text or None,
+                max_tokens=self._settings.ai_max_output_tokens,
+            )
+            answer_text, provider, token_usage = (
+                completion.text,
+                completion.provider,
+                completion.tokens_used,
+            )
+        except AIUnavailableError as exc:
+            logger.warning("assistant_degraded_to_retrieval", extra={"reason": exc.reason})
+            record_assistant_tool_used("ai_degraded")
+            answer_text = _DEGRADED_NOTICE + (context_bundle.context_text or _NO_DEGRADED_CONTEXT)
+            provider, token_usage = _STUB_PROVIDER_NAME, None
 
         retrieval_method = _combined_retrieval_method(context_bundle.citations)
         assistant_message = self._messages.create(
             conversation_id=conversation.id,
             role=MessageRole.ASSISTANT,
-            content=completion.text,
+            content=answer_text,
             retrieval_method=retrieval_method,
-            provider=completion.provider,
-            token_usage=completion.tokens_used,
+            provider=provider,
+            token_usage=token_usage,
         )
 
         citations = [
@@ -337,7 +366,7 @@ class ConversationService:
         self, history: list[ConversationMessage], question: str
     ) -> list[Message]:
         return (
-            [Message(role="system", content=STORAGE_ASSISTANT_SYSTEM_PROMPT)]
+            [Message(role="system", content=with_boundary_rules(STORAGE_ASSISTANT_SYSTEM_PROMPT))]
             + [Message(role=message.role, content=message.content) for message in history]
             + [Message(role=MessageRole.USER, content=question)]
         )
