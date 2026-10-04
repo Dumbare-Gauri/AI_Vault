@@ -4,7 +4,6 @@ from datetime import UTC, datetime
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Query, Session
 
-from vault_shared.connectors.google_drive import GOOGLE_FOLDER_MIME_TYPE
 from vault_shared.db.models import (
     Embedding,
     ExtractionStatus,
@@ -17,6 +16,7 @@ from vault_shared.db.models import (
     StorageConnector,
     StorageSource,
 )
+from vault_shared.storage.models import FOLDER_MIME_TYPE
 
 
 class FileRepository:
@@ -56,7 +56,7 @@ class FileRepository:
             .filter(File.id == file_id, StorageConnector.organization_id == organization_id)
             .first()
         )
-        return row
+        return (row[0], row[1]) if row is not None else None
 
     def list_by_ids(self, file_ids: list[uuid.UUID]) -> list[File]:
         if not file_ids:
@@ -195,7 +195,9 @@ class FileRepository:
         folder paths are known."""
         return self._session.query(File).filter_by(storage_source_id=storage_source_id).all()
 
-    def _for_connector(self, connector_id: uuid.UUID, *, ownership: str | None = None) -> Query[File]:
+    def _for_connector(
+        self, connector_id: uuid.UUID, *, ownership: str | None = None
+    ) -> Query[File]:
         """`ownership` backs the Files browser's "All / My files / Shared
         with me" filter — `None` (the default, every other caller) keeps
         the unfiltered-by-ownership behavior every existing caller relies
@@ -279,7 +281,7 @@ class FileRepository:
         pattern = f"%{query.strip()}%"
         return (
             self._for_connector(connector_id)
-            .filter(File.mime_type == GOOGLE_FOLDER_MIME_TYPE)
+            .filter(File.mime_type == FOLDER_MIME_TYPE)
             .filter(File.name.ilike(pattern))
             .order_by(File.name)
             .limit(limit)
