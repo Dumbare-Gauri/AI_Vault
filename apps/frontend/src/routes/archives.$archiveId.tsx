@@ -70,7 +70,7 @@ function ArchiveDetailPage() {
     onSuccess: (plan) => {
       void queryClient.invalidateQueries({ queryKey: ["execution-plans"] });
       toast.success("Moving originals to Trash now", {
-        description: "Runs immediately — no approval step required. Recoverable from Google Drive's Trash.",
+        description: "Recoverable from Google Drive's Trash.",
         action: {
           label: "View progress",
           onClick: () => {

@@ -51,6 +51,17 @@ class ApprovalService:
     passes `validate_execution_permissions` creates an `ExecutionJob` and
     enqueues it; `reject`/`request_changes` are terminal for this plan.
 
+    ADR-026 (Phase 2): a direct, user-triggered `ExecutionPlan` no longer
+    creates an `ApprovalRequest` at all (see
+    `plan_service.ExecutionPlanService`'s `require_approval` parameter),
+    so this class's remaining callers are exclusively the Automation
+    Engine's own `WorkflowPolicy` effects (`auto_decide_via_policy` for
+    `AUTO_EXECUTE`, `decide()` for a human resolving a `REQUIRE_APPROVAL`
+    node) and plain workflow `APPROVAL` nodes with no `execution_plan_id`
+    at all — a distinct, still-real concept ("a human must review this
+    automated workflow's step") from the one-off approval step this
+    product no longer has.
+
     Lives in `packages/shared`, not `apps/backend`, since Phase 9's
     `EXECUTE_ACTION` workflow node (running in `apps/worker`) needs
     `auto_decide_via_policy` too — same "promote once a second app needs
@@ -170,32 +181,6 @@ class ApprovalService:
             self._enqueue_execution_job(job.id)
         self._resume_workflow_if_applicable(request)
         return request
-
-    def auto_decide_as_creator(
-        self, execution_plan_id: uuid.UUID, *, organization_id: uuid.UUID, user_id: uuid.UUID
-    ) -> ApprovalRequest:
-        """Instant-execution mode: the founder disabled the mandatory
-        human-review wait, so every plan is approved immediately by the
-        same user who created it, right after `POST /v1/execution-plans`
-        returns — same `decide()` call path a manual click would make (same
-        permission check, same `ExecutionJob`, same audit trail), just
-        invoked automatically instead of waiting for a second request. If
-        `decide()` raises (e.g. the connector still lacks write scope), the
-        plan and its `ApprovalRequest` remain `PENDING_APPROVAL`/`PENDING`
-        in the database — a founder can still approve it by hand later
-        (via the unchanged Approvals page) once the underlying problem is
-        fixed, so this never silently drops a plan on the floor."""
-        request = self._approvals.get_by_plan(execution_plan_id)
-        if request is None:
-            raise NotFoundError("No approval request exists for this plan.")
-        return self.decide(
-            request.id,
-            organization_id=organization_id,
-            user_id=user_id,
-            decision=ApprovalDecisionType.APPROVE,
-            comments="Auto-approved — instant execution mode.",
-            ip_address=None,
-        )
 
     def auto_decide_via_policy(
         self, approval_request_id: uuid.UUID, *, policy: WorkflowPolicy

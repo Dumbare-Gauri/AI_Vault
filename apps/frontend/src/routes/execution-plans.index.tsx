@@ -62,13 +62,8 @@ function ExecutionCenterPage() {
         <div>
           <h1 className="text-xl font-semibold tracking-tight">Execution Center</h1>
           <p className="text-sm text-muted-foreground">
-            Every plan here runs immediately — no approval step required. A plan only stays
-            pending if something blocked it (e.g. a connector needing reconnection), reviewable
-            from the{" "}
-            <Link to="/approvals" className="text-primary hover:underline">
-              Approval Queue
-            </Link>
-            .
+            Every plan here runs immediately. If a plan failed, its error (e.g. a connector
+            needing reconnection) shows on the plan itself.
           </p>
         </div>
 

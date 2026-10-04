@@ -24,13 +24,12 @@ interface PermanentDeleteDialogProps {
 }
 
 /** The one destructive action in this app that's genuinely unrecoverable
- * (real Drive `files.delete`, not Trash) — everything else here runs
- * instantly on creation, but this deliberately does not: the backend never
- * auto-approves a permanent-delete plan, and this dialog adds its own
- * type-to-confirm gate on top of that, on the theory that an irreversible
- * action deserves more friction than a Trash/Archive one. Mounted only
- * while open (see call site), same conditional-mount pattern as
- * RenameDialog/MoveDialog — resets `confirmText` for free on each open. */
+ * (real Drive `files.delete`, not Trash) — it runs immediately like every
+ * other action, but only after this dialog's own type-to-confirm gate,
+ * on the theory that an irreversible action deserves more friction than a
+ * Trash/Archive one. Mounted only while open (see call site), same
+ * conditional-mount pattern as RenameDialog/MoveDialog — resets
+ * `confirmText` for free on each open. */
 export function PermanentDeleteDialog({ onOpenChange, fileIds, onDeleted }: PermanentDeleteDialogProps) {
   const [confirmText, setConfirmText] = useState("");
   const queryClient = useQueryClient();
@@ -38,19 +37,12 @@ export function PermanentDeleteDialog({ onOpenChange, fileIds, onDeleted }: Perm
   const deleteMutation = useMutation({
     mutationFn: () =>
       apiClient.post<ExecutionPlan>("/v1/execution-plans/permanent-delete", { file_ids: fileIds }),
-    onSuccess: (plan) => {
+    onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["trash"] });
       void queryClient.invalidateQueries({ queryKey: ["execution-plans"] });
-      toast.success("Sent for approval", {
-        description:
-          "Unlike everything else in Vault, permanent deletion doesn't run instantly — approve it on the plan to actually delete these files from Google Drive.",
-        action: {
-          label: "Review & approve",
-          onClick: () => {
-            window.location.href = `/execution-plans/${plan.id}`;
-          },
-        },
-      });
+      toast.success(
+        fileIds.length === 1 ? "Permanently deleting file now" : `Permanently deleting ${fileIds.length} files now`,
+      );
       onOpenChange(false);
       onDeleted?.();
     },

@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, createFileRoute, redirect } from "@tanstack/react-router";
-import type { ApprovalRequest, ExecutionJob, ExecutionPlanDetail } from "@vault/types";
+import type { ExecutionJob, ExecutionPlanDetail } from "@vault/types";
 import { ChevronLeft, RotateCcw, ShieldAlert } from "lucide-react";
 
 import { AppShell } from "@/components/app-shell/app-shell";
@@ -43,13 +43,6 @@ function ExecutionPlanDetailPage() {
     queryKey: ["execution-plans", executionPlanId],
     queryFn: () => apiClient.get<ExecutionPlanDetail>(`/v1/execution-plans/${executionPlanId}`),
   });
-
-  const approvalsQuery = useQuery({
-    queryKey: ["approvals"],
-    queryFn: () => apiClient.get<ApprovalRequest[]>("/v1/approvals"),
-  });
-
-  const approval = approvalsQuery.data?.find((a) => a.execution_plan_id === executionPlanId);
 
   const rollbackMutation = useMutation({
     mutationFn: () =>
@@ -101,8 +94,7 @@ function ExecutionPlanDetailPage() {
                     This plan permanently deletes files from Google Drive
                   </p>
                   <p className="text-sm text-muted-foreground">
-                    Not a Trash action — approving this cannot be undone. Unlike every other plan
-                    in Vault, this one was not auto-approved and needs a real, deliberate decision.
+                    Not a Trash action — this ran immediately once confirmed and cannot be undone.
                   </p>
                 </div>
               </Card>
@@ -143,20 +135,13 @@ function ExecutionPlanDetailPage() {
 
               <Card>
                 <CardHeader>
-                  <CardTitle>Approval</CardTitle>
+                  <CardTitle>Rollback</CardTitle>
                 </CardHeader>
                 <CardContent>
-                  {approvalsQuery.isLoading && <Skeleton className="h-4 w-40" />}
-                  {approval ? (
-                    <Link to="/approvals" className="text-sm text-primary hover:underline">
-                      View in Approval Queue — status: {approval.status.replace(/_/g, " ")}
-                    </Link>
-                  ) : (
-                    !approvalsQuery.isLoading && (
-                      <p className="text-sm text-muted-foreground">
-                        No approval request found for this plan.
-                      </p>
-                    )
+                  {!plan.rollback_available && (
+                    <p className="text-sm text-muted-foreground">
+                      This plan cannot be rolled back.
+                    </p>
                   )}
 
                   {canManage && plan.rollback_available && (

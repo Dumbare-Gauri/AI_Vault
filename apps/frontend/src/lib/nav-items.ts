@@ -2,7 +2,6 @@ import {
   Archive,
   BrainCircuit,
   Building2,
-  ClipboardCheck,
   ClipboardList,
   Cloud,
   FolderOpen,
@@ -41,7 +40,6 @@ export const NAV_SECTIONS: NavSection[] = [
       { label: "Search", to: "/search", icon: Search },
       { label: "Ask Vault", to: "/chat", icon: MessageCircle },
       { label: "Recommendations", to: "/recommendations", icon: Lightbulb },
-      { label: "Approvals", to: "/approvals", icon: ClipboardCheck },
     ],
   },
   {

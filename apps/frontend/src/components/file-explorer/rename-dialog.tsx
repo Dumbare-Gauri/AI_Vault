@@ -39,9 +39,7 @@ export function RenameDialog({ onOpenChange, fileId, currentName, onRenamed }: R
       }),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["files"] });
-      toast.success("Renaming now", {
-        description: "Runs immediately — no approval step required.",
-      });
+      toast.success("Renaming now");
       onOpenChange(false);
       onRenamed?.();
     },

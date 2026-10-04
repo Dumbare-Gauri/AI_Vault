@@ -806,46 +806,72 @@ def test_decide_approve_creates_an_execution_job_when_permissions_are_satisfied(
 
 
 @requires_infra
-def test_auto_decide_as_creator_approves_and_creates_a_job(db: Session) -> None:
-    """Instant-execution mode's own path — same effect as a human's
-    `decide(approve)`, just invoked automatically by the creator's own
-    request instead of a separate click."""
+def test_require_approval_false_approves_and_starts_the_job_with_no_approval_request(
+    db: Session,
+) -> None:
+    """ADR-026's replacement for the old auto-approval hop: a direct plan
+    is approved and its job started in the one `create_plan` call, with no
+    `ApprovalRequest` ever created."""
     user = _provision_user(db)
-    plan, _approval = _provision_plan_with_approval(db, user=user, granted_scopes=DRIVE_WRITE_SCOPE)
-    service = ApprovalService(db)
-
-    decided = service.auto_decide_as_creator(
-        plan.id, organization_id=user.organization_id, user_id=user.id
+    connector = _provision_connector(
+        db, organization_id=user.organization_id, user_id=user.id, granted_scopes=DRIVE_WRITE_SCOPE
+    )
+    file_a = _provision_file(
+        db, connector_id=connector.id, name="A.txt", provider_file_id=f"f-{uuid.uuid4().hex[:8]}"
+    )
+    recommendation = _provision_recommendation(
+        db, organization_id=user.organization_id, rule_name="duplicate_files",
+        affected_file_ids=[file_a.id],
     )
 
-    assert decided.status == ApprovalStatus.APPROVED
-    updated_plan = ExecutionPlanRepository(db).get_by_id(plan.id)
-    assert updated_plan.status == ExecutionPlanStatus.APPROVED
+    plan = ExecutionPlanService(db).create_plan(
+        recommendation.id,
+        organization_id=user.organization_id,
+        user_id=user.id,
+        require_approval=False,
+    )
 
+    assert plan.status == ExecutionPlanStatus.APPROVED
+    assert ApprovalRequestRepository(db).get_by_plan(plan.id) is None
     jobs = ExecutionJobRepository(db).list_for_plan(plan.id)
     assert len(jobs) == 1
     assert jobs[0].triggered_by_user_id == user.id
 
 
 @requires_infra
-def test_auto_decide_as_creator_raises_when_permissions_are_not_satisfied(db: Session) -> None:
-    """The connector lacks write scope — auto-approval must fail loudly
-    (not silently no-op) so the caller (the execution-plans router) can
-    leave the plan PENDING_APPROVAL for a human to retry later."""
+def test_require_approval_false_fails_loudly_when_permissions_are_not_satisfied(
+    db: Session,
+) -> None:
+    """The connector lacks write scope — this must fail the request
+    outright (ADR-026), not leave a plan silently waiting for a review
+    nobody performs anymore."""
     user = _provision_user(db)
-    plan, _approval = _provision_plan_with_approval(
-        db, user=user, granted_scopes="https://www.googleapis.com/auth/drive.readonly"
+    connector = _provision_connector(
+        db, organization_id=user.organization_id, user_id=user.id,
+        granted_scopes="https://www.googleapis.com/auth/drive.readonly",
     )
-    service = ApprovalService(db)
+    file_a = _provision_file(
+        db, connector_id=connector.id, name="A.txt", provider_file_id=f"f-{uuid.uuid4().hex[:8]}"
+    )
+    recommendation = _provision_recommendation(
+        db, organization_id=user.organization_id, rule_name="duplicate_files",
+        affected_file_ids=[file_a.id],
+    )
+    service = ExecutionPlanService(db)
 
     with pytest.raises(ValidationError):
-        service.auto_decide_as_creator(
-            plan.id, organization_id=user.organization_id, user_id=user.id
+        service.create_plan(
+            recommendation.id,
+            organization_id=user.organization_id,
+            user_id=user.id,
+            require_approval=False,
         )
 
-    untouched_plan = ExecutionPlanRepository(db).get_by_id(plan.id)
-    assert untouched_plan.status == ExecutionPlanStatus.PENDING_APPROVAL
-    assert ExecutionJobRepository(db).list_for_plan(plan.id) == []
+    # Nothing was left half-created: the plan was flushed but never
+    # committed, so the session rolling back on close discards it entirely
+    # — no dangling plan for a mutation that was never going to run.
+    db.rollback()
+    assert ExecutionPlanRepository(db).list_for_organization(user.organization_id) == []
 
 
 @requires_infra

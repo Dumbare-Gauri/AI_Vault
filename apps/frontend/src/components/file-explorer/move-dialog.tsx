@@ -58,9 +58,7 @@ export function MoveDialog({ onOpenChange, connectorId, fileIds, onMoved }: Move
       }),
     onSuccess: (_plan, folder) => {
       void queryClient.invalidateQueries({ queryKey: ["files"] });
-      toast.success(`Moving to "${folder.name}" now`, {
-        description: "Runs immediately — no approval step required.",
-      });
+      toast.success(`Moving to "${folder.name}" now`);
       onOpenChange(false);
       onMoved?.();
     },

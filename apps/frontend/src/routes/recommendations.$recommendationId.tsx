@@ -53,7 +53,6 @@ function RecommendationDetailPage() {
     onSuccess: (plan) => {
       void queryClient.invalidateQueries({ queryKey: ["execution-plans"] });
       toast.success("Executing now", {
-        description: "This action runs immediately — no approval step required.",
         action: {
           label: "View progress",
           onClick: () => {
@@ -117,10 +116,6 @@ function RecommendationDetailPage() {
                   <Field label="Estimated impact" value={recommendation.estimated_impact} />
                   <Field label="Priority score" value={recommendation.priority_score.toFixed(1)} />
                   <Field
-                    label="Requires approval"
-                    value={recommendation.requires_approval ? "Yes" : "No"}
-                  />
-                  <Field
                     label="Departments"
                     value={
                       recommendation.related_departments.length > 0
@@ -141,12 +136,9 @@ function RecommendationDetailPage() {
                 <CardContent className="flex flex-col gap-3">
                   <p className="text-sm">{recommendation.suggested_action}</p>
                   <p className="rounded-lg bg-secondary p-2.5 text-xs text-muted-foreground">
-                    Creating an execution plan runs it immediately — no approval step required. A
-                    plan only stays pending if something blocked it, reviewable from the{" "}
-                    <Link to="/approvals" className="text-primary hover:underline">
-                      Approval Queue
-                    </Link>
-                    .
+                    Creating an execution plan runs it immediately. If something blocks it (for
+                    example, the connector lacks write access), you&rsquo;ll see an error right
+                    away.
                   </p>
 
                   {recommendation.status === "active" &&

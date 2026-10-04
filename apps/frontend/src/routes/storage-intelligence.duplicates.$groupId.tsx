@@ -43,7 +43,7 @@ function DuplicateGroupDetailPage() {
     onSuccess: (plan) => {
       void queryClient.invalidateQueries({ queryKey: ["execution-plans"] });
       toast.success("Moving to Trash now", {
-        description: "Runs immediately — no approval step required. Recoverable from Google Drive's Trash, or rolled back in Vault.",
+        description: "Recoverable from Google Drive's Trash, or rolled back in Vault.",
         action: {
           label: "View progress",
           onClick: () => {
@@ -110,7 +110,7 @@ function DuplicateGroupDetailPage() {
               )}
             </Card>
             <p className="-mt-2 text-xs text-muted-foreground">
-              Moves the non-kept copies to Google Drive&rsquo;s Trash after your approval — never
+              Moves the non-kept copies to Google Drive&rsquo;s Trash immediately — never
               a permanent delete, and reversible from Trash or Vault&rsquo;s rollback.
             </p>
 

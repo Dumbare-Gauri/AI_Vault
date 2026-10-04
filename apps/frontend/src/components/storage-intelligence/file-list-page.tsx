@@ -96,7 +96,7 @@ export function StorageFileListPage({
       void queryClient.invalidateQueries({ queryKey: ["execution-plans"] });
       setSelected(new Set());
       toast.success("Moving to Trash now", {
-        description: "Runs immediately — no approval step required. Recoverable from Google Drive's Trash.",
+        description: "Recoverable from Google Drive's Trash.",
         action: {
           label: "View progress",
           onClick: () => {
@@ -120,7 +120,6 @@ export function StorageFileListPage({
       void queryClient.invalidateQueries({ queryKey: ["execution-plans"] });
       setSelected(new Set());
       toast.success("Creating archive now", {
-        description: "Runs immediately — no approval step required.",
         action: {
           label: "View progress",
           onClick: () => {

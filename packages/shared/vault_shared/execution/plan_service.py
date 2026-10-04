@@ -1,4 +1,5 @@
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
@@ -8,6 +9,7 @@ from vault_shared import ConflictError, NotFoundError, ValidationError, get_sett
 from vault_shared.db.models import (
     ExecutionActionType,
     ExecutionPlan,
+    ExecutionPlanStatus,
     ExecutionStep,
     File,
     RecommendationRiskLevel,
@@ -17,14 +19,19 @@ from vault_shared.db.repositories import (
     ApprovalRequestRepository,
     ArchiveJobRepository,
     AuditLogRepository,
+    ConnectorCredentialsRepository,
     DuplicateGroupRepository,
     ExecutionAuditRepository,
+    ExecutionJobRepository,
     ExecutionPlanRepository,
     ExecutionStepRepository,
     FileRepository,
     RecommendationRepository,
+    StorageConnectorRepository,
 )
+from vault_shared.execution.permission_validation import validate_execution_permissions
 from vault_shared.formatting import human_bytes
+from vault_shared.storage.models import Revision
 
 # Only these Phase 7 rules map to a Phase 8-supported action type — every
 # other rule (security/collaboration/productivity/knowledge findings) has
@@ -73,35 +80,61 @@ class ExecutionPlanDetail:
 
 class ExecutionPlanService:
     """The Execution Planner (Phase 8 spec) — converts one `Recommendation`
-    into a deterministic, reviewable `ExecutionPlan` plus its
-    `ApprovalRequest`. Reads only already-stored `File`/`Recommendation`
-    state; makes no Drive call and mutates nothing outside this
-    platform's own database — the Core Philosophy's lifecycle has no
-    state where a plan exists without a pending approval, so both are
-    always created in the same transaction.
+    into a deterministic `ExecutionPlan`. Reads only already-stored
+    `File`/`Recommendation` state; makes no Drive call itself.
+
+    ADR-026 (Phase 2): direct, user-triggered plans (every backend
+    `POST /v1/execution-plans*` call) no longer wait on a human
+    `ApprovalRequest` — every action already auto-approved itself
+    instantly (Phase 0's instant-execution mode), so the approval step
+    was pure overhead with no real review ever happening. `require_approval`
+    (default `True`, preserving prior behavior) controls this per call:
+    `False` marks the plan `APPROVED` and enqueues its `ExecutionJob`
+    directly, in the same transaction, with no `ApprovalRequest` row ever
+    created. The Automation Engine's `WorkflowPolicy` (Phase 9) is
+    unaffected — Phase 9's `EXECUTE_ACTION` node calls `create_plan` with
+    the default, so a policy's `require_approval`/`auto_execute`/`skip`
+    effect keeps meaning exactly what it always has: a *human reviewer*
+    deciding a *workflow's own* automated action, a distinct concept from
+    "did anyone ever actually review this one-off rename."
 
     Lives in `packages/shared`, not `apps/backend`, since Phase 9's
     `EXECUTE_ACTION` workflow node (`apps/worker/worker/workflow/`) needs
     to build plans too, not just the backend's `POST /v1/execution-plans`
     endpoint — same "promote to packages/shared once a second app needs
     it" reasoning ADR-015 used for the DB layer ahead of Phase 4.
-    `apps/backend/app/application/execution_plan_service.py` re-exports
-    this class unchanged so no backend caller needed to change."""
+    `apps/backend/app/application/execution_plan_service.py` subclasses
+    this to inject `enqueue_execution_job`, the one thing that differs
+    between the backend and worker callers."""
 
-    def __init__(self, db: Session) -> None:
+    def __init__(
+        self,
+        db: Session,
+        *,
+        enqueue_execution_job: Callable[[uuid.UUID], None] | None = None,
+    ) -> None:
         self._db = db
         self._recommendations = RecommendationRepository(db)
         self._duplicate_groups = DuplicateGroupRepository(db)
         self._plans = ExecutionPlanRepository(db)
         self._steps = ExecutionStepRepository(db)
         self._approvals = ApprovalRequestRepository(db)
+        self._jobs = ExecutionJobRepository(db)
+        self._connectors = StorageConnectorRepository(db)
+        self._credentials = ConnectorCredentialsRepository(db)
         self._files = FileRepository(db)
         self._archive_jobs = ArchiveJobRepository(db)
         self._execution_audits = ExecutionAuditRepository(db)
         self._audit_logs = AuditLogRepository(db)
+        self._enqueue_execution_job = enqueue_execution_job
 
     def create_plan(
-        self, recommendation_id: uuid.UUID, *, organization_id: uuid.UUID, user_id: uuid.UUID
+        self,
+        recommendation_id: uuid.UUID,
+        *,
+        organization_id: uuid.UUID,
+        user_id: uuid.UUID,
+        require_approval: bool = True,
     ) -> ExecutionPlan:
         recommendation = self._recommendations.get_owned(
             recommendation_id, organization_id=organization_id
@@ -131,7 +164,7 @@ class ExecutionPlanService:
                 "stale. Refresh recommendations and try again."
             )
 
-        return self._create_plan_with_approval(
+        return self._finalize_plan(
             organization_id=organization_id,
             user_id=user_id,
             recommendation_id=recommendation_id,
@@ -139,10 +172,16 @@ class ExecutionPlanService:
             action_type=action_type,
             ordered_files=ordered_files,
             audit_metadata={"recommendation_id": str(recommendation_id)},
+            require_approval=require_approval,
         )
 
     def create_plan_from_duplicate_group(
-        self, duplicate_group_id: uuid.UUID, *, organization_id: uuid.UUID, user_id: uuid.UUID
+        self,
+        duplicate_group_id: uuid.UUID,
+        *,
+        organization_id: uuid.UUID,
+        user_id: uuid.UUID,
+        require_approval: bool = True,
     ) -> ExecutionPlan:
         """Storage Intelligence's (post-hardening) equivalent of `create_plan`
         — a `DuplicateGroup` is already a concrete, content-verified set of
@@ -170,7 +209,7 @@ class ExecutionPlanService:
                 "Re-analyze storage and try again."
             )
 
-        return self._create_plan_with_approval(
+        return self._finalize_plan(
             organization_id=organization_id,
             user_id=user_id,
             recommendation_id=None,
@@ -178,6 +217,7 @@ class ExecutionPlanService:
             action_type=ExecutionActionType.REMOVE_DUPLICATE,
             ordered_files=ordered_files,
             audit_metadata={"duplicate_group_id": str(duplicate_group_id)},
+            require_approval=require_approval,
         )
 
     def create_ad_hoc_plan(
@@ -189,6 +229,7 @@ class ExecutionPlanService:
         user_id: uuid.UUID,
         new_name: str | None = None,
         new_parent_id: str | None = None,
+        require_approval: bool = True,
     ) -> ExecutionPlan:
         """Storage Intelligence's large/old/inactive/temporary-candidate
         listings are live queries, not precomputed groups (ADR-023) — there
@@ -230,7 +271,7 @@ class ExecutionPlanService:
         planned_change_by_file_id: dict[uuid.UUID, dict] | None = None
         if action_type == ExecutionActionType.RENAME:
             planned_change_by_file_id = {
-                ordered_files[0].id: {"action": action_type, "new_name": new_name.strip()}
+                ordered_files[0].id: {"action": action_type, "new_name": (new_name or "").strip()}
             }
         elif action_type == ExecutionActionType.MOVE_FILE:
             planned_change_by_file_id = {
@@ -238,7 +279,7 @@ class ExecutionPlanService:
                 for file in ordered_files
             }
 
-        return self._create_plan_with_approval(
+        return self._finalize_plan(
             organization_id=organization_id,
             user_id=user_id,
             recommendation_id=None,
@@ -247,10 +288,16 @@ class ExecutionPlanService:
             ordered_files=ordered_files,
             audit_metadata={"ad_hoc_action": action_type, "requested_file_count": len(file_ids)},
             planned_change_by_file_id=planned_change_by_file_id,
+            require_approval=require_approval,
         )
 
     def create_permanent_delete_plan(
-        self, file_ids: list[uuid.UUID], *, organization_id: uuid.UUID, user_id: uuid.UUID
+        self,
+        file_ids: list[uuid.UUID],
+        *,
+        organization_id: uuid.UUID,
+        user_id: uuid.UUID,
+        require_approval: bool = True,
     ) -> ExecutionPlan:
         """Real, unrecoverable Drive deletion (`files.delete`) — everything
         else this class builds is Drive-Trash-reversible. Deliberately kept
@@ -271,9 +318,10 @@ class ExecutionPlanService:
           later-deleted archive revokes this eligibility too (see that
           method's docstring).
         - `rollback_available=False` on the resulting plan. The caller
-          (the execution-plans router) is also responsible for never
-          auto-approving this action type — approval must always be a
-          real, separate human action for something this irreversible."""
+          (the execution-plans router) requires an explicit frontend
+          confirmation dialog before ever calling this method — the one
+          action kind this irreversible always gets a real "are you sure"
+          step, per ADR-026, regardless of `require_approval`."""
         if not file_ids:
             raise ValidationError("Select at least one file.")
         if len(file_ids) > _MAX_AD_HOC_FILES:
@@ -295,7 +343,7 @@ class ExecutionPlanService:
                 "permanently deleted."
             )
 
-        return self._create_plan_with_approval(
+        return self._finalize_plan(
             organization_id=organization_id,
             user_id=user_id,
             recommendation_id=None,
@@ -307,9 +355,10 @@ class ExecutionPlanService:
                 "requested_file_count": len(file_ids),
             },
             rollback_available=False,
+            require_approval=require_approval,
         )
 
-    def _create_plan_with_approval(
+    def _finalize_plan(
         self,
         *,
         organization_id: uuid.UUID,
@@ -319,6 +368,7 @@ class ExecutionPlanService:
         action_type: str,
         ordered_files: list[File],
         audit_metadata: dict,
+        require_approval: bool,
         planned_change_by_file_id: dict[uuid.UUID, dict] | None = None,
         rollback_available: bool = True,
     ) -> ExecutionPlan:
@@ -348,15 +398,6 @@ class ExecutionPlanService:
                 planned_change=planned_change,
             )
 
-        settings = get_settings()
-        expires_at = datetime.now(UTC) + timedelta(hours=settings.approval_expiry_hours)
-        self._approvals.create(
-            execution_plan_id=plan.id,
-            organization_id=organization_id,
-            requested_by_user_id=user_id,
-            expires_at=expires_at,
-        )
-
         self._execution_audits.record(
             organization_id=organization_id,
             execution_plan_id=plan.id,
@@ -370,7 +411,60 @@ class ExecutionPlanService:
             user_id=user_id,
             metadata={"execution_plan_id": str(plan.id)},
         )
+
+        if require_approval:
+            settings = get_settings()
+            expires_at = datetime.now(UTC) + timedelta(hours=settings.approval_expiry_hours)
+            self._approvals.create(
+                execution_plan_id=plan.id,
+                organization_id=organization_id,
+                requested_by_user_id=user_id,
+                expires_at=expires_at,
+            )
+            self._db.commit()
+            return plan
+
+        # ADR-026: no `ApprovalRequest` for a direct, user-triggered plan —
+        # go straight to APPROVED and start the job in the same transaction
+        # a human `decide()` approval would have produced. Same permission
+        # pre-check `ApprovalService.decide()`/`_check_permissions` always
+        # ran before approving, so a missing write scope still surfaces as
+        # an immediate, synchronous error here instead of only failing
+        # later, silently, on the worker.
+        if self._enqueue_execution_job is None:
+            raise ValidationError(
+                "This ExecutionPlanService instance cannot start a plan without approval — "
+                "it was constructed without an enqueue_execution_job callback."
+            )
+        connector = self._connectors.get_by_organization_and_provider(
+            organization_id=organization_id, provider=plan.target_provider
+        )
+        credentials = self._credentials.get_by_connector_id(connector.id) if connector else None
+        failures = validate_execution_permissions(connector=connector, credentials=credentials)
+        if failures:
+            raise ValidationError(
+                "Cannot start — execution permissions are not satisfied: " + "; ".join(failures)
+            )
+        self._plans.update_status(plan, status=ExecutionPlanStatus.APPROVED)
+        job = self._jobs.create(
+            execution_plan_id=plan.id, organization_id=organization_id, triggered_by_user_id=user_id
+        )
+        self._execution_audits.record(
+            organization_id=organization_id,
+            execution_plan_id=plan.id,
+            execution_job_id=job.id,
+            actor_user_id=user_id,
+            event_type="execution_approved",
+            message="No approval step required — this action runs immediately.",
+        )
+        self._audit_logs.record(
+            event_type="execution_approved",
+            organization_id=organization_id,
+            user_id=user_id,
+            metadata={"execution_plan_id": str(plan.id), "execution_job_id": str(job.id)},
+        )
         self._db.commit()
+        self._enqueue_execution_job(job.id)
         return plan
 
     def get_detail(
@@ -396,7 +490,14 @@ class ExecutionPlanService:
 
     @staticmethod
     def _pre_state(file: File) -> dict:
+        """What the reviewer saw. `revision` is the file's version as of the
+        last scan; the Execution Engine refuses to apply the step if the
+        provider now reports a different content revision (the file was
+        edited after the plan was made)."""
         return {
             "parent_folder_id": str(file.parent_folder_id) if file.parent_folder_id else None,
             "name": file.name,
+            "revision": Revision(
+                token=file.version_id, modified_at=file.provider_modified_at
+            ).to_dict(),
         }

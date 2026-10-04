@@ -18,8 +18,8 @@ import { useAuthStore } from "@/stores/auth-store";
 
 /** Turns a tool answer's cited files into an actionable list — not just a
  * "here's where this came from" link, but somewhere to actually pick files
- * and archive them, the same safe (approval-gated, reversible) path every
- * other cleanup action in the app already uses. Generalizes the previous
+ * and archive them, the same instant, reversible (Trash, not delete) path
+ * every other cleanup action in the app already uses. Generalizes the previous
  * chat-only `CitationFileList` so any tool result with citations (file
  * search, largest/oldest/inactive files, cleanup candidates, duplicate
  * groups) renders the same structured list instead of flattened text. */
@@ -48,7 +48,7 @@ export function AIFileResultList({
       void queryClient.invalidateQueries({ queryKey: ["execution-plans"] });
       setSelected(new Set());
       toast.success("Moving to Trash now", {
-        description: "Runs immediately — no approval step required. Recoverable from Google Drive's Trash.",
+        description: "Recoverable from Google Drive's Trash.",
         action: {
           label: "View progress",
           onClick: () => {
@@ -69,7 +69,6 @@ export function AIFileResultList({
       void queryClient.invalidateQueries({ queryKey: ["execution-plans"] });
       setSelected(new Set());
       toast.success("Creating archive now", {
-        description: "Runs immediately — no approval step required.",
         action: {
           label: "View progress",
           onClick: () => {
