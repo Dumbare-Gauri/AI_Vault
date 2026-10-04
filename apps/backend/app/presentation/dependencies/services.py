@@ -32,6 +32,8 @@ from vault_shared.connectors.google_workspace import (
     get_google_workspace_oauth_client,
 )
 from vault_shared.db.session import get_db
+from vault_shared.storage import StorageAdapterRegistry
+from vault_shared.storage.default_registry import build_storage_registry
 
 
 def get_auth_service(db: Session = Depends(get_db)) -> AuthService:
@@ -65,11 +67,20 @@ def get_intelligence_job_service(db: Session = Depends(get_db)) -> IntelligenceJ
     return IntelligenceJobService(db)
 
 
-def get_file_service(
+def get_storage_registry(
     db: Session = Depends(get_db),
     oauth_client: GoogleWorkspaceOAuthClient = Depends(get_google_workspace_oauth_client),
+) -> StorageAdapterRegistry:
+    """Per-request, bound to the request's session — deliberately not a
+    singleton, so a test overrides this one dependency with a fake."""
+    return build_storage_registry(db, oauth_client=oauth_client)
+
+
+def get_file_service(
+    db: Session = Depends(get_db),
+    storage: StorageAdapterRegistry = Depends(get_storage_registry),
 ) -> FileService:
-    return FileService(db, oauth_client=oauth_client)
+    return FileService(db, storage=storage)
 
 
 def get_embedding_job_service(db: Session = Depends(get_db)) -> EmbeddingJobService:

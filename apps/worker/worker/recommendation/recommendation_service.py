@@ -231,7 +231,9 @@ class RecommendationService:
             embedded_files=len(context.embedded_file_ids),
             relationship_count=len(relationships),
             active_recommendations=active_count,
-            knowledge_completeness_score=(classified_count / len(owned_rows)) if owned_rows else 0.0,
+            knowledge_completeness_score=(
+                (classified_count / len(owned_rows)) if owned_rows else 0.0
+            ),
         )
         self._db.commit()
         return active_count

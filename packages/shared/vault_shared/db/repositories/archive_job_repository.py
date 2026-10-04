@@ -32,7 +32,9 @@ class ArchiveJobRepository:
     def get_by_id(self, archive_job_id: uuid.UUID) -> ArchiveJob | None:
         return self._session.get(ArchiveJob, archive_job_id)
 
-    def get_owned(self, archive_job_id: uuid.UUID, *, organization_id: uuid.UUID) -> ArchiveJob | None:
+    def get_owned(
+        self, archive_job_id: uuid.UUID, *, organization_id: uuid.UUID
+    ) -> ArchiveJob | None:
         return (
             self._session.query(ArchiveJob)
             .filter_by(id=archive_job_id, organization_id=organization_id)

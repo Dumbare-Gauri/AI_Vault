@@ -5,9 +5,6 @@ from dataclasses import dataclass
 from sqlalchemy.orm import Session
 
 from vault_shared import NotFoundError
-from vault_shared.connector_service import ConnectorTokenService
-from vault_shared.connectors.google_drive import GoogleDriveClient
-from vault_shared.connectors.google_workspace import GoogleWorkspaceOAuthClient
 from vault_shared.db.models import (
     File,
     FileClassification,
@@ -27,19 +24,7 @@ from vault_shared.db.repositories import (
     KnowledgeAttributeRepository,
     StorageConnectorRepository,
 )
-
-# Google-native types have no binary "current file" to stream — exporting
-# to a real, openable format (not extraction.py's text/csv, which is for
-# search-indexing) is the only way to download one at all. Same choices as
-# ExecutionService's archive export, for consistency between the two.
-_DOWNLOAD_EXPORT_MIME_TYPES: dict[str, tuple[str, str]] = {
-    "application/vnd.google-apps.document": ("application/pdf", "pdf"),
-    "application/vnd.google-apps.presentation": ("application/pdf", "pdf"),
-    "application/vnd.google-apps.spreadsheet": (
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        "xlsx",
-    ),
-}
+from vault_shared.storage import ExportPurpose, ProviderFileId, StorageAdapterProvider
 
 
 @dataclass(frozen=True)
@@ -65,12 +50,14 @@ class FileService:
     `apps/worker`'s `EnrichmentService`; the backend only ever assembles and
     serves what's already there for the frontend's file detail view
     (Phase 5 spec's Frontend Deliverables). `get_download_stream` is the one
-    exception that reaches all the way to Drive — still not a mutation, so
+    exception that reaches all the way to the storage provider (through the
+    connection's `StorageAdapter`) — still not a mutation, so
     it doesn't go through the Execution Engine (whose charter is "the only
     module permitted to *mutate* connected storage"), same reasoning as
     `ArchiveService.get_download_stream`."""
 
-    def __init__(self, db: Session, *, oauth_client: GoogleWorkspaceOAuthClient) -> None:
+    def __init__(self, db: Session, *, storage: StorageAdapterProvider) -> None:
+        self._storage = storage
         self._connectors = StorageConnectorRepository(db)
         self._files = FileRepository(db)
         self._file_metadata = FileMetadataRepository(db)
@@ -79,8 +66,6 @@ class FileService:
         self._intelligence = FileIntelligenceRepository(db)
         self._knowledge_attributes = KnowledgeAttributeRepository(db)
         self._relationships = FileRelationshipRepository(db)
-        self._tokens = ConnectorTokenService(db, oauth_client=oauth_client)
-        self._drive = GoogleDriveClient()
 
     def list_for_connector(
         self,
@@ -156,33 +141,33 @@ class FileService:
         self, file_id: uuid.UUID, *, organization_id: uuid.UUID
     ) -> tuple[File, Iterator[bytes], str, str]:
         """Returns `(file, byte_stream, content_type, filename)`. A
-        Google-native file (Doc/Sheet/Slide) has no binary "current
-        version" to stream — exported to a real, openable format instead;
-        `filename` reflects that (e.g. `.pdf` for a Doc), never the
-        original native name unchanged."""
+        provider-native document (a Google Doc/Sheet/Slide) has no binary
+        "current version" to stream — the adapter exports it to a real,
+        openable format instead, and `filename` reflects that (e.g. `.pdf`
+        for a Doc), never the original native name unchanged.
+
+        The stream is the provider's own response, read in bounded chunks as
+        the client consumes it — never buffered whole. The request is made
+        here, so a provider refusal still surfaces as a normal error before
+        any response bytes are sent."""
         row = self._files.get_owned_with_connector(file_id, organization_id=organization_id)
         if row is None:
             raise NotFoundError("File not found.")
         file, connector = row
-        access_token = self._tokens.get_valid_access_token(connector)
+        adapter = self._storage.adapter_for(connector)
 
         mime = file.mime_type or ""
-        if mime in _DOWNLOAD_EXPORT_MIME_TYPES:
-            export_mime_type, extension = _DOWNLOAD_EXPORT_MIME_TYPES[mime]
-            content = self._drive.export_file(
-                access_token=access_token,
-                file_id=file.provider_file_id,
-                export_mime_type=export_mime_type,
-            )
-            filename = f"{file.name}.{extension}"
-            content_type = export_mime_type
-        elif mime.startswith("application/vnd.google-apps."):
+        provider_file_id = ProviderFileId(file.provider_file_id)
+        export_format = adapter.export_format_for(mime, ExportPurpose.DOWNLOAD)
+        if export_format is not None:
+            content = adapter.export(provider_file_id, export_format)
+            filename = f"{file.name}.{export_format.extension}"
+            content_type = export_format.mime_type
+        elif adapter.is_native_document(mime):
             raise NotFoundError("This file type can't be downloaded.")
         else:
-            content = self._drive.download_file(
-                access_token=access_token, file_id=file.provider_file_id
-            )
+            content = adapter.open_read(provider_file_id)
             filename = file.name
             content_type = mime or "application/octet-stream"
 
-        return file, iter([content]), content_type, filename
+        return file, content, content_type, filename

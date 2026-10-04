@@ -4,9 +4,6 @@ from datetime import UTC, datetime
 from sqlalchemy.orm import Session
 
 from vault_shared import DependencyUnavailableError, ReauthRequiredError, get_logger
-from vault_shared.connector_service import ConnectorTokenService
-from vault_shared.connectors.google_drive import DriveFile, GoogleDriveClient
-from vault_shared.connectors.google_workspace import GoogleWorkspaceOAuthClient
 from vault_shared.db.models import DriveType, Folder, ScanType, StorageConnector, StorageSource
 from vault_shared.db.models.scan_job import ScanJob
 from vault_shared.db.repositories import (
@@ -18,8 +15,21 @@ from vault_shared.db.repositories import (
     StorageConnectorRepository,
     StorageSourceRepository,
 )
+from vault_shared.storage import (
+    ContainerKind,
+    StorageAdapter,
+    StorageAdapterProvider,
+    StorageFile,
+)
 
 logger = get_logger("worker.scanner.scan_service")
+
+# The scanner speaks the provider-neutral container kinds; the inventory
+# schema keeps its existing `DriveType` values, so this is the one mapping.
+_DRIVE_TYPE_BY_KIND = {
+    ContainerKind.PERSONAL: DriveType.MY_DRIVE,
+    ContainerKind.SHARED: DriveType.SHARED_DRIVE,
+}
 
 # Bounds how much ingest work happens between commits/cancellation checks —
 # keeps memory flat on very large drives and caps how much a crash mid-scan
@@ -28,7 +38,8 @@ _BATCH_COMMIT_SIZE = 200
 
 # `folders.path`/`files.path` is String(4096) — a deeply nested tree of
 # long-named folders could in principle still exceed that even with each
-# individual name already bounded (google_drive.py's `_MAX_NAME_LENGTH`),
+# individual name already bounded (by the storage adapter at the provider
+# boundary),
 # so the resolved path is capped defensively too rather than trusting the
 # math to always stay under the column limit.
 _MAX_PATH_LENGTH = 4096
@@ -57,15 +68,9 @@ class ScannerService:
     folder's provider-parent chain, then applies the same paths to files.
     """
 
-    def __init__(
-        self,
-        db: Session,
-        *,
-        drive_client: GoogleDriveClient,
-        oauth_client: GoogleWorkspaceOAuthClient,
-    ) -> None:
+    def __init__(self, db: Session, *, storage: StorageAdapterProvider) -> None:
         self._db = db
-        self._drive = drive_client
+        self._storage = storage
         self._connectors = StorageConnectorRepository(db)
         self._sources = StorageSourceRepository(db)
         self._folders = FolderRepository(db)
@@ -73,7 +78,6 @@ class ScannerService:
         self._jobs = ScanJobRepository(db)
         self._progress = ScanProgressRepository(db)
         self._events = ScanEventRepository(db)
-        self._tokens = ConnectorTokenService(db, oauth_client=oauth_client)
 
     def run(self, scan_job_id: uuid.UUID) -> None:
         job = self._jobs.get_by_id(scan_job_id)
@@ -98,7 +102,8 @@ class ScannerService:
 
         try:
             self._check_cancelled(job.id)
-            sources = self._discover_sources(job, connector)
+            adapter = self._storage.adapter_for(connector)
+            sources = self._discover_sources(connector, adapter)
             self._progress.set_sources_discovered(job.id, len(sources))
             self._db.commit()
 
@@ -107,7 +112,7 @@ class ScannerService:
                 self._progress.set_current_source(job.id, source.name)
                 self._db.commit()
 
-                self._scan_source(job, connector, source)
+                self._scan_source(job, source, adapter)
 
                 self._progress.increment_source_completed(job.id)
                 self._db.commit()
@@ -153,49 +158,34 @@ class ScannerService:
         self._events.record(scan_job_id=job.id, event_type="scan_completed")
         self._db.commit()
 
-    def _discover_sources(self, job: ScanJob, connector: StorageConnector) -> list[StorageSource]:
-        access_token = self._tokens.get_valid_access_token(connector)
+    def _discover_sources(
+        self, connector: StorageConnector, adapter: StorageAdapter
+    ) -> list[StorageSource]:
         sources = [
             self._sources.upsert(
                 connector_id=connector.id,
-                provider_drive_id="root",
-                name="My Drive",
-                drive_type=DriveType.MY_DRIVE,
+                provider_drive_id=container.id,
+                name=container.name,
+                drive_type=_DRIVE_TYPE_BY_KIND[container.kind],
             )
+            for container in adapter.list_containers()
         ]
-        for shared_drive in self._drive.list_shared_drives(access_token=access_token):
-            sources.append(
-                self._sources.upsert(
-                    connector_id=connector.id,
-                    provider_drive_id=shared_drive.id,
-                    name=shared_drive.name,
-                    drive_type=DriveType.SHARED_DRIVE,
-                )
-            )
         self._db.commit()
         return sources
 
-    def _scan_source(
-        self, job: ScanJob, connector: StorageConnector, source: StorageSource
-    ) -> None:
+    def _scan_source(self, job: ScanJob, source: StorageSource, adapter: StorageAdapter) -> None:
         if source.change_token is None or job.scan_type == ScanType.FULL:
-            self._ingest_full(job, connector, source)
+            self._ingest_full(job, source, adapter)
         else:
-            self._ingest_incremental(job, connector, source)
+            self._ingest_incremental(job, source, adapter)
 
-    def _ingest_full(
-        self, job: ScanJob, connector: StorageConnector, source: StorageSource
-    ) -> None:
-        drive_id = None if source.drive_type == DriveType.MY_DRIVE else source.provider_drive_id
-        page_token: str | None = None
+    def _ingest_full(self, job: ScanJob, source: StorageSource, adapter: StorageAdapter) -> None:
+        page_cursor: str | None = None
         pending = pending_folders = pending_files = 0
 
         while True:
             self._check_cancelled(job.id)
-            access_token = self._tokens.get_valid_access_token(connector)
-            page = self._drive.list_files_page(
-                access_token=access_token, drive_id=drive_id, page_token=page_token
-            )
+            page = adapter.scan(source.provider_drive_id, page_cursor)
 
             for item in page.files:
                 self._ingest_item(source, item)
@@ -209,8 +199,8 @@ class ScannerService:
                     self._db.commit()
                     pending = pending_folders = pending_files = 0
 
-            page_token = page.next_page_token
-            if not page_token:
+            page_cursor = page.next_cursor
+            if not page_cursor:
                 break
 
         if pending:
@@ -219,32 +209,25 @@ class ScannerService:
 
         self._resolve_hierarchy(source)
 
-        access_token = self._tokens.get_valid_access_token(connector)
-        start_page_token = self._drive.get_start_page_token(
-            access_token=access_token, drive_id=drive_id
-        )
-        self._sources.update_change_token(source, change_token=start_page_token)
+        change_cursor = adapter.get_change_cursor(source.provider_drive_id)
+        self._sources.update_change_token(source, change_token=change_cursor)
         self._db.commit()
 
     def _ingest_incremental(
-        self, job: ScanJob, connector: StorageConnector, source: StorageSource
+        self, job: ScanJob, source: StorageSource, adapter: StorageAdapter
     ) -> None:
-        drive_id = None if source.drive_type == DriveType.MY_DRIVE else source.provider_drive_id
-        page_token: str | None = source.change_token
-        new_start_token: str | None = None
+        change_cursor: str | None = source.change_token
+        new_start_cursor: str | None = None
         pending = pending_folders = pending_files = 0
         touched = False
 
-        while page_token:
+        while change_cursor:
             self._check_cancelled(job.id)
-            access_token = self._tokens.get_valid_access_token(connector)
-            page = self._drive.list_changes_page(
-                access_token=access_token, page_token=page_token, drive_id=drive_id
-            )
+            page = adapter.check_changes(source.provider_drive_id, change_cursor)
 
-            for item in page.changed_files:
+            for item in page.changed:
                 if item.trashed:
-                    self._remove_item(source, item.id)
+                    self._remove_item(source, item.provider_file_id)
                 else:
                     self._ingest_item(source, item)
                     pending_folders += 1 if item.is_folder else 0
@@ -258,13 +241,13 @@ class ScannerService:
                     self._db.commit()
                     pending = pending_folders = pending_files = 0
 
-            for removed_id in page.removed_file_ids:
+            for removed_id in page.removed_ids:
                 self._remove_item(source, removed_id)
                 touched = True
 
-            if page.new_start_page_token:
-                new_start_token = page.new_start_page_token
-            page_token = page.next_page_token
+            if page.new_start_cursor:
+                new_start_cursor = page.new_start_cursor
+            change_cursor = page.next_cursor
 
         if pending:
             self._progress.increment_counts(job.id, folders=pending_folders, files=pending_files)
@@ -273,46 +256,46 @@ class ScannerService:
         if touched:
             self._resolve_hierarchy(source)
 
-        if new_start_token:
-            self._sources.update_change_token(source, change_token=new_start_token)
+        if new_start_cursor:
+            self._sources.update_change_token(source, change_token=new_start_cursor)
             self._db.commit()
 
-    def _ingest_item(self, source: StorageSource, item: DriveFile) -> None:
+    def _ingest_item(self, source: StorageSource, item: StorageFile) -> None:
         now = datetime.now(UTC)
-        provider_parent_id = item.parents[0] if item.parents else None
+        provider_parent_id = item.parent_id
         if item.is_folder:
             self._folders.upsert(
                 storage_source_id=source.id,
-                provider_file_id=item.id,
+                provider_file_id=item.provider_file_id,
                 provider_parent_id=provider_parent_id,
                 parent_folder_id=None,
                 name=item.name,
                 path=f"/{item.name}",
                 owner_email=item.owner_email,
                 is_shared=item.shared,
-                provider_created_at=item.created_time,
-                provider_modified_at=item.modified_time,
+                provider_created_at=item.created_at,
+                provider_modified_at=item.modified_at,
                 scanned_at=now,
             )
         else:
             self._files.upsert(
                 storage_source_id=source.id,
-                provider_file_id=item.id,
+                provider_file_id=item.provider_file_id,
                 provider_parent_id=provider_parent_id,
                 parent_folder_id=None,
                 name=item.name,
                 path=f"/{item.name}",
                 mime_type=item.mime_type,
-                size_bytes=item.size,
+                size_bytes=item.size_bytes,
                 owner_email=item.owner_email,
                 is_shared=item.shared,
                 permissions_summary="shared" if item.shared else None,
-                version_id=item.version_id,
+                version_id=item.revision.token,
                 checksum=item.checksum,
                 web_view_link=item.web_view_link,
-                provider_created_at=item.created_time,
-                provider_modified_at=item.modified_time,
-                provider_viewed_at=item.viewed_by_me_time,
+                provider_created_at=item.created_at,
+                provider_modified_at=item.modified_at,
+                provider_viewed_at=item.accessed_at,
                 scanned_at=now,
             )
 

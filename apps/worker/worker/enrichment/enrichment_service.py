@@ -4,9 +4,6 @@ from datetime import UTC, datetime
 from sqlalchemy.orm import Session
 
 from vault_shared import DependencyUnavailableError, UnauthorizedError, get_logger
-from vault_shared.connector_service import ConnectorTokenService
-from vault_shared.connectors.google_drive import GoogleDriveClient
-from vault_shared.connectors.google_workspace import GoogleWorkspaceOAuthClient
 from vault_shared.db.models import EnrichmentJob, File, RelationshipType, StorageConnector
 from vault_shared.db.repositories import (
     EnrichmentEventRepository,
@@ -20,6 +17,7 @@ from vault_shared.db.repositories import (
     KnowledgeAttributeRepository,
     StorageConnectorRepository,
 )
+from vault_shared.storage import StorageAdapterProvider
 from worker.enrichment.extraction import ContentExtractionService
 from worker.enrichment.processors import DEFAULT_PIPELINE, EnrichmentContext, FileProcessor
 from worker.enrichment.relationships import RelationshipDiscoveryService
@@ -65,11 +63,11 @@ class EnrichmentService:
         self,
         db: Session,
         *,
-        drive_client: GoogleDriveClient,
-        oauth_client: GoogleWorkspaceOAuthClient,
+        storage: StorageAdapterProvider,
         pipeline: list[FileProcessor] | None = None,
     ) -> None:
         self._db = db
+        self._storage = storage
         self._connectors = StorageConnectorRepository(db)
         self._files = FileRepository(db)
         self._file_metadata = FileMetadataRepository(db)
@@ -80,8 +78,7 @@ class EnrichmentService:
         self._jobs = EnrichmentJobRepository(db)
         self._progress = EnrichmentProgressRepository(db)
         self._events = EnrichmentEventRepository(db)
-        self._tokens = ConnectorTokenService(db, oauth_client=oauth_client)
-        self._extraction_service = ContentExtractionService(drive_client)
+        self._extraction_service = ContentExtractionService()
         self._relationship_service = RelationshipDiscoveryService()
         self._pipeline = pipeline if pipeline is not None else DEFAULT_PIPELINE
 
@@ -173,8 +170,8 @@ class EnrichmentService:
             )
 
     def _enrich_file(self, connector: StorageConnector, file: File) -> None:
-        access_token = self._tokens.get_valid_access_token(connector)
-        outcome = self._extraction_service.extract(access_token=access_token, file=file)
+        adapter = self._storage.adapter_for(connector)
+        outcome = self._extraction_service.extract(storage=adapter, file=file)
 
         now = datetime.now(UTC)
         self._extractions.upsert(

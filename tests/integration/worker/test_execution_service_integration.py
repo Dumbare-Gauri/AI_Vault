@@ -6,6 +6,7 @@ from urllib.parse import urlparse
 
 import pytest
 from sqlalchemy.orm import Session
+
 from vault_shared import NotFoundError, get_settings
 from vault_shared.connectors.google_drive import DriveFile
 from vault_shared.connectors.google_workspace import GoogleAccountInfo, GoogleTokenSet
@@ -44,6 +45,7 @@ from vault_shared.db.repositories import (
 from vault_shared.db.session import get_session_factory
 from vault_shared.execution import DRIVE_WRITE_SCOPE
 from vault_shared.security.encryption import encrypt_token
+from vault_shared.storage.default_registry import build_storage_registry
 from worker.execution.execution_service import ExecutionService
 
 
@@ -120,6 +122,18 @@ class _FakeGoogleDriveClient:
     def export_file(self, *, access_token: str, file_id: str, export_mime_type: str) -> bytes:
         self.calls.append(("export_file", file_id))
         return f"exported {file_id} as {export_mime_type}".encode()
+
+    def stream_file(self, *, access_token: str, file_id: str):
+        return iter([self.download_file(access_token=access_token, file_id=file_id)])
+
+    def stream_export(self, *, access_token: str, file_id: str, export_mime_type: str):
+        return iter(
+            [
+                self.export_file(
+                    access_token=access_token, file_id=file_id, export_mime_type=export_mime_type
+                )
+            ]
+        )
 
     def list_shared_drives(self, *, access_token: str) -> list:
         return []
@@ -254,7 +268,10 @@ def _provision_connector(
 
 def _provision_file(db: Session, *, connector_id: uuid.UUID, name: str, provider_file_id: str):
     source = StorageSourceRepository(db).upsert(
-        connector_id=connector_id, provider_drive_id="root", name="My Drive", drive_type=DriveType.MY_DRIVE
+        connector_id=connector_id,
+        provider_drive_id="root",
+        name="My Drive",
+        drive_type=DriveType.MY_DRIVE,
     )
     now = datetime.now(UTC)
     file = FileRepository(db).upsert(
@@ -340,7 +357,9 @@ def _provision_ad_hoc_plan(db: Session, *, organization_id: uuid.UUID, user_id: 
     return plan
 
 
-def _provision_step(db: Session, *, plan_id: uuid.UUID, file_id: uuid.UUID, action_type: str, order: int = 0):
+def _provision_step(
+    db: Session, *, plan_id: uuid.UUID, file_id: uuid.UUID, action_type: str, order: int = 0
+):
     step = ExecutionStepRepository(db).create(
         execution_plan_id=plan_id,
         step_order=order,
@@ -354,7 +373,12 @@ def _provision_step(db: Session, *, plan_id: uuid.UUID, file_id: uuid.UUID, acti
 
 
 def _provision_job(
-    db: Session, *, plan_id: uuid.UUID, organization_id: uuid.UUID, user_id: uuid.UUID, is_rollback: bool = False
+    db: Session,
+    *,
+    plan_id: uuid.UUID,
+    organization_id: uuid.UUID,
+    user_id: uuid.UUID,
+    is_rollback: bool = False,
 ):
     job = ExecutionJobRepository(db).create(
         execution_plan_id=plan_id,
@@ -382,8 +406,9 @@ def test_forward_execution_trashes_the_file_and_completes_job_and_plan(db: Sessi
     drive = _FakeGoogleDriveClient(files={"f-dup": _drive_file(file_id="f-dup", trashed=False)})
     service = ExecutionService(
         db,
-        drive_client=drive,
-        oauth_client=_FakeGoogleWorkspaceOAuthClient(),
+        storage=build_storage_registry(
+            db, oauth_client=_FakeGoogleWorkspaceOAuthClient(), drive_client=drive
+        ),
         object_storage_client=_FakeObjectStorageClient(),
     )
 
@@ -424,13 +449,16 @@ def test_rollback_restores_the_file_and_marks_plan_rolled_back(db: Session) -> N
     step = _provision_step(
         db, plan_id=plan.id, file_id=file.id, action_type=ExecutionActionType.REMOVE_DUPLICATE
     )
-    forward_job = _provision_job(db, plan_id=plan.id, organization_id=user.organization_id, user_id=user.id)
+    forward_job = _provision_job(
+        db, plan_id=plan.id, organization_id=user.organization_id, user_id=user.id
+    )
 
     drive = _FakeGoogleDriveClient(files={"f-dup": _drive_file(file_id="f-dup", trashed=False)})
     service = ExecutionService(
         db,
-        drive_client=drive,
-        oauth_client=_FakeGoogleWorkspaceOAuthClient(),
+        storage=build_storage_registry(
+            db, oauth_client=_FakeGoogleWorkspaceOAuthClient(), drive_client=drive
+        ),
         object_storage_client=_FakeObjectStorageClient(),
     )
     service.run(forward_job.id)
@@ -486,8 +514,9 @@ def test_forward_execution_permanently_deletes_an_already_trashed_file(db: Sessi
     drive = _FakeGoogleDriveClient(files={"f-old": _drive_file(file_id="f-old", trashed=True)})
     service = ExecutionService(
         db,
-        drive_client=drive,
-        oauth_client=_FakeGoogleWorkspaceOAuthClient(),
+        storage=build_storage_registry(
+            db, oauth_client=_FakeGoogleWorkspaceOAuthClient(), drive_client=drive
+        ),
         object_storage_client=_FakeObjectStorageClient(),
     )
 
@@ -536,13 +565,16 @@ def test_rollback_of_a_permanent_delete_step_fails_without_crashing(db: Session)
     _provision_step(
         db, plan_id=plan.id, file_id=file.id, action_type=ExecutionActionType.PERMANENT_DELETE
     )
-    forward_job = _provision_job(db, plan_id=plan.id, organization_id=user.organization_id, user_id=user.id)
+    forward_job = _provision_job(
+        db, plan_id=plan.id, organization_id=user.organization_id, user_id=user.id
+    )
 
     drive = _FakeGoogleDriveClient(files={"f-old": _drive_file(file_id="f-old", trashed=True)})
     service = ExecutionService(
         db,
-        drive_client=drive,
-        oauth_client=_FakeGoogleWorkspaceOAuthClient(),
+        storage=build_storage_registry(
+            db, oauth_client=_FakeGoogleWorkspaceOAuthClient(), drive_client=drive
+        ),
         object_storage_client=_FakeObjectStorageClient(),
     )
     service.run(forward_job.id)
@@ -565,7 +597,9 @@ def test_a_single_steps_failure_does_not_stop_the_job(db: Session) -> None:
     connector = _provision_connector(
         db, organization_id=user.organization_id, user_id=user.id, granted_scopes=DRIVE_WRITE_SCOPE
     )
-    good_file = _provision_file(db, connector_id=connector.id, name="Good.txt", provider_file_id="f-good")
+    good_file = _provision_file(
+        db, connector_id=connector.id, name="Good.txt", provider_file_id="f-good"
+    )
     missing_file = _provision_file(
         db, connector_id=connector.id, name="Missing.txt", provider_file_id="f-missing"
     )
@@ -574,7 +608,11 @@ def test_a_single_steps_failure_does_not_stop_the_job(db: Session) -> None:
         db, plan_id=plan.id, file_id=good_file.id, action_type=ExecutionActionType.ARCHIVE, order=0
     )
     missing_step = _provision_step(
-        db, plan_id=plan.id, file_id=missing_file.id, action_type=ExecutionActionType.ARCHIVE, order=1
+        db,
+        plan_id=plan.id,
+        file_id=missing_file.id,
+        action_type=ExecutionActionType.ARCHIVE,
+        order=1,
     )
     job = _provision_job(db, plan_id=plan.id, organization_id=user.organization_id, user_id=user.id)
 
@@ -585,8 +623,9 @@ def test_a_single_steps_failure_does_not_stop_the_job(db: Session) -> None:
     drive = _FakeGoogleDriveClient(files={"f-good": _drive_file(file_id="f-good", trashed=False)})
     service = ExecutionService(
         db,
-        drive_client=drive,
-        oauth_client=_FakeGoogleWorkspaceOAuthClient(),
+        storage=build_storage_registry(
+            db, oauth_client=_FakeGoogleWorkspaceOAuthClient(), drive_client=drive
+        ),
         object_storage_client=_FakeObjectStorageClient(),
     )
 
@@ -598,8 +637,12 @@ def test_a_single_steps_failure_does_not_stop_the_job(db: Session) -> None:
     completed_plan = ExecutionPlanRepository(db).get_by_id(plan.id)
     assert completed_plan.status == ExecutionPlanStatus.PARTIALLY_COMPLETED
 
-    assert ExecutionStepRepository(db).get_by_id(good_step.id).status == ExecutionStepStatus.COMPLETED
-    assert ExecutionStepRepository(db).get_by_id(missing_step.id).status == ExecutionStepStatus.FAILED
+    assert (
+        ExecutionStepRepository(db).get_by_id(good_step.id).status == ExecutionStepStatus.COMPLETED
+    )
+    assert (
+        ExecutionStepRepository(db).get_by_id(missing_step.id).status == ExecutionStepStatus.FAILED
+    )
 
     failed_result = ExecutionResultRepository(db).get_by_job_and_step(
         execution_job_id=job.id, execution_step_id=missing_step.id
@@ -621,14 +664,17 @@ def test_execution_is_blocked_and_no_drive_call_is_made_when_the_connector_lacks
     )
     file = _provision_file(db, connector_id=connector.id, name="Dup.txt", provider_file_id="f-dup")
     plan = _provision_plan(db, organization_id=user.organization_id, user_id=user.id)
-    _provision_step(db, plan_id=plan.id, file_id=file.id, action_type=ExecutionActionType.REMOVE_DUPLICATE)
+    _provision_step(
+        db, plan_id=plan.id, file_id=file.id, action_type=ExecutionActionType.REMOVE_DUPLICATE
+    )
     job = _provision_job(db, plan_id=plan.id, organization_id=user.organization_id, user_id=user.id)
 
     drive = _FakeGoogleDriveClient(files={"f-dup": _drive_file(file_id="f-dup", trashed=False)})
     service = ExecutionService(
         db,
-        drive_client=drive,
-        oauth_client=_FakeGoogleWorkspaceOAuthClient(),
+        storage=build_storage_registry(
+            db, oauth_client=_FakeGoogleWorkspaceOAuthClient(), drive_client=drive
+        ),
         object_storage_client=_FakeObjectStorageClient(),
     )
 
@@ -653,7 +699,9 @@ def test_cancellation_stops_forward_execution_cleanly(db: Session) -> None:
     )
     file = _provision_file(db, connector_id=connector.id, name="Dup.txt", provider_file_id="f-dup")
     plan = _provision_plan(db, organization_id=user.organization_id, user_id=user.id)
-    _provision_step(db, plan_id=plan.id, file_id=file.id, action_type=ExecutionActionType.REMOVE_DUPLICATE)
+    _provision_step(
+        db, plan_id=plan.id, file_id=file.id, action_type=ExecutionActionType.REMOVE_DUPLICATE
+    )
     job = _provision_job(db, plan_id=plan.id, organization_id=user.organization_id, user_id=user.id)
 
     jobs = ExecutionJobRepository(db)
@@ -663,8 +711,9 @@ def test_cancellation_stops_forward_execution_cleanly(db: Session) -> None:
     drive = _FakeGoogleDriveClient(files={"f-dup": _drive_file(file_id="f-dup", trashed=False)})
     service = ExecutionService(
         db,
-        drive_client=drive,
-        oauth_client=_FakeGoogleWorkspaceOAuthClient(),
+        storage=build_storage_registry(
+            db, oauth_client=_FakeGoogleWorkspaceOAuthClient(), drive_client=drive
+        ),
         object_storage_client=_FakeObjectStorageClient(),
     )
 
@@ -685,14 +734,17 @@ def test_forward_trash_marks_the_local_file_trashed_and_triggers_a_storage_refre
     )
     file = _provision_file(db, connector_id=connector.id, name="Dup.txt", provider_file_id="f-dup")
     plan = _provision_ad_hoc_plan(db, organization_id=user.organization_id, user_id=user.id)
-    _provision_step(db, plan_id=plan.id, file_id=file.id, action_type=ExecutionActionType.REMOVE_DUPLICATE)
+    _provision_step(
+        db, plan_id=plan.id, file_id=file.id, action_type=ExecutionActionType.REMOVE_DUPLICATE
+    )
     job = _provision_job(db, plan_id=plan.id, organization_id=user.organization_id, user_id=user.id)
 
     drive = _FakeGoogleDriveClient(files={"f-dup": _drive_file(file_id="f-dup", trashed=False)})
     service = ExecutionService(
         db,
-        drive_client=drive,
-        oauth_client=_FakeGoogleWorkspaceOAuthClient(),
+        storage=build_storage_registry(
+            db, oauth_client=_FakeGoogleWorkspaceOAuthClient(), drive_client=drive
+        ),
         object_storage_client=_FakeObjectStorageClient(),
     )
 
@@ -703,8 +755,12 @@ def test_forward_trash_marks_the_local_file_trashed_and_triggers_a_storage_refre
 
     storage_jobs = StorageAnalysisJobRepository(db).list_for_organization(user.organization_id)
     assert any(j.triggered_by == StorageAnalysisTrigger.EXECUTION_COMPLETED for j in storage_jobs)
-    recommendation_jobs = RecommendationJobRepository(db).list_for_organization(user.organization_id)
-    assert any(j.triggered_by == RecommendationTrigger.EXECUTION_COMPLETED for j in recommendation_jobs)
+    recommendation_jobs = RecommendationJobRepository(db).list_for_organization(
+        user.organization_id
+    )
+    assert any(
+        j.triggered_by == RecommendationTrigger.EXECUTION_COMPLETED for j in recommendation_jobs
+    )
 
 
 @requires_infra
@@ -715,14 +771,19 @@ def test_rollback_of_a_trash_marks_the_local_file_active_again(db: Session) -> N
     )
     file = _provision_file(db, connector_id=connector.id, name="Dup.txt", provider_file_id="f-dup")
     plan = _provision_plan(db, organization_id=user.organization_id, user_id=user.id)
-    _provision_step(db, plan_id=plan.id, file_id=file.id, action_type=ExecutionActionType.REMOVE_DUPLICATE)
-    forward_job = _provision_job(db, plan_id=plan.id, organization_id=user.organization_id, user_id=user.id)
+    _provision_step(
+        db, plan_id=plan.id, file_id=file.id, action_type=ExecutionActionType.REMOVE_DUPLICATE
+    )
+    forward_job = _provision_job(
+        db, plan_id=plan.id, organization_id=user.organization_id, user_id=user.id
+    )
 
     drive = _FakeGoogleDriveClient(files={"f-dup": _drive_file(file_id="f-dup", trashed=False)})
     service = ExecutionService(
         db,
-        drive_client=drive,
-        oauth_client=_FakeGoogleWorkspaceOAuthClient(),
+        storage=build_storage_registry(
+            db, oauth_client=_FakeGoogleWorkspaceOAuthClient(), drive_client=drive
+        ),
         object_storage_client=_FakeObjectStorageClient(),
     )
     service.run(forward_job.id)
@@ -746,10 +807,18 @@ def test_create_archive_batch_completes_all_steps_and_produces_one_archive_job(d
     file_b = _provision_file(db, connector_id=connector.id, name="B.txt", provider_file_id="f-b")
     plan = _provision_plan(db, organization_id=user.organization_id, user_id=user.id)
     step_a = _provision_step(
-        db, plan_id=plan.id, file_id=file_a.id, action_type=ExecutionActionType.CREATE_ARCHIVE, order=0
+        db,
+        plan_id=plan.id,
+        file_id=file_a.id,
+        action_type=ExecutionActionType.CREATE_ARCHIVE,
+        order=0,
     )
     step_b = _provision_step(
-        db, plan_id=plan.id, file_id=file_b.id, action_type=ExecutionActionType.CREATE_ARCHIVE, order=1
+        db,
+        plan_id=plan.id,
+        file_id=file_b.id,
+        action_type=ExecutionActionType.CREATE_ARCHIVE,
+        order=1,
     )
     job = _provision_job(db, plan_id=plan.id, organization_id=user.organization_id, user_id=user.id)
 
@@ -759,7 +828,11 @@ def test_create_archive_batch_completes_all_steps_and_produces_one_archive_job(d
     drive = _FakeGoogleDriveClient()
     storage = _FakeObjectStorageClient()
     service = ExecutionService(
-        db, drive_client=drive, oauth_client=_FakeGoogleWorkspaceOAuthClient(), object_storage_client=storage
+        db,
+        storage=build_storage_registry(
+            db, oauth_client=_FakeGoogleWorkspaceOAuthClient(), drive_client=drive
+        ),
+        object_storage_client=storage,
     )
 
     service.run(job.id)
@@ -798,7 +871,9 @@ def test_create_archive_batch_completes_all_steps_and_produces_one_archive_job(d
 
 
 @requires_infra
-def test_create_archive_rollback_deletes_the_object_and_marks_archive_job_failed(db: Session) -> None:
+def test_create_archive_rollback_deletes_the_object_and_marks_archive_job_failed(
+    db: Session,
+) -> None:
     user = _provision_user(db)
     connector = _provision_connector(
         db, organization_id=user.organization_id, user_id=user.id, granted_scopes=DRIVE_WRITE_SCOPE
@@ -808,13 +883,18 @@ def test_create_archive_rollback_deletes_the_object_and_marks_archive_job_failed
     step = _provision_step(
         db, plan_id=plan.id, file_id=file.id, action_type=ExecutionActionType.CREATE_ARCHIVE
     )
-    forward_job = _provision_job(db, plan_id=plan.id, organization_id=user.organization_id, user_id=user.id)
+    forward_job = _provision_job(
+        db, plan_id=plan.id, organization_id=user.organization_id, user_id=user.id
+    )
 
     storage = _FakeObjectStorageClient()
     service = ExecutionService(
         db,
-        drive_client=_FakeGoogleDriveClient(),
-        oauth_client=_FakeGoogleWorkspaceOAuthClient(),
+        storage=build_storage_registry(
+            db,
+            oauth_client=_FakeGoogleWorkspaceOAuthClient(),
+            drive_client=_FakeGoogleDriveClient(),
+        ),
         object_storage_client=storage,
     )
     service.run(forward_job.id)
