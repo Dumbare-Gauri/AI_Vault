@@ -4,9 +4,11 @@ from opentelemetry.instrumentation.celery import CeleryInstrumentor
 
 from vault_shared import configure_logging, get_settings
 from vault_shared.error_tracking import configure_sentry
+from vault_shared.settings import enforce_production_settings
 from vault_shared.tracing import configure_tracing
 
 settings = get_settings()
+enforce_production_settings(settings)
 
 # Phase 10 (ADR-022) — both are no-ops without SENTRY_DSN/
 # OTEL_EXPORTER_OTLP_ENDPOINT set, mirroring the backend's
