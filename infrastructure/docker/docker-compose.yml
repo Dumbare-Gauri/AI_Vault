@@ -21,8 +21,12 @@ services:
 
   redis:
     image: redis:7-alpine
+    # Remapped host-side (6380, not 6379) — another project's redis already
+    # holds 6379 on this machine. Internal traffic is unaffected: every
+    # service here reaches Redis via REDIS_URL's `redis:6379` on the
+    # Docker network, never through this host port.
     ports:
-      - "6379:6379"
+      - "6380:6379"
     volumes:
       - redis-data:/data
     healthcheck:
