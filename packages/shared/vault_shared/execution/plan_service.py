@@ -12,6 +12,8 @@ from vault_shared.db.models import (
     ExecutionPlanStatus,
     ExecutionStep,
     File,
+    Folder,
+    MemoryType,
     RecommendationRiskLevel,
     RecommendationStatus,
 )
@@ -26,6 +28,9 @@ from vault_shared.db.repositories import (
     ExecutionPlanRepository,
     ExecutionStepRepository,
     FileRepository,
+    FolderRepository,
+    OrganizationMemoryRepository,
+    OrganizationRecommendationRepository,
     RecommendationRepository,
     StorageConnectorRepository,
 )
@@ -44,6 +49,11 @@ _EXECUTABLE_RULES: dict[str, str] = {
     "large_unused_files": ExecutionActionType.ARCHIVE,
 }
 
+
+def is_executable_rule(rule_name: str) -> bool:
+    return rule_name in _EXECUTABLE_RULES
+
+
 # Storage Intelligence's ad-hoc plans (large/old/inactive/temporary-
 # candidate listings, where the user picks specific files directly rather
 # than acting on a precomputed group) are deliberately restricted to a
@@ -59,8 +69,12 @@ _AD_HOC_ALLOWED_ACTIONS = frozenset(
         ExecutionActionType.CREATE_ARCHIVE,
         ExecutionActionType.RENAME,
         ExecutionActionType.MOVE_FILE,
+        ExecutionActionType.RESTORE,
     }
 )
+# Actions whose targets are (or may be) in Trash — every other ad-hoc action
+# only ever targets active files.
+_TRASH_AWARE_ACTIONS = frozenset({ExecutionActionType.CREATE_ARCHIVE, ExecutionActionType.RESTORE})
 _MAX_AD_HOC_FILES = 500
 
 # Execution risk is a different question than the recommendation's own
@@ -123,9 +137,12 @@ class ExecutionPlanService:
         self._connectors = StorageConnectorRepository(db)
         self._credentials = ConnectorCredentialsRepository(db)
         self._files = FileRepository(db)
+        self._folders = FolderRepository(db)
         self._archive_jobs = ArchiveJobRepository(db)
         self._execution_audits = ExecutionAuditRepository(db)
         self._audit_logs = AuditLogRepository(db)
+        self._organization_recommendations = OrganizationRecommendationRepository(db)
+        self._organization_memories = OrganizationMemoryRepository(db)
         self._enqueue_execution_job = enqueue_execution_job
 
     def create_plan(
@@ -229,6 +246,7 @@ class ExecutionPlanService:
         user_id: uuid.UUID,
         new_name: str | None = None,
         new_parent_id: str | None = None,
+        remove_originals: bool = False,
         require_approval: bool = True,
     ) -> ExecutionPlan:
         """Storage Intelligence's large/old/inactive/temporary-candidate
@@ -259,9 +277,20 @@ class ExecutionPlanService:
         if action_type == ExecutionActionType.MOVE_FILE and not new_parent_id:
             raise ValidationError("A destination folder is required.")
 
-        ordered_files = self._files.list_owned_by_organization(
-            file_ids, organization_id=organization_id
-        )
+        if action_type in _TRASH_AWARE_ACTIONS:
+            candidates = self._files.list_owned_by_organization_including_trashed(
+                file_ids, organization_id=organization_id
+            )
+            ordered_files = [
+                file
+                for file in candidates
+                if file.permanently_deleted_at is None
+                and (file.trashed or action_type != ExecutionActionType.RESTORE)
+            ]
+        else:
+            ordered_files = self._files.list_owned_by_organization(
+                file_ids, organization_id=organization_id
+            )
         if not ordered_files:
             raise ValidationError(
                 "None of the selected files could be found — they may be stale. "
@@ -273,11 +302,22 @@ class ExecutionPlanService:
             planned_change_by_file_id = {
                 ordered_files[0].id: {"action": action_type, "new_name": (new_name or "").strip()}
             }
+        elif action_type == ExecutionActionType.CREATE_ARCHIVE:
+            planned_change_by_file_id = {
+                file.id: {"action": action_type, "remove_originals": remove_originals}
+                for file in ordered_files
+            }
         elif action_type == ExecutionActionType.MOVE_FILE:
             planned_change_by_file_id = {
                 file.id: {"action": action_type, "new_parent_id": new_parent_id}
                 for file in ordered_files
             }
+            assert new_parent_id is not None  # validated above
+            self._record_correction_if_diverges_from_recommendation(
+                organization_id=organization_id,
+                ordered_files=ordered_files,
+                new_parent_id=new_parent_id,
+            )
 
         return self._finalize_plan(
             organization_id=organization_id,
@@ -386,9 +426,7 @@ class ExecutionPlanService:
             required_permissions=["google_workspace:drive:write"],
         )
         for index, file in enumerate(ordered_files):
-            planned_change = (planned_change_by_file_id or {}).get(
-                file.id, {"action": action_type}
-            )
+            planned_change = (planned_change_by_file_id or {}).get(file.id, {"action": action_type})
             self._steps.create(
                 execution_plan_id=plan.id,
                 step_order=index,
@@ -479,6 +517,65 @@ class ExecutionPlanService:
         self, organization_id: uuid.UUID, *, status: str | None = None
     ) -> list[ExecutionPlan]:
         return self._plans.list_for_organization(organization_id, status=status)
+
+    def _record_correction_if_diverges_from_recommendation(
+        self,
+        *,
+        organization_id: uuid.UUID,
+        ordered_files: list[File],
+        new_parent_id: str,
+    ) -> None:
+        """Phase 2 organizational memory (spec: "structured user
+        corrections... should influence future recommendations"). A user
+        moving a file via the Files browser to somewhere other than what
+        an active `OrganizationRecommendation` suggested for it is a real,
+        observed fact worth remembering — recorded here, the one place a
+        MOVE_FILE ad-hoc plan is actually created, rather than guessed at
+        from execution results later. Pure DB reads/writes, no AI call:
+        `packages/shared/vault_shared/execution/` must stay clear of any
+        `vault_shared.ai_gateway` import (`test_execution_code_never_
+        depends_on_the_ai_gateway`), and this hook doesn't need one."""
+        recommendations = self._organization_recommendations.list_active_for_files(
+            organization_id, [file.id for file in ordered_files]
+        )
+        for recommendation in recommendations:
+            if recommendation.entity_id is None or not recommendation.suggested_destination:
+                continue
+            suggested_folder = self._resolve_existing_folder(
+                storage_source_id=ordered_files[0].storage_source_id,
+                path_parts=recommendation.suggested_destination,
+            )
+            if suggested_folder is not None and suggested_folder.provider_file_id == new_parent_id:
+                continue  # the user moved it exactly where this recommendation suggested
+            self._organization_memories.create(
+                organization_id=organization_id,
+                memory_type=MemoryType.CORRECTION,
+                key=f"entity:{recommendation.entity_id}",
+                value={
+                    "organization_recommendation_id": str(recommendation.id),
+                    "suggested_destination": recommendation.suggested_destination,
+                    "actual_new_parent_id": new_parent_id,
+                },
+                evidence=(
+                    "A user moved a file to a different location than this active "
+                    "organization recommendation suggested."
+                ),
+                confidence=1.0,
+            )
+
+    def _resolve_existing_folder(
+        self, *, storage_source_id: uuid.UUID, path_parts: list[str]
+    ) -> Folder | None:
+        parent_folder_id: uuid.UUID | None = None
+        folder: Folder | None = None
+        for part in path_parts:
+            folder = self._folders.get_by_parent_and_name(
+                storage_source_id=storage_source_id, parent_folder_id=parent_folder_id, name=part
+            )
+            if folder is None:
+                return None
+            parent_folder_id = folder.id
+        return folder
 
     @staticmethod
     def _risk_level_for(file_count: int) -> str:

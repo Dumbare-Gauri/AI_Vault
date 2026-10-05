@@ -28,10 +28,15 @@ def _get_status(owner_user, gateway: MagicMock, org_provider: MagicMock | None):
     app.dependency_overrides[get_current_user] = lambda: owner_user
     app.dependency_overrides[get_db] = lambda: MagicMock()
     app.dependency_overrides[get_ai_gateway] = lambda: gateway
+    repository = MagicMock()
+    repository.return_value.get_by_organization_id.return_value = MagicMock(provider="openrouter")
     try:
-        with patch(
-            "app.application.ai_status_service.resolve_org_completion_provider",
-            return_value=org_provider,
+        with (
+            patch(
+                "app.application.ai_status_service.resolve_org_completion_provider",
+                return_value=org_provider,
+            ),
+            patch("app.application.ai_status_service.AIProviderConfigRepository", repository),
         ):
             return client.get("/v1/ai/status")
     finally:
@@ -61,7 +66,7 @@ def test_status_reports_the_organizations_own_provider(owner_user) -> None:
     assert response.json() == {
         "mode": "ai",
         "source": "organization",
-        "provider": "openrouter",
+        "provider": "OpenRouter",
         "model": "z-ai/glm-test",
     }
 

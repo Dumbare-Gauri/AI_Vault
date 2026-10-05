@@ -32,6 +32,10 @@ class AIProviderConfig(Base):
     organization_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, unique=True
     )
+    # One of `vault_shared.ai_gateway.providers_catalog.AI_PROVIDERS` — each
+    # maps to a fixed, allow-listed endpoint; an organization never supplies
+    # a URL of its own.
+    provider: Mapped[str] = mapped_column(String(30), nullable=False, default="openrouter")
     api_key_encrypted: Mapped[str] = mapped_column(String(2048), nullable=False)
     model_name: Mapped[str] = mapped_column(String(200), nullable=False)
 

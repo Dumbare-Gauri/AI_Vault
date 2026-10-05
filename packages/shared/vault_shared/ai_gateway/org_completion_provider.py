@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session
 
 from vault_shared import get_logger
 from vault_shared.ai_gateway.interfaces import CompletionProvider
-from vault_shared.ai_gateway.openrouter import build_provider
+from vault_shared.ai_gateway.openrouter import build_catalog_provider
 from vault_shared.db.repositories import AIProviderConfigRepository
 from vault_shared.security.encryption import TokenEncryptionError, decrypt_token
 
@@ -24,7 +24,8 @@ def resolve_org_completion_provider(
     config." Resolved fresh from the DB on every call (constructing the
     provider is cheap — no model loading), so an updated key takes effect
     on the very next request with no cache to invalidate. The base URL is
-    always OpenRouter's, never organization-controlled."""
+    always the chosen catalog provider's fixed endpoint, never
+    organization-controlled."""
     config = AIProviderConfigRepository(db).get_by_organization_id(organization_id)
     if config is None:
         return None
@@ -37,4 +38,6 @@ def resolve_org_completion_provider(
         )
         return None
 
-    return build_provider(api_key=api_key, model_name=config.model_name)
+    return build_catalog_provider(
+        provider=config.provider, api_key=api_key, model_name=config.model_name
+    )

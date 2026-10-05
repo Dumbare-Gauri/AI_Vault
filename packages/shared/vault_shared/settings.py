@@ -79,7 +79,7 @@ class Settings(BaseSettings):
     # is a kill switch a founder can flip without a deploy if rollback
     # itself ever needs to be disabled.
     execution_max_retries: int = 3
-    execution_timeout_seconds: int = 300
+    execution_timeout_seconds: int = 1800
     approval_expiry_hours: int = 72
     execution_rollback_enabled: bool = True
 
@@ -177,7 +177,7 @@ class Settings(BaseSettings):
     # (`read_bounded`) since `zipfile.writestr` needs the whole file at once.
     # A file over this size is skipped (its step fails individually) rather
     # than risking the whole worker process.
-    archive_max_file_size_bytes: int = 200 * 1024**2
+    archive_max_file_size_bytes: int = 2 * 1024**3
 
     @property
     def cors_origins_list(self) -> list[str]:

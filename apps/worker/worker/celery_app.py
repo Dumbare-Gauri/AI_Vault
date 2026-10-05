@@ -29,6 +29,7 @@ celery_app = Celery(
         "worker.tasks.enrichment",
         "worker.tasks.embedding",
         "worker.tasks.recommendation",
+        "worker.tasks.organization",
         "worker.tasks.execution",
         "worker.tasks.workflow",
         "worker.tasks.scheduler",

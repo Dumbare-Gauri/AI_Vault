@@ -1,6 +1,7 @@
 import socket
 import uuid
 from collections.abc import Callable
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from urllib.parse import urlparse
 
@@ -8,7 +9,12 @@ import pytest
 from sqlalchemy.orm import Session
 
 from vault_shared import DependencyUnavailableError, ReauthRequiredError, get_settings
-from vault_shared.connectors.google_drive import DriveFile, DriveFilesPage, SharedDrive
+from vault_shared.connectors.google_drive import (
+    DriveChangesPage,
+    DriveFile,
+    DriveFilesPage,
+    SharedDrive,
+)
 from vault_shared.connectors.google_workspace import GoogleAccountInfo, GoogleTokenSet
 from vault_shared.db.models import (
     ConnectorProvider,
@@ -108,7 +114,9 @@ class _FakeGoogleDriveClient:
         *,
         shared_drives: list[SharedDrive] | None = None,
         files_pages: dict[str | None, list[DriveFilesPage]] | None = None,
+        changes: DriveChangesPage | None = None,
     ) -> None:
+        self._changes = changes
         self.shared_drives = shared_drives or []
         self._files_pages = {k: list(v) for k, v in (files_pages or {}).items()}
         self.list_files_page_calls = 0
@@ -138,7 +146,9 @@ class _FakeGoogleDriveClient:
         return "start-token-1"
 
     def list_changes_page(self, *, access_token: str, page_token: str, drive_id: str | None):
-        raise NotImplementedError
+        if self._changes is None:
+            raise NotImplementedError
+        return self._changes
 
 
 def _folder(item_id: str, name: str, *, parent_id: str | None) -> DriveFile:
@@ -546,3 +556,76 @@ def test_revoked_refresh_token_fails_the_scan_without_leaking_the_token(db: Sess
     failed_connector = StorageConnectorRepository(db).get_by_id(connector.id)
     assert failed_connector.status == ConnectorStatus.REAUTH_REQUIRED
     assert secret_refresh_token not in (failed_connector.last_error or "")
+
+
+@requires_infra
+def test_an_incremental_scan_keeps_a_trashed_file_and_marks_it_trashed(db: Session) -> None:
+    """Deleting the row would erase every action recorded against the file —
+    and with it Restore and Undo — while the file still sits in Drive's Trash."""
+    user = _provision_user(db)
+    connector = _provision_connector(db, organization_id=user.organization_id, user_id=user.id)
+    report = _file("file-q1", "Q1.pdf", parent_id=None)
+    drive = _FakeGoogleDriveClient(
+        files_pages={None: [DriveFilesPage(files=[report], next_page_token=None)]},
+        changes=DriveChangesPage(
+            changed_files=[replace(report, trashed=True)],
+            removed_file_ids=[],
+            next_page_token=None,
+            new_start_page_token="start-token-2",
+        ),
+    )
+    service = ScannerService(
+        db,
+        storage=build_storage_registry(
+            db, oauth_client=_FakeGoogleWorkspaceOAuthClient(), drive_client=drive
+        ),
+    )
+    service.run(_create_job(db, connector_id=connector.id).id)
+
+    service.run(_create_job(db, connector_id=connector.id, scan_type=ScanType.INCREMENTAL).id)
+
+    db.expire_all()
+    source = StorageSourceRepository(db).get_by_connector_and_provider_drive_id(
+        connector_id=connector.id, provider_drive_id="root"
+    )
+    file = FileRepository(db).get_by_source_and_provider_id(
+        storage_source_id=source.id, provider_file_id="file-q1"
+    )
+    assert file is not None
+    assert file.trashed is True
+
+
+@requires_infra
+def test_a_file_deleted_from_the_provider_keeps_its_row_marked_deleted(db: Session) -> None:
+    """Removing the row would erase every action recorded against it."""
+    user = _provision_user(db)
+    connector = _provision_connector(db, organization_id=user.organization_id, user_id=user.id)
+    report = _file("file-q1", "Q1.pdf", parent_id=None)
+    drive = _FakeGoogleDriveClient(
+        files_pages={None: [DriveFilesPage(files=[report], next_page_token=None)]},
+        changes=DriveChangesPage(
+            changed_files=[],
+            removed_file_ids=["file-q1"],
+            next_page_token=None,
+            new_start_page_token="start-token-2",
+        ),
+    )
+    service = ScannerService(
+        db,
+        storage=build_storage_registry(
+            db, oauth_client=_FakeGoogleWorkspaceOAuthClient(), drive_client=drive
+        ),
+    )
+    service.run(_create_job(db, connector_id=connector.id).id)
+
+    service.run(_create_job(db, connector_id=connector.id, scan_type=ScanType.INCREMENTAL).id)
+
+    db.expire_all()
+    source = StorageSourceRepository(db).get_by_connector_and_provider_drive_id(
+        connector_id=connector.id, provider_drive_id="root"
+    )
+    file = FileRepository(db).get_by_source_and_provider_id(
+        storage_source_id=source.id, provider_file_id="file-q1"
+    )
+    assert file is not None
+    assert file.permanently_deleted_at is not None

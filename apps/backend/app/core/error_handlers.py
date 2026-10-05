@@ -1,4 +1,5 @@
 from fastapi import FastAPI, Request
+from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -27,11 +28,18 @@ def register_error_handlers(app: FastAPI) -> None:
 
     @app.exception_handler(RequestValidationError)
     async def handle_validation_error(_: Request, exc: RequestValidationError) -> JSONResponse:
+        # `ctx` can hold the raw exception a validator raised, which is not
+        # JSON-serializable — without this, any custom validator turned a
+        # 422 into a 500.
+        errors = [{k: v for k, v in error.items() if k != "ctx"} for error in exc.errors()]
+        custom = [
+            e["msg"].removeprefix("Value error, ") for e in errors if e.get("type") == "value_error"
+        ]
         return _error_response(
             422,
             "validation_error",
-            "Request payload failed validation.",
-            {"errors": exc.errors()},
+            custom[0] if custom else "Request payload failed validation.",
+            {"errors": jsonable_encoder(errors)},
         )
 
     @app.exception_handler(StarletteHTTPException)

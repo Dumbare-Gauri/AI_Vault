@@ -1,7 +1,7 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { Link, createFileRoute, redirect } from "@tanstack/react-router";
 import type { ExecutionPlan, Recommendation } from "@vault/types";
-import { ChevronLeft, ClipboardList, ShieldCheck } from "lucide-react";
+import { ChevronLeft, ShieldCheck, Sparkles } from "lucide-react";
 
 import { AppShell } from "@/components/app-shell/app-shell";
 import { toast } from "@/components/ui/toaster";
@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ApiError, apiClient } from "@/lib/api-client";
+import { trackAction } from "@/lib/storage-action";
 import { formatRelativeTime } from "@/lib/format-relative-time";
 import { categoryBadgeVariant, categoryLabel, riskBadgeVariant } from "@/lib/recommendation-style";
 import { useAuthStore } from "@/stores/auth-store";
@@ -36,7 +37,6 @@ function Field({ label, value }: { label: string; value: React.ReactNode }) {
 
 function RecommendationDetailPage() {
   const { recommendationId } = Route.useParams();
-  const queryClient = useQueryClient();
   const user = useAuthStore((state) => state.user);
   const canManage = user?.role === "owner" || user?.role === "admin";
 
@@ -51,21 +51,13 @@ function RecommendationDetailPage() {
         recommendation_id: recommendationId,
       }),
     onSuccess: (plan) => {
-      void queryClient.invalidateQueries({ queryKey: ["execution-plans"] });
-      toast.success("Executing now", {
-        action: {
-          label: "View progress",
-          onClick: () => {
-            window.location.href = `/execution-plans/${plan.id}`;
-          },
-        },
-      });
+      void trackAction(plan.id, "Working on it…");
     },
     onError: (error) => {
       toast.error(
         error instanceof ApiError
           ? error.message
-          : "Couldn't create an execution plan for this recommendation.",
+          : "Couldn't start this — nothing was changed.",
       );
     },
   });
@@ -136,9 +128,8 @@ function RecommendationDetailPage() {
                 <CardContent className="flex flex-col gap-3">
                   <p className="text-sm">{recommendation.suggested_action}</p>
                   <p className="rounded-lg bg-secondary p-2.5 text-xs text-muted-foreground">
-                    Creating an execution plan runs it immediately. If something blocks it (for
-                    example, the connector lacks write access), you&rsquo;ll see an error right
-                    away.
+                    &ldquo;Do it&rdquo; makes the change in your storage right away, then checks
+                    with the provider that it really happened. You can undo it afterwards.
                   </p>
 
                   {recommendation.status === "active" &&
@@ -149,12 +140,12 @@ function RecommendationDetailPage() {
                         disabled={createPlanMutation.isPending}
                         onClick={() => createPlanMutation.mutate()}
                       >
-                        <ClipboardList className="size-4" />
-                        {createPlanMutation.isPending ? "Creating plan…" : "Create execution plan"}
+                        <Sparkles className="size-4" />
+                        {createPlanMutation.isPending ? "Starting…" : "Do it"}
                       </Button>
                     ) : (
                       <p className="text-xs text-muted-foreground">
-                        Only owners and admins can create execution plans.
+                        Only owners and admins can make changes.
                       </p>
                     ))}
                 </CardContent>

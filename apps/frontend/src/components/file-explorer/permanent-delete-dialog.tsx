@@ -14,6 +14,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { toast } from "@/components/ui/toaster";
 import { ApiError, apiClient } from "@/lib/api-client";
+import { pluralFiles, trackAction } from "@/lib/storage-action";
 
 const CONFIRM_PHRASE = "DELETE";
 
@@ -37,17 +38,14 @@ export function PermanentDeleteDialog({ onOpenChange, fileIds, onDeleted }: Perm
   const deleteMutation = useMutation({
     mutationFn: () =>
       apiClient.post<ExecutionPlan>("/v1/execution-plans/permanent-delete", { file_ids: fileIds }),
-    onSuccess: () => {
+    onSuccess: (plan) => {
       void queryClient.invalidateQueries({ queryKey: ["trash"] });
-      void queryClient.invalidateQueries({ queryKey: ["execution-plans"] });
-      toast.success(
-        fileIds.length === 1 ? "Permanently deleting file now" : `Permanently deleting ${fileIds.length} files now`,
-      );
+      void trackAction(plan.id, `Permanently deleting ${pluralFiles(fileIds.length)}…`);
       onOpenChange(false);
       onDeleted?.();
     },
     onError: (error) => {
-      toast.error(error instanceof ApiError ? error.message : "Couldn't create a deletion plan.");
+      toast.error(error instanceof ApiError ? error.message : "Couldn't delete — nothing was changed.");
     },
   });
 

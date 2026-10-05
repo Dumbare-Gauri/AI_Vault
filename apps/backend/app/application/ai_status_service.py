@@ -5,6 +5,8 @@ from sqlalchemy.orm import Session
 
 from vault_shared.ai_gateway import AIGateway
 from vault_shared.ai_gateway.org_completion_provider import resolve_org_completion_provider
+from vault_shared.ai_gateway.provider_catalog import AI_PROVIDERS
+from vault_shared.db.repositories import AIProviderConfigRepository
 
 _STUB_PROVIDER_NAME = "extractive_fallback"
 
@@ -25,14 +27,19 @@ def get_ai_status(db: Session, organization_id: uuid.UUID, gateway: AIGateway) -
     surfaced by the AI features themselves, which degrade per request."""
     org_provider = resolve_org_completion_provider(db, organization_id)
     if org_provider is not None:
+        config = AIProviderConfigRepository(db).get_by_organization_id(organization_id)
+        spec = AI_PROVIDERS.get(config.provider) if config else None
         return AIStatus(
-            mode="ai", source="organization", provider="openrouter", model=org_provider.model_name
+            mode="ai",
+            source="organization",
+            provider=spec.label if spec else "custom",
+            model=org_provider.model_name,
         )
     if gateway.completion_provider_name != _STUB_PROVIDER_NAME:
         return AIStatus(
             mode="ai",
             source="instance",
-            provider="openrouter",
+            provider="server default",
             model=gateway.completion_model_name,
         )
     return AIStatus(mode="degraded", source="none", provider="none", model=None)

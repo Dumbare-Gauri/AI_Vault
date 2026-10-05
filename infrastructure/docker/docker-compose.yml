@@ -9,8 +9,14 @@ services:
       POSTGRES_USER: vault
       POSTGRES_PASSWORD: vault
       POSTGRES_DB: vault
+    # Remapped host-side (5436, not 5434) — a native Windows PostgreSQL
+    # service on this machine is also bound to 5434, silently swallowing
+    # host-side connections meant for this container (same class of issue
+    # as the Redis remap below: internal traffic is unaffected, every
+    # service here reaches Postgres via DATABASE_URL's `postgres:5432` on
+    # the Docker network, never through this host port).
     ports:
-      - "5434:5432"
+      - "5436:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:

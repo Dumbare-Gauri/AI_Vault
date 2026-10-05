@@ -22,7 +22,10 @@ logger = get_logger("vault_shared.connectors.google_drive")
 
 PROVIDER_NAME = "google_workspace"
 DRIVE_API_BASE = "https://www.googleapis.com/drive/v3"
+DRIVE_UPLOAD_API_BASE = "https://www.googleapis.com/upload/drive/v3"
 _REQUEST_TIMEOUT_SECONDS = 30
+_UPLOAD_TIMEOUT_SECONDS = 300
+_UPLOAD_CHUNK_BYTES = 8 * 1024 * 1024
 _STREAM_CHUNK_BYTES = 64 * 1024
 # Thumbnails are served from Google's image CDN, not the Drive API host; the
 # bearer token is only ever sent to hosts under this suffix.
@@ -288,6 +291,33 @@ class GoogleDriveClient:
             method="DELETE",
         )
 
+    def list_trashed_files(self, *, access_token: str) -> list[DriveFile]:
+        """Everything this account owns that sits in Drive's Trash — exactly
+        what `empty_trash` would permanently delete."""
+        files: list[DriveFile] = []
+        page_token: str | None = None
+        while True:
+            params: dict[str, str | int] = {
+                "pageSize": 1000,
+                "fields": f"nextPageToken,files({_FILE_FIELDS})",
+                "q": "trashed = true and 'me' in owners",
+                "spaces": "drive",
+            }
+            if page_token:
+                params["pageToken"] = page_token
+            payload = self._get(f"{DRIVE_API_BASE}/files", access_token=access_token, params=params)
+            files.extend(self._to_drive_file(item) for item in payload.get("files", []))
+            page_token = payload.get("nextPageToken")
+            if not page_token:
+                return files
+
+    def empty_drive_trash(self, *, access_token: str) -> None:
+        """Permanently deletes every file this account owns in Drive's Trash
+        (`files.emptyTrash`). Unrecoverable."""
+        self._request(
+            f"{DRIVE_API_BASE}/files/trash", access_token=access_token, params={}, method="DELETE"
+        )
+
     def update_app_properties(
         self, *, access_token: str, file_id: str, properties: dict[str, str]
     ) -> DriveFile:
@@ -354,9 +384,7 @@ class GoogleDriveClient:
         )
         return self._to_drive_file(response.json())
 
-    def create_folder(
-        self, *, access_token: str, name: str, parent_id: str | None
-    ) -> DriveFile:
+    def create_folder(self, *, access_token: str, name: str, parent_id: str | None) -> DriveFile:
         body: dict = {"name": name[:_MAX_NAME_LENGTH], "mimeType": FOLDER_MIME_TYPE}
         if parent_id is not None:
             body["parents"] = [parent_id]
@@ -416,6 +444,128 @@ class GoogleDriveClient:
             return None
         return self._get_bytes(link, access_token=access_token, params={})
 
+    def upload_file(
+        self,
+        *,
+        access_token: str,
+        name: str,
+        parent_id: str | None,
+        mime_type: str,
+        chunks: Iterator[bytes],
+    ) -> DriveFile:
+        """Drive's resumable upload protocol: one POST opens a session, then
+        the content is PUT in 8 MiB pieces (Drive requires multiples of
+        256 KiB) — never buffered whole, so archive size is bounded by the
+        user's quota, not worker memory. The total size is only declared on
+        the last piece, so `chunks` may be any stream."""
+        metadata: dict = {"name": name[:_MAX_NAME_LENGTH], "mimeType": mime_type}
+        if parent_id is not None:
+            metadata["parents"] = [parent_id]
+        started = self._request(
+            f"{DRIVE_UPLOAD_API_BASE}/files",
+            access_token=access_token,
+            params={"uploadType": "resumable", "supportsAllDrives": "true"},
+            method="POST",
+            json_body=metadata,
+        )
+        session_url = started.headers.get("Location", "")
+        started.close()
+        if (urlparse(session_url).hostname or "") != "www.googleapis.com":
+            raise _drive_error(
+                StorageUnavailableError,
+                "Google Drive did not open an upload session.",
+                provider_code="upload_not_started",
+            )
+
+        source = iter(chunks)
+        pending = b""
+        offset = 0
+        exhausted = False
+        while True:
+            while len(pending) < _UPLOAD_CHUNK_BYTES and not exhausted:
+                try:
+                    pending += next(source)
+                except StopIteration:
+                    exhausted = True
+            if exhausted:
+                body = pending
+                total = offset + len(body)
+                content_range = (
+                    f"bytes {offset}-{total - 1}/{total}" if body else f"bytes */{total}"
+                )
+            else:
+                body = pending[:_UPLOAD_CHUNK_BYTES]
+                content_range = f"bytes {offset}-{offset + len(body) - 1}/*"
+
+            response = self._put_upload_chunk(
+                session_url, access_token=access_token, body=body, content_range=content_range
+            )
+            if response.status_code in (200, 201):
+                return self._to_drive_file(
+                    self._get(
+                        f"{DRIVE_API_BASE}/files/{response.json()['id']}",
+                        access_token=access_token,
+                        params={"fields": _FILE_FIELDS, "supportsAllDrives": "true"},
+                    )
+                )
+            # 308 Resume Incomplete: `Range` says how much Drive actually kept.
+            received = response.headers.get("Range")
+            next_offset = int(received.rsplit("-", 1)[-1]) + 1 if received else offset
+            consumed = next_offset - offset
+            pending = pending[consumed:]
+            offset = next_offset
+            if exhausted and not pending:
+                raise _drive_error(
+                    StorageUnavailableError,
+                    "Google Drive did not finish the upload.",
+                    provider_code="upload_incomplete",
+                )
+
+    def _put_upload_chunk(
+        self, session_url: str, *, access_token: str, body: bytes, content_range: str
+    ) -> requests.Response:
+        try:
+            response = requests.put(
+                session_url,
+                headers={
+                    "Authorization": f"Bearer {access_token}",
+                    "Content-Range": content_range,
+                    "Content-Length": str(len(body)),
+                },
+                data=body,
+                timeout=_UPLOAD_TIMEOUT_SECONDS,
+            )
+        except requests.Timeout as exc:
+            raise _drive_error(
+                StorageUnavailableError, "Google Drive timed out.", provider_code="timeout"
+            ) from exc
+        except requests.RequestException as exc:
+            raise _drive_error(
+                StorageUnavailableError,
+                "Could not reach Google Drive.",
+                provider_code="unreachable",
+            ) from exc
+        if response.status_code != 308:
+            self._raise_for_status(response, url=session_url, content_access=False)
+        return response
+
+    def get_storage_quota(self, *, access_token: str) -> tuple[int | None, int | None, int | None]:
+        """(used bytes, total bytes, bytes in Trash). Total is None for an
+        unlimited plan — Drive omits `limit` then. Trashed files still count
+        toward `usage` until the Trash is emptied."""
+        payload = self._get(
+            f"{DRIVE_API_BASE}/about",
+            access_token=access_token,
+            params={"fields": "storageQuota(limit,usage,usageInDriveTrash)"},
+        )
+        quota = payload.get("storageQuota") or {}
+
+        def as_int(key: str) -> int | None:
+            value = quota.get(key)
+            return int(value) if value is not None else None
+
+        return as_int("usage"), as_int("limit"), as_int("usageInDriveTrash")
+
     def get_account_email(self, *, access_token: str) -> str | None:
         """A cheap authenticated probe (Drive `about`) used for health."""
         payload = self._get(
@@ -429,9 +579,7 @@ class GoogleDriveClient:
         response = self._request(url, access_token=access_token, params=params)
         return response.json()
 
-    def _patch(
-        self, url: str, *, access_token: str, params: dict, json_body: dict
-    ) -> dict:
+    def _patch(self, url: str, *, access_token: str, params: dict, json_body: dict) -> dict:
         response = self._request(
             url, access_token=access_token, params=params, method="PATCH", json_body=json_body
         )

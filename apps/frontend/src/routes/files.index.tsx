@@ -11,6 +11,7 @@ import {
   LayoutGrid,
   List,
   PencilLine,
+  Plus,
   Users,
 } from "lucide-react";
 import { useMemo, useState } from "react";
@@ -19,7 +20,14 @@ import { AppShell } from "@/components/app-shell/app-shell";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { EmptyState } from "@/components/ui/empty-state";
+import { type CreateItemKind, CreateItemDialog } from "@/components/file-explorer/create-item-dialog";
 import { MoveDialog } from "@/components/file-explorer/move-dialog";
 import { RenameDialog } from "@/components/file-explorer/rename-dialog";
 import { Input } from "@/components/ui/input";
@@ -219,6 +227,7 @@ function FilesPage() {
   const [renamingFile, setRenamingFile] = useState<FileSummary | null>(null);
   const [movingFile, setMovingFile] = useState<FileSummary | null>(null);
   const [ownership, setOwnership] = useState<OwnershipFilter>("all");
+  const [creating, setCreating] = useState<CreateItemKind | null>(null);
   const user = useAuthStore((state) => state.user);
   const canManage = user?.role === "owner" || user?.role === "admin";
 
@@ -275,6 +284,22 @@ function FilesPage() {
               Everything Vault has scanned across your connected storage.
             </p>
           </div>
+          {connector && canManage && (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button size="sm">
+                  <Plus className="size-4" /> New
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem onSelect={() => setCreating("folder")}>Folder</DropdownMenuItem>
+                <DropdownMenuItem onSelect={() => setCreating("text")}>Text file</DropdownMenuItem>
+                <DropdownMenuItem onSelect={() => setCreating("markdown")}>
+                  Markdown note
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          )}
         </div>
 
         {connectorsQuery.isLoading && (
@@ -472,6 +497,13 @@ function FilesPage() {
           onOpenChange={(open) => !open && setRenamingFile(null)}
           fileId={renamingFile.id}
           currentName={renamingFile.name}
+        />
+      )}
+      {creating && connector && (
+        <CreateItemDialog
+          kind={creating}
+          connectorId={connector.id}
+          onOpenChange={(open) => !open && setCreating(null)}
         />
       )}
       {movingFile && connector && (

@@ -408,6 +408,7 @@ def test_run_uses_the_organizations_own_ai_provider_when_configured(
         text="Acme Corp had a strong Q3.",
     )
     AIProviderConfigRepository(db).upsert(
+        provider="openrouter",
         organization_id=user.organization_id,
         api_key_encrypted=encrypt_token("sk-or-v1-org-key"),
         model_name="z-ai/glm-5.2:free",

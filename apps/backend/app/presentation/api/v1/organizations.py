@@ -55,7 +55,10 @@ def set_ai_provider_config(
     service: AIProviderConfigService = Depends(get_ai_provider_config_service),
 ) -> AIProviderConfigResponse:
     config = service.set(
-        user.organization_id, api_key=body.api_key, model_name=body.model_name
+        user.organization_id,
+        api_key=body.api_key,
+        model_name=body.model_name,
+        provider=body.provider,
     )
     return AIProviderConfigResponse.from_model(config)
 
@@ -79,6 +82,9 @@ def test_ai_provider_config(
     service: AIProviderConfigService = Depends(get_ai_provider_config_service),
 ) -> AIProviderConfigTestResponse:
     success, error = service.test(
-        user.organization_id, api_key=body.api_key, model_name=body.model_name
+        user.organization_id,
+        api_key=body.api_key,
+        model_name=body.model_name,
+        provider=body.provider,
     )
     return AIProviderConfigTestResponse(success=success, error=error)

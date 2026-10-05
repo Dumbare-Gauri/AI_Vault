@@ -38,6 +38,7 @@ from vault_shared.storage.models import (
     StorageContainer,
     StorageFile,
     StoragePermission,
+    StorageQuota,
 )
 
 # Operations that change user storage. Only `ExecutionService` may call them.
@@ -52,6 +53,7 @@ MUTATING_METHODS = frozenset(
         "permanent_delete",
         "update_metadata",
         "upload",
+        "empty_trash",
     }
 )
 
@@ -129,6 +131,12 @@ class StorageAdapter(Protocol):
 
     def get_thumbnail(self, file_id: ProviderFileId) -> bytes | None: ...
 
+    def storage_quota(self) -> StorageQuota: ...
+
+    def list_trash(self) -> list[StorageFile]:
+        """Files this account owns that sit in the provider's Trash."""
+        ...
+
     # -- mutation (Execution Engine only) -----------------------------------
 
     def rename(self, file_id: ProviderFileId, new_name: str) -> StorageFile: ...
@@ -162,6 +170,10 @@ class StorageAdapter(Protocol):
         ...
 
     def permanent_delete(self, file_id: ProviderFileId) -> None: ...
+
+    def empty_trash(self) -> None:
+        """Permanently deletes everything `list_trash` returns. Unrecoverable."""
+        ...
 
     def update_metadata(self, file_id: ProviderFileId, properties: dict[str, str]) -> StorageFile:
         """Provider-private key/value properties (for Drive, `appProperties`)."""

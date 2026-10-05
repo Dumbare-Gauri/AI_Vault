@@ -50,9 +50,7 @@ class DuplicateGroupRepository:
         self._session.flush()
         return group
 
-    def replace_members(
-        self, group: DuplicateGroup, members: list[tuple[uuid.UUID, bool]]
-    ) -> None:
+    def replace_members(self, group: DuplicateGroup, members: list[tuple[uuid.UUID, bool]]) -> None:
         """Full delete-then-insert — group membership is a pure derived
         fact recomputed from scratch every run (see `DuplicateGroupMember`
         docstring), not an audit trail worth preserving partially."""
@@ -125,6 +123,12 @@ class DuplicateGroupRepository:
             .all()
         )
         return [(file_id, size_bytes or 0) for file_id, size_bytes in rows]
+
+    def get_membership_for_file(self, file_id: uuid.UUID) -> DuplicateGroupMember | None:
+        """Used by `worker.organization.lifecycle_service` to check whether
+        one file is a non-kept duplicate — a single-file lookup, unlike
+        every other method on this repository which operates group-first."""
+        return self._session.query(DuplicateGroupMember).filter_by(file_id=file_id).first()
 
     def list_members_with_files(
         self, group_id: uuid.UUID

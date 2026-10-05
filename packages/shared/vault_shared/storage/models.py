@@ -162,6 +162,17 @@ class ConnectionHealth:
 
 
 @dataclass(frozen=True)
+class StorageQuota:
+    """Provider-reported account storage. `total_bytes` is None when the
+    provider reports no limit (e.g. an unlimited Workspace plan)."""
+
+    used_bytes: int | None
+    total_bytes: int | None
+    # Part of `used_bytes` taken by files in the provider's Trash.
+    trash_bytes: int | None = None
+
+
+@dataclass(frozen=True)
 class StoragePermission:
     """A normalized sharing entry: who has what kind of access."""
 

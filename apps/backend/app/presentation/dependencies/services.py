@@ -1,6 +1,7 @@
 from fastapi import Depends
 from sqlalchemy.orm import Session
 
+from app.application.action_service import ActionService
 from app.application.ai_provider_config_service import AIProviderConfigService
 from app.application.approval_service import ApprovalService
 from app.application.archive_service import ArchiveService
@@ -17,11 +18,14 @@ from app.application.execution_plan_service import ExecutionPlanService
 from app.application.file_service import FileService
 from app.application.intelligence_job_service import IntelligenceJobService
 from app.application.notification_service import NotificationService
+from app.application.organization_entity_service import OrganizationEntityService
+from app.application.organization_recommendation_service import OrganizationRecommendationService
 from app.application.organization_service import OrganizationService
 from app.application.recommendation_service import RecommendationService
 from app.application.scan_service import ScanService
 from app.application.search_service import SearchService
 from app.application.storage_intelligence_service import StorageIntelligenceService
+from app.application.storage_operation_service import StorageOperationService
 from app.application.workflow_execution_service import WorkflowExecutionService
 from app.application.workflow_policy_service import WorkflowPolicyService
 from app.application.workflow_service import WorkflowService
@@ -111,6 +115,22 @@ def get_recommendation_service(db: Session = Depends(get_db)) -> RecommendationS
     return RecommendationService(db)
 
 
+def get_storage_operation_service(db: Session = Depends(get_db)) -> StorageOperationService:
+    return StorageOperationService(db)
+
+
+def get_organization_entity_service(
+    db: Session = Depends(get_db),
+) -> OrganizationEntityService:
+    return OrganizationEntityService(db)
+
+
+def get_organization_recommendation_service(
+    db: Session = Depends(get_db),
+) -> OrganizationRecommendationService:
+    return OrganizationRecommendationService(db)
+
+
 def get_storage_intelligence_service(
     db: Session = Depends(get_db),
 ) -> StorageIntelligenceService:
@@ -131,6 +151,13 @@ def get_approval_service(db: Session = Depends(get_db)) -> ApprovalService:
 
 def get_execution_job_service(db: Session = Depends(get_db)) -> ExecutionJobService:
     return ExecutionJobService(db)
+
+
+def get_action_service(
+    db: Session = Depends(get_db),
+    job_service: ExecutionJobService = Depends(get_execution_job_service),
+) -> ActionService:
+    return ActionService(db, job_service=job_service)
 
 
 def get_workflow_service(db: Session = Depends(get_db)) -> WorkflowService:
@@ -155,4 +182,3 @@ def get_notification_service(db: Session = Depends(get_db)) -> NotificationServi
 
 def get_automation_template_service(db: Session = Depends(get_db)) -> AutomationTemplateService:
     return AutomationTemplateService(db)
-

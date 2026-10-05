@@ -130,6 +130,7 @@ class RecommendationService:
         context = RuleContext(
             organization_id=organization_id,
             rows=rows,
+            owned_rows=owned_rows,
             relationships=relationships,
             connector_count=len(connectors),
             embedded_file_ids={embedding.file_id for _, embedding in embeddings},
@@ -157,9 +158,7 @@ class RecommendationService:
         )
         for rule, result in fired.values():
             impact_ratio = (
-                (result.impact_value / max_impact)
-                if max_impact and result.impact_value
-                else 0.0
+                (result.impact_value / max_impact) if max_impact and result.impact_value else 0.0
             )
             priority = score_priority(
                 category=rule.category,

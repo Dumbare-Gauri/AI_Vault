@@ -4,10 +4,11 @@ from datetime import UTC, datetime
 from unittest.mock import MagicMock
 
 import pytest
+from fastapi.testclient import TestClient
+
 from app.main import app
 from app.presentation.dependencies.auth import get_current_user
 from app.presentation.dependencies.services import get_archive_service, get_file_service
-from fastapi.testclient import TestClient
 from vault_shared import NotFoundError
 
 client = TestClient(app)
@@ -95,6 +96,36 @@ class _FakeRelatedFile:
     relationship: _FakeFileRelationshipRow
 
 
+class _FakeOrganizationEntity:
+    def __init__(self, *, entity_type: str = "project", name: str = "Phoenix") -> None:
+        self.id = uuid.uuid4()
+        self.entity_type = entity_type
+        self.name = name
+
+
+@dataclass
+class _FakeFileEntityLink:
+    entity_id: uuid.UUID
+    confidence: float = 0.8
+    evidence: list = field(default_factory=list)
+    is_user_confirmed: bool = False
+    source: str = "ai_inferred"
+
+
+@dataclass
+class _FakeLinkedEntity:
+    link: _FakeFileEntityLink
+    entity: _FakeOrganizationEntity
+
+
+class _FakeFileLifecycle:
+    def __init__(self) -> None:
+        self.state = "active"
+        self.confidence = 0.8
+        self.evidence = ["Linked to an active project and modified recently."]
+        self.analyzed_at = datetime.now(UTC)
+
+
 @dataclass
 class _FakeFileDetail:
     file: _FakeFile
@@ -104,6 +135,8 @@ class _FakeFileDetail:
     intelligence: _FakeFileIntelligence | None
     knowledge_attributes: list
     related_files: list
+    entity_links: list = field(default_factory=list)
+    lifecycle: _FakeFileLifecycle | None = None
 
 
 @pytest.fixture
@@ -184,13 +217,16 @@ def test_get_file_detail_requires_authentication(fake_file_service) -> None:
 def test_get_file_detail_returns_the_full_enrichment_picture(as_member, fake_file_service) -> None:
     file = _FakeFile()
     related_file = _FakeFile(name="Report_v1.pdf")
+    entity = _FakeOrganizationEntity()
     detail = _FakeFileDetail(
         file=file,
         metadata=_FakeFileMetadata(),
         classification=_FakeFileClassification(),
         extraction=_FakeFileExtraction(),
         intelligence=_FakeFileIntelligence(),
-        knowledge_attributes=[_FakeKnowledgeAttribute(attribute_type="department", value="Finance")],
+        knowledge_attributes=[
+            _FakeKnowledgeAttribute(attribute_type="department", value="Finance")
+        ],
         related_files=[
             _FakeRelatedFile(
                 file=related_file,
@@ -199,6 +235,10 @@ def test_get_file_detail_returns_the_full_enrichment_picture(as_member, fake_fil
                 ),
             )
         ],
+        entity_links=[
+            _FakeLinkedEntity(link=_FakeFileEntityLink(entity_id=entity.id), entity=entity)
+        ],
+        lifecycle=_FakeFileLifecycle(),
     )
     fake_file_service.get_detail.return_value = detail
 
@@ -217,6 +257,9 @@ def test_get_file_detail_returns_the_full_enrichment_picture(as_member, fake_fil
     assert body["knowledge_attributes"][0]["attribute_type"] == "department"
     assert body["related_files"][0]["name"] == "Report_v1.pdf"
     assert body["related_files"][0]["relationship_type"] == "sequential_version"
+    assert body["entity_links"][0]["entity_name"] == "Phoenix"
+    assert body["entity_links"][0]["entity_type"] == "project"
+    assert body["lifecycle"]["state"] == "active"
 
 
 def test_get_file_detail_returns_not_found_for_another_organizations_file(
@@ -229,7 +272,9 @@ def test_get_file_detail_returns_not_found_for_another_organizations_file(
     assert response.status_code == 404
 
 
-def test_get_file_detail_handles_a_file_with_no_enrichment_yet(as_member, fake_file_service) -> None:
+def test_get_file_detail_handles_a_file_with_no_enrichment_yet(
+    as_member, fake_file_service
+) -> None:
     file = _FakeFile()
     detail = _FakeFileDetail(
         file=file,

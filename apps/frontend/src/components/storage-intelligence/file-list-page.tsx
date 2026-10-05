@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import type { ExecutionPlan, StorageFileListResponse } from "@vault/types";
 import { Archive, ChevronLeft, ChevronRight, FolderArchive } from "lucide-react";
@@ -13,6 +13,7 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { Skeleton } from "@/components/ui/skeleton";
 import { toast } from "@/components/ui/toaster";
 import { ApiError, apiClient } from "@/lib/api-client";
+import { trackAction } from "@/lib/storage-action";
 import { fileTypeIconElement } from "@/lib/file-icon";
 import { formatBytes } from "@/lib/format-bytes";
 import { formatRelativeTime } from "@/lib/format-relative-time";
@@ -47,7 +48,6 @@ export function StorageFileListPage({
 }: StorageFileListPageProps) {
   const [page, setPage] = useState(0);
   const [selected, setSelected] = useState<Set<string>>(new Set());
-  const queryClient = useQueryClient();
   const user = useAuthStore((state) => state.user);
   const canManage = user?.role === "owner" || user?.role === "admin";
 
@@ -93,20 +93,11 @@ export function StorageFileListPage({
         action_type: "archive",
       }),
     onSuccess: (plan) => {
-      void queryClient.invalidateQueries({ queryKey: ["execution-plans"] });
       setSelected(new Set());
-      toast.success("Moving to Trash now", {
-        description: "Recoverable from Google Drive's Trash.",
-        action: {
-          label: "View progress",
-          onClick: () => {
-            window.location.href = `/execution-plans/${plan.id}`;
-          },
-        },
-      });
+      void trackAction(plan.id, "Moving to Trash…");
     },
     onError: (error) => {
-      toast.error(error instanceof ApiError ? error.message : "Couldn't create an archive plan.");
+      toast.error(error instanceof ApiError ? error.message : "Couldn't start archiving — nothing was changed.");
     },
   });
 
@@ -117,19 +108,11 @@ export function StorageFileListPage({
         action_type: "create_archive",
       }),
     onSuccess: (plan) => {
-      void queryClient.invalidateQueries({ queryKey: ["execution-plans"] });
       setSelected(new Set());
-      toast.success("Creating archive now", {
-        action: {
-          label: "View progress",
-          onClick: () => {
-            window.location.href = `/execution-plans/${plan.id}`;
-          },
-        },
-      });
+      void trackAction(plan.id, "Creating archive…");
     },
     onError: (error) => {
-      toast.error(error instanceof ApiError ? error.message : "Couldn't create an archive plan.");
+      toast.error(error instanceof ApiError ? error.message : "Couldn't start archiving — nothing was changed.");
     },
   });
 

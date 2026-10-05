@@ -17,6 +17,7 @@ from vault_shared.db.repositories import (
     FileMetadataRepository,
     FileRelationshipRepository,
     FileRepository,
+    FolderRepository,
     StorageConnectorRepository,
     StorageSourceRepository,
 )
@@ -357,25 +358,35 @@ def test_get_detail_handles_a_file_with_no_enrichment_yet(db: Session) -> None:
 
 @requires_infra
 def test_search_folders_matches_by_name_and_excludes_non_folders(db: Session) -> None:
+    """Drive folders live in the `folders` table (that's what the scanner
+    writes); a file whose name matches is never offered as a destination."""
     user = _provision_user(db)
     connector = _provision_connector(db, organization_id=user.organization_id, user_id=user.id)
-    _provision_file(
-        db,
+    source = StorageSourceRepository(db).upsert(
         connector_id=connector.id,
-        name="Finance",
-        mime_type="application/vnd.google-apps.folder",
+        provider_drive_id="root",
+        name="My Drive",
+        drive_type=DriveType.MY_DRIVE,
     )
+    for provider_id, name in (("fld-fin", "Finance"), ("fld-mkt", "Marketing")):
+        FolderRepository(db).upsert(
+            storage_source_id=source.id,
+            provider_file_id=provider_id,
+            provider_parent_id=None,
+            parent_folder_id=None,
+            name=name,
+            path=f"/{name}",
+            owner_email="founder@acme.com",
+            is_shared=False,
+            provider_created_at=None,
+            provider_modified_at=None,
+            scanned_at=datetime.now(UTC),
+        )
     _provision_file(
         db,
         connector_id=connector.id,
         name="Finance.pdf",
         mime_type="application/pdf",
-    )
-    _provision_file(
-        db,
-        connector_id=connector.id,
-        name="Marketing",
-        mime_type="application/vnd.google-apps.folder",
     )
     service = FileService(
         db, storage=build_storage_registry(db, oauth_client=_FakeGoogleWorkspaceOAuthClient())

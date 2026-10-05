@@ -39,6 +39,7 @@ from vault_shared.storage.models import (
     StorageContainer,
     StorageFile,
     StoragePermission,
+    StorageQuota,
 )
 from vault_shared.storage.reading import read_bounded
 from vault_shared.storage.registry import (
@@ -79,6 +80,7 @@ __all__ = [
     "StorageInvalidRequestError",
     "StorageNotFoundError",
     "StoragePermission",
+    "StorageQuota",
     "StorageRateLimitedError",
     "StorageStaleRevisionError",
     "StorageUnauthorizedError",

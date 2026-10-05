@@ -110,11 +110,11 @@ class TestStatusTranslation:
 
     @pytest.mark.parametrize("header", ["soon", "-5", "Wed, 21 Oct 2026 07:28:00 GMT"])
     def test_an_unusable_retry_after_is_ignored(self, header: str) -> None:
-        with patch(
-            "requests.request", return_value=_response(429, headers={"Retry-After": header})
+        with (
+            patch("requests.request", return_value=_response(429, headers={"Retry-After": header})),
+            pytest.raises(StorageRateLimitedError) as caught,
         ):
-            with pytest.raises(StorageRateLimitedError) as caught:
-                _client().get_file(access_token=TOKEN, file_id="f1")
+            _client().get_file(access_token=TOKEN, file_id="f1")
 
         assert caught.value.retry_after_seconds is None
 
@@ -213,6 +213,23 @@ class TestStreaming:
 
 
 class TestAddedOperations:
+    def test_empty_trash_deletes_the_trash_collection(self) -> None:
+        with patch("requests.request", return_value=_response(204)) as request:
+            _client().empty_drive_trash(access_token=TOKEN)
+
+        assert request.call_args.args[0] == "DELETE"
+        assert request.call_args.args[1].endswith("/files/trash")
+
+    def test_listing_trash_asks_only_for_this_accounts_trashed_files(self) -> None:
+        trashed = {**FILE_JSON, "trashed": True}
+        with patch(
+            "requests.request", return_value=_response(200, {"files": [trashed]})
+        ) as request:
+            files = _client().list_trashed_files(access_token=TOKEN)
+
+        assert request.call_args.kwargs["params"]["q"] == "trashed = true and 'me' in owners"
+        assert [f.id for f in files] == ["f1"]
+
     def test_copy_posts_the_new_name_and_parent(self) -> None:
         with patch("requests.request", return_value=_response(200, FILE_JSON)) as request:
             copied = _client().copy_file(
@@ -299,3 +316,78 @@ class TestAddedOperations:
             "requests.request", return_value=_response(200, {"user": {"emailAddress": "o@x.com"}})
         ):
             assert _client().get_account_email(access_token=TOKEN) == "o@x.com"
+
+
+class TestResumableUpload:
+    SESSION = "https://www.googleapis.com/upload/drive/v3/files?upload_id=xyz"
+
+    def _run(self, chunks: list[bytes], put_responses: list[MagicMock]):
+        start = _response(200, headers={"Location": self.SESSION})
+        metadata = _response(200, {**FILE_JSON, "md5Checksum": "abc", "size": "3"})
+        with (
+            patch("vault_shared.connectors.google_drive.requests.request") as request,
+            patch("vault_shared.connectors.google_drive.requests.put") as put,
+            patch("vault_shared.connectors.google_drive._UPLOAD_CHUNK_BYTES", 4),
+        ):
+            request.side_effect = [start, metadata]
+            put.side_effect = put_responses
+            uploaded = _client().upload_file(
+                access_token=TOKEN,
+                name="a.zip",
+                parent_id="p1",
+                mime_type="application/zip",
+                chunks=iter(chunks),
+            )
+        return uploaded, request, put
+
+    def test_streams_in_chunks_and_declares_the_total_only_on_the_last(self) -> None:
+        uploaded, _request, put = self._run(
+            [b"abcdef", b"gh", b"ij"],
+            [
+                _response(308, headers={"Range": "bytes=0-3"}),
+                _response(308, headers={"Range": "bytes=0-7"}),
+                _response(200, {"id": "f1"}),
+            ],
+        )
+
+        ranges = [call.kwargs["headers"]["Content-Range"] for call in put.call_args_list]
+        assert ranges == ["bytes 0-3/*", "bytes 4-7/*", "bytes 8-9/10"]
+        assert b"".join(call.kwargs["data"] for call in put.call_args_list) == b"abcdefghij"
+        assert uploaded.id == "f1"
+        assert uploaded.checksum == "abc"
+
+    def test_resends_only_what_drive_did_not_keep(self) -> None:
+        _uploaded, _request, put = self._run(
+            [b"abcdefgh"],
+            [
+                _response(308, headers={"Range": "bytes=0-1"}),
+                _response(308, headers={"Range": "bytes=0-5"}),
+                _response(200, {"id": "f1"}),
+            ],
+        )
+
+        sent = [call.kwargs["data"] for call in put.call_args_list]
+        assert sent == [b"abcd", b"cdef", b"gh"]
+
+    def test_a_session_url_on_an_unexpected_host_never_receives_the_token(self) -> None:
+        start = _response(200, headers={"Location": "https://evil.example/upload"})
+        with (
+            patch("vault_shared.connectors.google_drive.requests.request", return_value=start),
+            patch("vault_shared.connectors.google_drive.requests.put") as put,
+            pytest.raises(StorageUnavailableError),
+        ):
+            _client().upload_file(
+                access_token=TOKEN,
+                name="a",
+                parent_id=None,
+                mime_type="text/plain",
+                chunks=iter([b"x"]),
+            )
+        put.assert_not_called()
+
+    def test_quota_exceeded_is_a_normalized_error(self) -> None:
+        with pytest.raises(StorageError):
+            self._run(
+                [b"abc"],
+                [_response(403, {"error": {"errors": [{"reason": "storageQuotaExceeded"}]}})],
+            )

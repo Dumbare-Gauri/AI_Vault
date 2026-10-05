@@ -45,7 +45,6 @@ from vault_shared.storage.errors import (
     StorageNotFoundError,
     StorageUnauthorizedError,
     StorageUnavailableError,
-    StorageUnsupportedError,
 )
 from vault_shared.storage.models import (
     ByteStream,
@@ -61,6 +60,7 @@ from vault_shared.storage.models import (
     StorageContainer,
     StorageFile,
     StoragePermission,
+    StorageQuota,
 )
 
 _PERSONAL_CONTAINER_ID = "root"
@@ -105,9 +105,7 @@ GOOGLE_DRIVE_CAPABILITIES = StorageCapabilities(
     supports_permanent_delete=True,
     supports_copy=True,
     supports_create_folder=True,
-    # Drive can accept uploads, but this adapter does not implement them yet —
-    # a capability is only claimed for what actually works.
-    supports_upload=False,
+    supports_upload=True,
     supports_download=True,
     supports_change_feed=True,
     supports_thumbnails=True,
@@ -296,9 +294,7 @@ class GoogleDriveAdapter:
 
     def get_permissions(self, file_id: ProviderFileId) -> list[StoragePermission]:
         with self._translated():
-            permissions = self._client.list_permissions(
-                access_token=self._token(), file_id=file_id
-            )
+            permissions = self._client.list_permissions(access_token=self._token(), file_id=file_id)
         return [_to_permission(item) for item in permissions]
 
     # -- reading ------------------------------------------------------------
@@ -324,6 +320,18 @@ class GoogleDriveAdapter:
     def get_thumbnail(self, file_id: ProviderFileId) -> bytes | None:
         with self._translated():
             return self._client.get_thumbnail(access_token=self._token(), file_id=file_id)
+
+    def list_trash(self) -> list[StorageFile]:
+        with self._translated():
+            return [
+                self._to_storage_file(item)
+                for item in self._client.list_trashed_files(access_token=self._token())
+            ]
+
+    def storage_quota(self) -> StorageQuota:
+        with self._translated():
+            used, total, trash = self._client.get_storage_quota(access_token=self._token())
+        return StorageQuota(used_bytes=used, total_bytes=total, trash_bytes=trash)
 
     # -- mutation (Execution Engine only) -----------------------------------
 
@@ -386,14 +394,16 @@ class GoogleDriveAdapter:
     def restore(self, file_id: ProviderFileId) -> StorageFile:
         with self._translated():
             return self._to_storage_file(
-                self._client.set_trashed(
-                    access_token=self._token(), file_id=file_id, trashed=False
-                )
+                self._client.set_trashed(access_token=self._token(), file_id=file_id, trashed=False)
             )
 
     def permanent_delete(self, file_id: ProviderFileId) -> None:
         with self._translated():
             self._client.delete_file(access_token=self._token(), file_id=file_id)
+
+    def empty_trash(self) -> None:
+        with self._translated():
+            self._client.empty_drive_trash(access_token=self._token())
 
     def update_metadata(self, file_id: ProviderFileId, properties: dict[str, str]) -> StorageFile:
         with self._translated():
@@ -411,9 +421,16 @@ class GoogleDriveAdapter:
         mime_type: str,
         parent_id: ProviderFileId | None = None,
     ) -> StorageFile:
-        raise StorageUnsupportedError(
-            "Uploading is not implemented for Google Drive.", provider=self.provider
-        )
+        with self._translated():
+            return self._to_storage_file(
+                self._client.upload_file(
+                    access_token=self._token(),
+                    name=name,
+                    parent_id=parent_id,
+                    mime_type=mime_type,
+                    chunks=content,
+                )
+            )
 
 
 def _to_permission(item: DrivePermission) -> StoragePermission:
@@ -421,5 +438,3 @@ def _to_permission(item: DrivePermission) -> StoragePermission:
     return StoragePermission(
         kind=item.type, role=_ROLE_MAP.get(item.role, item.role), principal=principal
     )
-
-

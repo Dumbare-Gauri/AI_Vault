@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute, redirect } from "@tanstack/react-router";
 import type { Connector, InitiateConnectResponse } from "@vault/types";
-import { AlertTriangle, Cloud, Link2 } from "lucide-react";
+import { AlertTriangle, Cloud, Link2, Plus } from "lucide-react";
 import { useState } from "react";
 
 import { AppShell } from "@/components/app-shell/app-shell";
@@ -12,6 +12,7 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { Skeleton } from "@/components/ui/skeleton";
 import { apiClient } from "@/lib/api-client";
 import { connectorStatusBadgeVariant } from "@/lib/connector-status";
+import { formatBytes } from "@/lib/format-bytes";
 import { formatRelativeTime } from "@/lib/format-relative-time";
 import { useAuthStore } from "@/stores/auth-store";
 
@@ -23,6 +24,8 @@ export const Route = createFileRoute("/storage-connections")({
   },
   component: StorageConnectionsPage,
 });
+
+const UPCOMING_PROVIDERS = ["Microsoft OneDrive", "Dropbox", "Local storage"];
 
 function StorageConnectionsPage() {
   const queryClient = useQueryClient();
@@ -77,7 +80,7 @@ function StorageConnectionsPage() {
           <EmptyState
             icon={Cloud}
             title="No storage connected yet"
-            description="Connect Google Workspace to let Vault scan and understand your files."
+            description="Add a storage account below to let AI Vault understand your files."
           />
         )}
 
@@ -85,14 +88,25 @@ function StorageConnectionsPage() {
           <Card key={connector.id} className="p-4">
             <div className="flex items-center justify-between">
               <div>
-                <p className="font-medium">Google Workspace</p>
+                <p className="font-medium">
+                  {connector.display_name ?? connector.provider_name}
+                </p>
                 <p className="text-sm text-muted-foreground">
                   {connector.account_email ?? "—"}
                   {connector.workspace_domain ? ` (${connector.workspace_domain})` : ""}
                 </p>
                 <p className="text-xs text-muted-foreground">
                   Last synced:{" "}
-                  {connector.last_verified_at ? formatRelativeTime(connector.last_verified_at) : "never"}
+                  {connector.last_synced_at ? formatRelativeTime(connector.last_synced_at) : "never"}
+                  {connector.storage_used_bytes !== null && (
+                    <>
+                      {" · "}
+                      {formatBytes(connector.storage_used_bytes)}
+                      {connector.storage_total_bytes !== null
+                        ? ` of ${formatBytes(connector.storage_total_bytes)} used`
+                        : " used"}
+                    </>
+                  )}
                 </p>
               </div>
               <Badge variant={connectorStatusBadgeVariant(connector.status)} className="capitalize">
@@ -164,11 +178,38 @@ function StorageConnectionsPage() {
           </Card>
         ))}
 
-        {canManage && !hasActiveGoogleConnector && (
-          <Button className="w-fit" onClick={() => connectMutation.mutate()} disabled={connectMutation.isPending}>
-            <Link2 className="size-4" />
-            {connectMutation.isPending ? "Redirecting…" : "Connect Google Workspace"}
-          </Button>
+        {canManage && (
+          <section className="mt-2 flex flex-col gap-3">
+            <h2 className="flex items-center gap-2 text-base font-semibold">
+              <Plus className="size-4" /> Add storage
+            </h2>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <Card className="flex items-center justify-between gap-3 p-4">
+                <div>
+                  <p className="font-medium">Google Drive</p>
+                  <p className="text-xs text-muted-foreground">My Drive and shared drives</p>
+                </div>
+                {hasActiveGoogleConnector ? (
+                  <Badge variant="success">Connected</Badge>
+                ) : (
+                  <Button
+                    size="sm"
+                    onClick={() => connectMutation.mutate()}
+                    disabled={connectMutation.isPending}
+                  >
+                    <Link2 className="size-4" />
+                    {connectMutation.isPending ? "Redirecting…" : "Connect"}
+                  </Button>
+                )}
+              </Card>
+              {UPCOMING_PROVIDERS.map((provider) => (
+                <Card key={provider} className="flex items-center justify-between gap-3 p-4 opacity-70">
+                  <p className="font-medium">{provider}</p>
+                  <Badge variant="outline">Coming soon</Badge>
+                </Card>
+              ))}
+            </div>
+          </section>
         )}
         {connectMutation.isError && (
           <p className="text-sm text-destructive">Couldn&rsquo;t start the connection. Please try again.</p>

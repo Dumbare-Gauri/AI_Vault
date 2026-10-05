@@ -3,7 +3,7 @@ import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import DateTime, ForeignKey, String, UniqueConstraint, func
+from sqlalchemy import BigInteger, DateTime, ForeignKey, String, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -19,6 +19,15 @@ class ConnectorProvider(enum.StrEnum):
     never a migration."""
 
     GOOGLE_WORKSPACE = "google_workspace"
+
+
+_PROVIDER_DISPLAY_NAMES: dict[str, str] = {ConnectorProvider.GOOGLE_WORKSPACE: "Google Drive"}
+
+
+def provider_display_name(provider: str) -> str:
+    """What a user calls the storage a connection points at — the one place
+    a provider id becomes words, so business code never names a provider."""
+    return _PROVIDER_DISPLAY_NAMES.get(provider, "your storage")
 
 
 class ConnectorStatus(enum.StrEnum):
@@ -73,6 +82,15 @@ class StorageConnector(Base):
     last_failed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_error: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    display_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # Provider-reported account storage, refreshed on verify and after each
+    # scan. `storage_total_bytes` stays None for an unlimited plan.
+    storage_used_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    storage_total_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    storage_trash_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    quota_checked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(

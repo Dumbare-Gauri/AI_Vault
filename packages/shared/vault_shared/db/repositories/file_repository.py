@@ -4,19 +4,21 @@ from datetime import UTC, datetime
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Query, Session
 
+from vault_shared.db.like import escape_like
 from vault_shared.db.models import (
     Embedding,
     ExtractionStatus,
     File,
     FileClassification,
+    FileEntityLink,
     FileExtraction,
     FileIntelligence,
     FileMetadata,
-    KnowledgeAttribute,
+    OrganizationEntity,
     StorageConnector,
     StorageSource,
 )
-from vault_shared.storage.models import FOLDER_MIME_TYPE
+from vault_shared.search.file_query import FILE_CATEGORIES, FileQuery
 
 
 class FileRepository:
@@ -172,8 +174,57 @@ class FileRepository:
         file.permanently_deleted_at = datetime.now(UTC)
         self._session.flush()
 
+    def mirror_location(
+        self,
+        file: File,
+        *,
+        name: str,
+        provider_parent_id: str | None,
+        parent_folder_id: uuid.UUID | None,
+        path: str,
+    ) -> None:
+        """Called only by `ExecutionService` with the name/parent the
+        provider reported after a rename or move — the mirror follows the
+        provider, never the other way round."""
+        file.name = name
+        file.provider_parent_id = provider_parent_id
+        file.parent_folder_id = parent_folder_id
+        file.path = path[:4096]
+        self._session.flush()
+
+    def record_observed_trash(self, *, storage_source_id: uuid.UUID, provider_file_id: str) -> bool:
+        """The scanner saw this file in the provider's Trash. The row is kept
+        (not deleted) so its history, Restore and Undo keep working; it is
+        excluded from listings by `trashed`. Returns whether a row existed."""
+        file = self.get_by_source_and_provider_id(
+            storage_source_id=storage_source_id, provider_file_id=provider_file_id
+        )
+        if file is None:
+            return False
+        file.trashed = True
+        self._session.flush()
+        return True
+
     def count_for_source(self, storage_source_id: uuid.UUID) -> int:
         return self._session.query(File).filter_by(storage_source_id=storage_source_id).count()
+
+    def record_observed_removal(
+        self, *, storage_source_id: uuid.UUID, provider_file_id: str
+    ) -> bool:
+        """The scanner saw this file disappear from the provider for good. The
+        row is kept and marked deleted rather than removed, so the actions
+        recorded against it (and their history) survive. Returns whether a
+        row existed."""
+        file = self.get_by_source_and_provider_id(
+            storage_source_id=storage_source_id, provider_file_id=provider_file_id
+        )
+        if file is None:
+            return False
+        file.trashed = True
+        if file.permanently_deleted_at is None:
+            file.permanently_deleted_at = datetime.now(UTC)
+        self._session.flush()
+        return True
 
     def delete_by_source_and_provider_id(
         self, *, storage_source_id: uuid.UUID, provider_file_id: str
@@ -267,26 +318,6 @@ class FileRepository:
 
     def count_trashed_for_connector(self, connector_id: uuid.UUID) -> int:
         return self._trashed_for_connector(connector_id).count()
-
-    def search_folders_for_connector(
-        self, connector_id: uuid.UUID, *, query: str, limit: int
-    ) -> list[File]:
-        """Backs the Files browser's "Move to folder" picker — deliberately
-        not a full folder-tree browse (out of scope for this round, see the
-        Files browser's flat listing), just a name search restricted to
-        folder-mime-type rows so the destination `provider_file_id` for a
-        `MOVE_FILE` step can be picked without one. `_for_connector`
-        already excludes trashed rows — nothing should be moved into
-        Drive's Trash this way."""
-        pattern = f"%{query.strip()}%"
-        return (
-            self._for_connector(connector_id)
-            .filter(File.mime_type == FOLDER_MIME_TYPE)
-            .filter(File.name.ilike(pattern))
-            .order_by(File.name)
-            .limit(limit)
-            .all()
-        )
 
     def list_all_for_connector(self, connector_id: uuid.UUID) -> list[File]:
         """Unpaginated — used only by `RelationshipDiscoveryService`, which
@@ -385,36 +416,88 @@ class FileRepository:
             .all()
         )
 
-    def search_for_organization(
-        self, organization_id: uuid.UUID, query_text: str, *, limit: int
-    ) -> list[File]:
-        """The metadata half of `SearchService`'s hybrid search (Phase 6
-        spec: "avoid relying exclusively on vector similarity") — a plain
-        substring match across a file's name and the Knowledge Engine's own
-        inferred fields (owner/sharing summaries, naming pattern, knowledge
-        attribute values), scoped to one organization the same way every
-        other cross-connector query in this repository is."""
-        pattern = f"%{query_text}%"
-        return (
-            self._session.query(File)
+    def query_files(
+        self, organization_id: uuid.UUID, query: FileQuery
+    ) -> tuple[list[tuple[File, StorageConnector]], int]:
+        """Executes a structured `FileQuery` — every condition is a bound
+        parameter, never interpolated SQL. Free text is split into words and
+        every word must match the file's name, its path (so folder names
+        count), or the name of a project/client/campaign it is linked to.
+        Trashed and permanently deleted files are never returned."""
+        base = (
+            self._session.query(File, StorageConnector)
             .join(StorageSource, File.storage_source_id == StorageSource.id)
             .join(StorageConnector, StorageSource.connector_id == StorageConnector.id)
-            .outerjoin(FileMetadata, FileMetadata.file_id == File.id)
-            .outerjoin(KnowledgeAttribute, KnowledgeAttribute.file_id == File.id)
             .filter(
                 StorageConnector.organization_id == organization_id,
-                or_(
-                    File.name.ilike(pattern),
-                    FileMetadata.owner_summary.ilike(pattern),
-                    FileMetadata.sharing_summary.ilike(pattern),
-                    FileMetadata.naming_pattern.ilike(pattern),
-                    KnowledgeAttribute.value.ilike(pattern),
-                ),
+                File.trashed.is_(False),
+                File.permanently_deleted_at.is_(None),
             )
-            .distinct()
-            .limit(limit)
-            .all()
         )
+        for token in query.text.split():
+            pattern = f"%{escape_like(token)}%"
+            entity_match = (
+                self._session.query(FileEntityLink.id)
+                .join(OrganizationEntity, OrganizationEntity.id == FileEntityLink.entity_id)
+                .filter(
+                    FileEntityLink.file_id == File.id,
+                    OrganizationEntity.name.ilike(pattern, escape="\\"),
+                )
+                .exists()
+            )
+            base = base.filter(
+                or_(
+                    File.name.ilike(pattern, escape="\\"),
+                    File.path.ilike(pattern, escape="\\"),
+                    entity_match,
+                )
+            )
+
+        type_conditions = []
+        for category in query.categories:
+            extensions, mime_prefixes = FILE_CATEGORIES.get(category, (frozenset(), ()))
+            type_conditions += [File.name.ilike(f"%.{ext}") for ext in sorted(extensions)]
+            type_conditions += [File.mime_type.startswith(prefix) for prefix in mime_prefixes]
+        type_conditions += [
+            File.name.ilike(f"%.{escape_like(ext)}", escape="\\") for ext in query.extensions
+        ]
+        if type_conditions:
+            base = base.filter(or_(*type_conditions))
+
+        if query.size_min is not None:
+            base = base.filter(File.size_bytes >= query.size_min)
+        if query.size_max is not None:
+            base = base.filter(File.size_bytes <= query.size_max)
+        if query.modified_after is not None:
+            base = base.filter(File.provider_modified_at >= query.modified_after)
+        if query.modified_before is not None:
+            base = base.filter(File.provider_modified_at < query.modified_before)
+        if query.folder:
+            base = base.filter(File.path.ilike(f"%/{escape_like(query.folder)}/%", escape="\\"))
+        if query.connector_id:
+            base = base.filter(StorageConnector.id == uuid.UUID(query.connector_id))
+        if query.ownership == "mine":
+            base = base.filter(File.owner_email == StorageConnector.account_email)
+        elif query.ownership == "shared":
+            base = base.filter(
+                or_(File.owner_email.is_(None), File.owner_email != StorageConnector.account_email)
+            )
+
+        total = base.count()
+        if query.sort == "largest":
+            base = base.order_by(File.size_bytes.desc().nullslast())
+        elif query.sort == "oldest":
+            base = base.order_by(File.provider_modified_at.asc().nullslast())
+        elif query.sort == "newest" or not query.text:
+            base = base.order_by(File.provider_modified_at.desc().nullslast())
+        else:
+            first_word = f"%{escape_like(query.text.split()[0])}%"
+            base = base.order_by(
+                File.name.ilike(first_word, escape="\\").desc(),
+                File.provider_modified_at.desc().nullslast(),
+            )
+        rows = base.limit(query.limit).offset(query.offset).all()
+        return [(file, connector) for file, connector in rows], total
 
     def list_recently_modified_for_organization(
         self, organization_id: uuid.UUID, *, limit: int = 10
@@ -464,9 +547,7 @@ class FileRepository:
             .join(StorageConnector, StorageSource.connector_id == StorageConnector.id)
             .outerjoin(FileMetadata, FileMetadata.file_id == File.id)
             .outerjoin(FileClassification, FileClassification.file_id == File.id)
-            .filter(
-                StorageConnector.organization_id == organization_id, File.trashed.is_(False)
-            )
+            .filter(StorageConnector.organization_id == organization_id, File.trashed.is_(False))
             .all()
         )
         return [
@@ -504,6 +585,27 @@ class FileRepository:
                 File.trashed.is_(False),
                 File.owner_email == StorageConnector.account_email,
             )
+        )
+
+    def list_signal_bearing_for_organization(self, organization_id: uuid.UUID) -> list[File]:
+        """Files with at least one real knowledge signal (a deterministic
+        classification, or successfully extracted text) — the candidate
+        pool `worker.organization.entity_clustering` clusters over. A file
+        with neither has nothing for clustering or entity inference to
+        reason about, so excluding it up front bounds both the clustering
+        graph and the GLM call count for free, without ever concluding
+        anything false about it (it simply stays `UNKNOWN`)."""
+        return (
+            self._for_organization(organization_id)
+            .outerjoin(FileClassification, FileClassification.file_id == File.id)
+            .outerjoin(FileExtraction, FileExtraction.file_id == File.id)
+            .filter(
+                or_(
+                    FileClassification.file_id.isnot(None),
+                    FileExtraction.status == ExtractionStatus.SUCCESS,
+                )
+            )
+            .all()
         )
 
     def list_all_for_organization(self, organization_id: uuid.UUID) -> list[File]:
@@ -563,22 +665,20 @@ class FileRepository:
     def list_old_for_organization(
         self, organization_id: uuid.UUID, *, older_than: datetime, limit: int, offset: int
     ) -> tuple[list[File], int]:
-        """"Old" = content staleness, judged by `provider_modified_at`
+        """ "Old" = content staleness, judged by `provider_modified_at`
         alone (Phase 1 spec §9) — deliberately distinct from "inactive"
         below, which also considers view activity."""
         query = self._for_organization(organization_id).filter(
             File.provider_modified_at.isnot(None), File.provider_modified_at < older_than
         )
         total = query.count()
-        items = (
-            query.order_by(File.provider_modified_at.asc()).limit(limit).offset(offset).all()
-        )
+        items = query.order_by(File.provider_modified_at.asc()).limit(limit).offset(offset).all()
         return items, total
 
     def list_inactive_for_organization(
         self, organization_id: uuid.UUID, *, inactive_since: datetime, limit: int, offset: int
     ) -> tuple[list[File], int]:
-        """"Inactive" = usage staleness, judged by whichever of
+        """ "Inactive" = usage staleness, judged by whichever of
         `provider_modified_at`/`provider_viewed_at` is more recent (Phase 1
         spec §10) — a file only qualifies if at least one of those
         timestamps is known and it's older than the cutoff; a file with

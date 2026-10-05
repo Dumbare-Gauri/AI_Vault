@@ -1,4 +1,4 @@
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import type { Citation, ExecutionPlan } from "@vault/types";
 import { Archive, ChevronDown, ChevronUp, FolderArchive } from "lucide-react";
@@ -8,8 +8,8 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Table, TableBody, TableCell, TableRow } from "@/components/ui/table";
-import { toast } from "@/components/ui/toaster";
 import { ApiError, apiClient } from "@/lib/api-client";
+import { trackAction } from "@/lib/storage-action";
 import { assistantToolLabel } from "@/lib/assistant-tool";
 import { fileTypeIconElement } from "@/lib/file-icon";
 import { formatBytes } from "@/lib/format-bytes";
@@ -30,7 +30,6 @@ export function AIFileResultList({
   citations: Citation[];
   toolName: string | null;
 }) {
-  const queryClient = useQueryClient();
   const user = useAuthStore((state) => state.user);
   const canManage = user?.role === "owner" || user?.role === "admin";
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -45,17 +44,8 @@ export function AIFileResultList({
         action_type: "archive",
       }),
     onSuccess: (plan) => {
-      void queryClient.invalidateQueries({ queryKey: ["execution-plans"] });
       setSelected(new Set());
-      toast.success("Moving to Trash now", {
-        description: "Recoverable from Google Drive's Trash.",
-        action: {
-          label: "View progress",
-          onClick: () => {
-            window.location.href = `/execution-plans/${plan.id}`;
-          },
-        },
-      });
+      void trackAction(plan.id, "Moving to Trash…");
     },
   });
 
@@ -66,16 +56,8 @@ export function AIFileResultList({
         action_type: "create_archive",
       }),
     onSuccess: (plan) => {
-      void queryClient.invalidateQueries({ queryKey: ["execution-plans"] });
       setSelected(new Set());
-      toast.success("Creating archive now", {
-        action: {
-          label: "View progress",
-          onClick: () => {
-            window.location.href = `/execution-plans/${plan.id}`;
-          },
-        },
-      });
+      void trackAction(plan.id, "Creating archive…");
     },
   });
 
@@ -187,7 +169,7 @@ export function AIFileResultList({
         <p className="mt-2 text-xs text-destructive">
           {(archiveMutation.error ?? createArchiveMutation.error) instanceof ApiError
             ? (archiveMutation.error ?? createArchiveMutation.error)?.message
-            : "Couldn't create a plan for these files."}
+            : "Couldn't start that — nothing was changed."}
         </p>
       )}
       {canManage && selected.size === 0 && (

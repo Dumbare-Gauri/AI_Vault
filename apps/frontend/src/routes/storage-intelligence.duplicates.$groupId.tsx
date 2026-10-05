@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { Link, createFileRoute, redirect } from "@tanstack/react-router";
 import type { DuplicateGroupDetail, ExecutionPlan } from "@vault/types";
 import { CheckCircle2, ChevronLeft, Sparkles, Trash2 } from "lucide-react";
@@ -11,6 +11,7 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { Skeleton } from "@/components/ui/skeleton";
 import { toast } from "@/components/ui/toaster";
 import { ApiError, apiClient } from "@/lib/api-client";
+import { trackAction } from "@/lib/storage-action";
 import { fileTypeIconElement } from "@/lib/file-icon";
 import { formatBytes } from "@/lib/format-bytes";
 import { formatRelativeTime } from "@/lib/format-relative-time";
@@ -28,7 +29,6 @@ export const Route = createFileRoute("/storage-intelligence/duplicates/$groupId"
 
 function DuplicateGroupDetailPage() {
   const { groupId } = Route.useParams();
-  const queryClient = useQueryClient();
   const user = useAuthStore((state) => state.user);
   const canManage = user?.role === "owner" || user?.role === "admin";
 
@@ -41,22 +41,13 @@ function DuplicateGroupDetailPage() {
     mutationFn: () =>
       apiClient.post<ExecutionPlan>("/v1/execution-plans", { duplicate_group_id: groupId }),
     onSuccess: (plan) => {
-      void queryClient.invalidateQueries({ queryKey: ["execution-plans"] });
-      toast.success("Moving to Trash now", {
-        description: "Recoverable from Google Drive's Trash, or rolled back in Vault.",
-        action: {
-          label: "View progress",
-          onClick: () => {
-            window.location.href = `/execution-plans/${plan.id}`;
-          },
-        },
-      });
+      void trackAction(plan.id, "Cleaning up duplicates…");
     },
     onError: (error) => {
       toast.error(
         error instanceof ApiError
           ? error.message
-          : "Couldn't create a removal plan for this duplicate group.",
+          : "Couldn't start — nothing was changed.",
       );
     },
   });

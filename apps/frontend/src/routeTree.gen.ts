@@ -10,17 +10,12 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
-import { Route as ApprovalsRouteImport } from './routes/approvals'
-import { Route as AutomationRouteImport } from './routes/automation'
-import { Route as AutomationTemplatesRouteImport } from './routes/automation-templates'
 import { Route as ChatRouteImport } from './routes/chat'
 import { Route as DashboardRouteImport } from './routes/dashboard'
-import { Route as ExecutionJobsRouteImport } from './routes/execution-jobs'
-import { Route as ExecutionPlansRouteImport } from './routes/execution-plans'
 import { Route as FilesRouteImport } from './routes/files'
 import { Route as LoginRouteImport } from './routes/login'
-import { Route as NotificationsRouteImport } from './routes/notifications'
 import { Route as OrganizationRouteImport } from './routes/organization'
+import { Route as OrganizationRecommendationsRouteImport } from './routes/organization-recommendations'
 import { Route as ProfileRouteImport } from './routes/profile'
 import { Route as RecommendationsRouteImport } from './routes/recommendations'
 import { Route as ScansRouteImport } from './routes/scans'
@@ -28,19 +23,14 @@ import { Route as SearchRouteImport } from './routes/search'
 import { Route as StorageConnectionsRouteImport } from './routes/storage-connections'
 import { Route as StorageIntelligenceRouteImport } from './routes/storage-intelligence'
 import { Route as UnauthorizedRouteImport } from './routes/unauthorized'
-import { Route as WorkflowExecutionsRouteImport } from './routes/workflow-executions'
-import { Route as WorkflowPoliciesRouteImport } from './routes/workflow-policies'
-import { Route as WorkflowsRouteImport } from './routes/workflows'
 import { Route as ArchivesIndexRouteImport } from './routes/archives.index'
 import { Route as ArchivesArchiveIdRouteImport } from './routes/archives.$archiveId'
 import { Route as ChatIndexRouteImport } from './routes/chat.index'
 import { Route as ChatConversationIdRouteImport } from './routes/chat.$conversationId'
-import { Route as ExecutionJobsIndexRouteImport } from './routes/execution-jobs.index'
-import { Route as ExecutionJobsExecutionJobIdRouteImport } from './routes/execution-jobs.$executionJobId'
-import { Route as ExecutionPlansIndexRouteImport } from './routes/execution-plans.index'
-import { Route as ExecutionPlansExecutionPlanIdRouteImport } from './routes/execution-plans.$executionPlanId'
 import { Route as FilesIndexRouteImport } from './routes/files.index'
 import { Route as FilesFileIdRouteImport } from './routes/files.$fileId'
+import { Route as OrganizationRecommendationsIndexRouteImport } from './routes/organization-recommendations.index'
+import { Route as OrganizationRecommendationsRecommendationIdRouteImport } from './routes/organization-recommendations.$recommendationId'
 import { Route as RecommendationsIndexRouteImport } from './routes/recommendations.index'
 import { Route as RecommendationsRecommendationIdRouteImport } from './routes/recommendations.$recommendationId'
 import { Route as StorageIntelligenceIndexRouteImport } from './routes/storage-intelligence.index'
@@ -50,33 +40,13 @@ import { Route as StorageIntelligenceInactiveFilesRouteImport } from './routes/s
 import { Route as StorageIntelligenceLargeFilesRouteImport } from './routes/storage-intelligence.large-files'
 import { Route as StorageIntelligenceOldFilesRouteImport } from './routes/storage-intelligence.old-files'
 import { Route as TrashIndexRouteImport } from './routes/trash.index'
-import { Route as WorkflowExecutionsWorkflowExecutionIdRouteImport } from './routes/workflow-executions.$workflowExecutionId'
-import { Route as WorkflowsIndexRouteImport } from './routes/workflows.index'
-import { Route as WorkflowsWorkflowIdRouteImport } from './routes/workflows.$workflowId'
 import { Route as ConnectorsGoogleCallbackRouteImport } from './routes/connectors.google.callback'
 import { Route as StorageIntelligenceDuplicatesIndexRouteImport } from './routes/storage-intelligence.duplicates.index'
 import { Route as StorageIntelligenceDuplicatesGroupIdRouteImport } from './routes/storage-intelligence.duplicates.$groupId'
-import { Route as WorkflowsWorkflowIdIndexRouteImport } from './routes/workflows.$workflowId.index'
-import { Route as WorkflowsWorkflowIdBuilderRouteImport } from './routes/workflows.$workflowId.builder'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const ApprovalsRoute = ApprovalsRouteImport.update({
-  id: '/approvals',
-  path: '/approvals',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const AutomationRoute = AutomationRouteImport.update({
-  id: '/automation',
-  path: '/automation',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const AutomationTemplatesRoute = AutomationTemplatesRouteImport.update({
-  id: '/automation-templates',
-  path: '/automation-templates',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ChatRoute = ChatRouteImport.update({
@@ -89,16 +59,6 @@ const DashboardRoute = DashboardRouteImport.update({
   path: '/dashboard',
   getParentRoute: () => rootRouteImport,
 } as any)
-const ExecutionJobsRoute = ExecutionJobsRouteImport.update({
-  id: '/execution-jobs',
-  path: '/execution-jobs',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const ExecutionPlansRoute = ExecutionPlansRouteImport.update({
-  id: '/execution-plans',
-  path: '/execution-plans',
-  getParentRoute: () => rootRouteImport,
-} as any)
 const FilesRoute = FilesRouteImport.update({
   id: '/files',
   path: '/files',
@@ -109,16 +69,17 @@ const LoginRoute = LoginRouteImport.update({
   path: '/login',
   getParentRoute: () => rootRouteImport,
 } as any)
-const NotificationsRoute = NotificationsRouteImport.update({
-  id: '/notifications',
-  path: '/notifications',
-  getParentRoute: () => rootRouteImport,
-} as any)
 const OrganizationRoute = OrganizationRouteImport.update({
   id: '/organization',
   path: '/organization',
   getParentRoute: () => rootRouteImport,
 } as any)
+const OrganizationRecommendationsRoute =
+  OrganizationRecommendationsRouteImport.update({
+    id: '/organization-recommendations',
+    path: '/organization-recommendations',
+    getParentRoute: () => rootRouteImport,
+  } as any)
 const ProfileRoute = ProfileRouteImport.update({
   id: '/profile',
   path: '/profile',
@@ -154,21 +115,6 @@ const UnauthorizedRoute = UnauthorizedRouteImport.update({
   path: '/unauthorized',
   getParentRoute: () => rootRouteImport,
 } as any)
-const WorkflowExecutionsRoute = WorkflowExecutionsRouteImport.update({
-  id: '/workflow-executions',
-  path: '/workflow-executions',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const WorkflowPoliciesRoute = WorkflowPoliciesRouteImport.update({
-  id: '/workflow-policies',
-  path: '/workflow-policies',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const WorkflowsRoute = WorkflowsRouteImport.update({
-  id: '/workflows',
-  path: '/workflows',
-  getParentRoute: () => rootRouteImport,
-} as any)
 const ArchivesIndexRoute = ArchivesIndexRouteImport.update({
   id: '/archives/',
   path: '/archives/',
@@ -189,28 +135,6 @@ const ChatConversationIdRoute = ChatConversationIdRouteImport.update({
   path: '/$conversationId',
   getParentRoute: () => ChatRoute,
 } as any)
-const ExecutionJobsIndexRoute = ExecutionJobsIndexRouteImport.update({
-  id: '/',
-  path: '/',
-  getParentRoute: () => ExecutionJobsRoute,
-} as any)
-const ExecutionJobsExecutionJobIdRoute =
-  ExecutionJobsExecutionJobIdRouteImport.update({
-    id: '/$executionJobId',
-    path: '/$executionJobId',
-    getParentRoute: () => ExecutionJobsRoute,
-  } as any)
-const ExecutionPlansIndexRoute = ExecutionPlansIndexRouteImport.update({
-  id: '/',
-  path: '/',
-  getParentRoute: () => ExecutionPlansRoute,
-} as any)
-const ExecutionPlansExecutionPlanIdRoute =
-  ExecutionPlansExecutionPlanIdRouteImport.update({
-    id: '/$executionPlanId',
-    path: '/$executionPlanId',
-    getParentRoute: () => ExecutionPlansRoute,
-  } as any)
 const FilesIndexRoute = FilesIndexRouteImport.update({
   id: '/',
   path: '/',
@@ -221,6 +145,18 @@ const FilesFileIdRoute = FilesFileIdRouteImport.update({
   path: '/$fileId',
   getParentRoute: () => FilesRoute,
 } as any)
+const OrganizationRecommendationsIndexRoute =
+  OrganizationRecommendationsIndexRouteImport.update({
+    id: '/',
+    path: '/',
+    getParentRoute: () => OrganizationRecommendationsRoute,
+  } as any)
+const OrganizationRecommendationsRecommendationIdRoute =
+  OrganizationRecommendationsRecommendationIdRouteImport.update({
+    id: '/$recommendationId',
+    path: '/$recommendationId',
+    getParentRoute: () => OrganizationRecommendationsRoute,
+  } as any)
 const RecommendationsIndexRoute = RecommendationsIndexRouteImport.update({
   id: '/',
   path: '/',
@@ -273,22 +209,6 @@ const TrashIndexRoute = TrashIndexRouteImport.update({
   path: '/trash/',
   getParentRoute: () => rootRouteImport,
 } as any)
-const WorkflowExecutionsWorkflowExecutionIdRoute =
-  WorkflowExecutionsWorkflowExecutionIdRouteImport.update({
-    id: '/$workflowExecutionId',
-    path: '/$workflowExecutionId',
-    getParentRoute: () => WorkflowExecutionsRoute,
-  } as any)
-const WorkflowsIndexRoute = WorkflowsIndexRouteImport.update({
-  id: '/',
-  path: '/',
-  getParentRoute: () => WorkflowsRoute,
-} as any)
-const WorkflowsWorkflowIdRoute = WorkflowsWorkflowIdRouteImport.update({
-  id: '/$workflowId',
-  path: '/$workflowId',
-  getParentRoute: () => WorkflowsRoute,
-} as any)
 const ConnectorsGoogleCallbackRoute =
   ConnectorsGoogleCallbackRouteImport.update({
     id: '/connectors/google/callback',
@@ -307,32 +227,15 @@ const StorageIntelligenceDuplicatesGroupIdRoute =
     path: '/$groupId',
     getParentRoute: () => StorageIntelligenceDuplicatesRoute,
   } as any)
-const WorkflowsWorkflowIdIndexRoute =
-  WorkflowsWorkflowIdIndexRouteImport.update({
-    id: '/',
-    path: '/',
-    getParentRoute: () => WorkflowsWorkflowIdRoute,
-  } as any)
-const WorkflowsWorkflowIdBuilderRoute =
-  WorkflowsWorkflowIdBuilderRouteImport.update({
-    id: '/builder',
-    path: '/builder',
-    getParentRoute: () => WorkflowsWorkflowIdRoute,
-  } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
-  '/approvals': typeof ApprovalsRoute
-  '/automation': typeof AutomationRoute
-  '/automation-templates': typeof AutomationTemplatesRoute
   '/chat': typeof ChatRouteWithChildren
   '/dashboard': typeof DashboardRoute
-  '/execution-jobs': typeof ExecutionJobsRouteWithChildren
-  '/execution-plans': typeof ExecutionPlansRouteWithChildren
   '/files': typeof FilesRouteWithChildren
   '/login': typeof LoginRoute
-  '/notifications': typeof NotificationsRoute
   '/organization': typeof OrganizationRoute
+  '/organization-recommendations': typeof OrganizationRecommendationsRouteWithChildren
   '/profile': typeof ProfileRoute
   '/recommendations': typeof RecommendationsRouteWithChildren
   '/scans': typeof ScansRoute
@@ -340,93 +243,66 @@ export interface FileRoutesByFullPath {
   '/storage-connections': typeof StorageConnectionsRoute
   '/storage-intelligence': typeof StorageIntelligenceRouteWithChildren
   '/unauthorized': typeof UnauthorizedRoute
-  '/workflow-executions': typeof WorkflowExecutionsRouteWithChildren
-  '/workflow-policies': typeof WorkflowPoliciesRoute
-  '/workflows': typeof WorkflowsRouteWithChildren
   '/archives/$archiveId': typeof ArchivesArchiveIdRoute
   '/chat/$conversationId': typeof ChatConversationIdRoute
-  '/execution-jobs/$executionJobId': typeof ExecutionJobsExecutionJobIdRoute
-  '/execution-plans/$executionPlanId': typeof ExecutionPlansExecutionPlanIdRoute
   '/files/$fileId': typeof FilesFileIdRoute
+  '/organization-recommendations/$recommendationId': typeof OrganizationRecommendationsRecommendationIdRoute
   '/recommendations/$recommendationId': typeof RecommendationsRecommendationIdRoute
   '/storage-intelligence/candidates': typeof StorageIntelligenceCandidatesRoute
   '/storage-intelligence/duplicates': typeof StorageIntelligenceDuplicatesRouteWithChildren
   '/storage-intelligence/inactive-files': typeof StorageIntelligenceInactiveFilesRoute
   '/storage-intelligence/large-files': typeof StorageIntelligenceLargeFilesRoute
   '/storage-intelligence/old-files': typeof StorageIntelligenceOldFilesRoute
-  '/workflow-executions/$workflowExecutionId': typeof WorkflowExecutionsWorkflowExecutionIdRoute
-  '/workflows/$workflowId': typeof WorkflowsWorkflowIdRouteWithChildren
   '/archives/': typeof ArchivesIndexRoute
   '/chat/': typeof ChatIndexRoute
-  '/execution-jobs/': typeof ExecutionJobsIndexRoute
-  '/execution-plans/': typeof ExecutionPlansIndexRoute
   '/files/': typeof FilesIndexRoute
+  '/organization-recommendations/': typeof OrganizationRecommendationsIndexRoute
   '/recommendations/': typeof RecommendationsIndexRoute
   '/storage-intelligence/': typeof StorageIntelligenceIndexRoute
   '/trash/': typeof TrashIndexRoute
-  '/workflows/': typeof WorkflowsIndexRoute
   '/connectors/google/callback': typeof ConnectorsGoogleCallbackRoute
   '/storage-intelligence/duplicates/$groupId': typeof StorageIntelligenceDuplicatesGroupIdRoute
-  '/workflows/$workflowId/builder': typeof WorkflowsWorkflowIdBuilderRoute
   '/storage-intelligence/duplicates/': typeof StorageIntelligenceDuplicatesIndexRoute
-  '/workflows/$workflowId/': typeof WorkflowsWorkflowIdIndexRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
-  '/approvals': typeof ApprovalsRoute
-  '/automation': typeof AutomationRoute
-  '/automation-templates': typeof AutomationTemplatesRoute
   '/dashboard': typeof DashboardRoute
   '/login': typeof LoginRoute
-  '/notifications': typeof NotificationsRoute
   '/organization': typeof OrganizationRoute
   '/profile': typeof ProfileRoute
   '/scans': typeof ScansRoute
   '/search': typeof SearchRoute
   '/storage-connections': typeof StorageConnectionsRoute
   '/unauthorized': typeof UnauthorizedRoute
-  '/workflow-executions': typeof WorkflowExecutionsRouteWithChildren
-  '/workflow-policies': typeof WorkflowPoliciesRoute
   '/archives/$archiveId': typeof ArchivesArchiveIdRoute
   '/chat/$conversationId': typeof ChatConversationIdRoute
-  '/execution-jobs/$executionJobId': typeof ExecutionJobsExecutionJobIdRoute
-  '/execution-plans/$executionPlanId': typeof ExecutionPlansExecutionPlanIdRoute
   '/files/$fileId': typeof FilesFileIdRoute
+  '/organization-recommendations/$recommendationId': typeof OrganizationRecommendationsRecommendationIdRoute
   '/recommendations/$recommendationId': typeof RecommendationsRecommendationIdRoute
   '/storage-intelligence/candidates': typeof StorageIntelligenceCandidatesRoute
   '/storage-intelligence/inactive-files': typeof StorageIntelligenceInactiveFilesRoute
   '/storage-intelligence/large-files': typeof StorageIntelligenceLargeFilesRoute
   '/storage-intelligence/old-files': typeof StorageIntelligenceOldFilesRoute
-  '/workflow-executions/$workflowExecutionId': typeof WorkflowExecutionsWorkflowExecutionIdRoute
   '/archives': typeof ArchivesIndexRoute
   '/chat': typeof ChatIndexRoute
-  '/execution-jobs': typeof ExecutionJobsIndexRoute
-  '/execution-plans': typeof ExecutionPlansIndexRoute
   '/files': typeof FilesIndexRoute
+  '/organization-recommendations': typeof OrganizationRecommendationsIndexRoute
   '/recommendations': typeof RecommendationsIndexRoute
   '/storage-intelligence': typeof StorageIntelligenceIndexRoute
   '/trash': typeof TrashIndexRoute
-  '/workflows': typeof WorkflowsIndexRoute
   '/connectors/google/callback': typeof ConnectorsGoogleCallbackRoute
   '/storage-intelligence/duplicates/$groupId': typeof StorageIntelligenceDuplicatesGroupIdRoute
-  '/workflows/$workflowId/builder': typeof WorkflowsWorkflowIdBuilderRoute
   '/storage-intelligence/duplicates': typeof StorageIntelligenceDuplicatesIndexRoute
-  '/workflows/$workflowId': typeof WorkflowsWorkflowIdIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
-  '/approvals': typeof ApprovalsRoute
-  '/automation': typeof AutomationRoute
-  '/automation-templates': typeof AutomationTemplatesRoute
   '/chat': typeof ChatRouteWithChildren
   '/dashboard': typeof DashboardRoute
-  '/execution-jobs': typeof ExecutionJobsRouteWithChildren
-  '/execution-plans': typeof ExecutionPlansRouteWithChildren
   '/files': typeof FilesRouteWithChildren
   '/login': typeof LoginRoute
-  '/notifications': typeof NotificationsRoute
   '/organization': typeof OrganizationRoute
+  '/organization-recommendations': typeof OrganizationRecommendationsRouteWithChildren
   '/profile': typeof ProfileRoute
   '/recommendations': typeof RecommendationsRouteWithChildren
   '/scans': typeof ScansRoute
@@ -434,52 +310,37 @@ export interface FileRoutesById {
   '/storage-connections': typeof StorageConnectionsRoute
   '/storage-intelligence': typeof StorageIntelligenceRouteWithChildren
   '/unauthorized': typeof UnauthorizedRoute
-  '/workflow-executions': typeof WorkflowExecutionsRouteWithChildren
-  '/workflow-policies': typeof WorkflowPoliciesRoute
-  '/workflows': typeof WorkflowsRouteWithChildren
   '/archives/$archiveId': typeof ArchivesArchiveIdRoute
   '/chat/$conversationId': typeof ChatConversationIdRoute
-  '/execution-jobs/$executionJobId': typeof ExecutionJobsExecutionJobIdRoute
-  '/execution-plans/$executionPlanId': typeof ExecutionPlansExecutionPlanIdRoute
   '/files/$fileId': typeof FilesFileIdRoute
+  '/organization-recommendations/$recommendationId': typeof OrganizationRecommendationsRecommendationIdRoute
   '/recommendations/$recommendationId': typeof RecommendationsRecommendationIdRoute
   '/storage-intelligence/candidates': typeof StorageIntelligenceCandidatesRoute
   '/storage-intelligence/duplicates': typeof StorageIntelligenceDuplicatesRouteWithChildren
   '/storage-intelligence/inactive-files': typeof StorageIntelligenceInactiveFilesRoute
   '/storage-intelligence/large-files': typeof StorageIntelligenceLargeFilesRoute
   '/storage-intelligence/old-files': typeof StorageIntelligenceOldFilesRoute
-  '/workflow-executions/$workflowExecutionId': typeof WorkflowExecutionsWorkflowExecutionIdRoute
-  '/workflows/$workflowId': typeof WorkflowsWorkflowIdRouteWithChildren
   '/archives/': typeof ArchivesIndexRoute
   '/chat/': typeof ChatIndexRoute
-  '/execution-jobs/': typeof ExecutionJobsIndexRoute
-  '/execution-plans/': typeof ExecutionPlansIndexRoute
   '/files/': typeof FilesIndexRoute
+  '/organization-recommendations/': typeof OrganizationRecommendationsIndexRoute
   '/recommendations/': typeof RecommendationsIndexRoute
   '/storage-intelligence/': typeof StorageIntelligenceIndexRoute
   '/trash/': typeof TrashIndexRoute
-  '/workflows/': typeof WorkflowsIndexRoute
   '/connectors/google/callback': typeof ConnectorsGoogleCallbackRoute
   '/storage-intelligence/duplicates/$groupId': typeof StorageIntelligenceDuplicatesGroupIdRoute
-  '/workflows/$workflowId/builder': typeof WorkflowsWorkflowIdBuilderRoute
   '/storage-intelligence/duplicates/': typeof StorageIntelligenceDuplicatesIndexRoute
-  '/workflows/$workflowId/': typeof WorkflowsWorkflowIdIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
-    | '/approvals'
-    | '/automation'
-    | '/automation-templates'
     | '/chat'
     | '/dashboard'
-    | '/execution-jobs'
-    | '/execution-plans'
     | '/files'
     | '/login'
-    | '/notifications'
     | '/organization'
+    | '/organization-recommendations'
     | '/profile'
     | '/recommendations'
     | '/scans'
@@ -487,92 +348,65 @@ export interface FileRouteTypes {
     | '/storage-connections'
     | '/storage-intelligence'
     | '/unauthorized'
-    | '/workflow-executions'
-    | '/workflow-policies'
-    | '/workflows'
     | '/archives/$archiveId'
     | '/chat/$conversationId'
-    | '/execution-jobs/$executionJobId'
-    | '/execution-plans/$executionPlanId'
     | '/files/$fileId'
+    | '/organization-recommendations/$recommendationId'
     | '/recommendations/$recommendationId'
     | '/storage-intelligence/candidates'
     | '/storage-intelligence/duplicates'
     | '/storage-intelligence/inactive-files'
     | '/storage-intelligence/large-files'
     | '/storage-intelligence/old-files'
-    | '/workflow-executions/$workflowExecutionId'
-    | '/workflows/$workflowId'
     | '/archives/'
     | '/chat/'
-    | '/execution-jobs/'
-    | '/execution-plans/'
     | '/files/'
+    | '/organization-recommendations/'
     | '/recommendations/'
     | '/storage-intelligence/'
     | '/trash/'
-    | '/workflows/'
     | '/connectors/google/callback'
     | '/storage-intelligence/duplicates/$groupId'
-    | '/workflows/$workflowId/builder'
     | '/storage-intelligence/duplicates/'
-    | '/workflows/$workflowId/'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
-    | '/approvals'
-    | '/automation'
-    | '/automation-templates'
     | '/dashboard'
     | '/login'
-    | '/notifications'
     | '/organization'
     | '/profile'
     | '/scans'
     | '/search'
     | '/storage-connections'
     | '/unauthorized'
-    | '/workflow-executions'
-    | '/workflow-policies'
     | '/archives/$archiveId'
     | '/chat/$conversationId'
-    | '/execution-jobs/$executionJobId'
-    | '/execution-plans/$executionPlanId'
     | '/files/$fileId'
+    | '/organization-recommendations/$recommendationId'
     | '/recommendations/$recommendationId'
     | '/storage-intelligence/candidates'
     | '/storage-intelligence/inactive-files'
     | '/storage-intelligence/large-files'
     | '/storage-intelligence/old-files'
-    | '/workflow-executions/$workflowExecutionId'
     | '/archives'
     | '/chat'
-    | '/execution-jobs'
-    | '/execution-plans'
     | '/files'
+    | '/organization-recommendations'
     | '/recommendations'
     | '/storage-intelligence'
     | '/trash'
-    | '/workflows'
     | '/connectors/google/callback'
     | '/storage-intelligence/duplicates/$groupId'
-    | '/workflows/$workflowId/builder'
     | '/storage-intelligence/duplicates'
-    | '/workflows/$workflowId'
   id:
     | '__root__'
     | '/'
-    | '/approvals'
-    | '/automation'
-    | '/automation-templates'
     | '/chat'
     | '/dashboard'
-    | '/execution-jobs'
-    | '/execution-plans'
     | '/files'
     | '/login'
-    | '/notifications'
     | '/organization'
+    | '/organization-recommendations'
     | '/profile'
     | '/recommendations'
     | '/scans'
@@ -580,51 +414,36 @@ export interface FileRouteTypes {
     | '/storage-connections'
     | '/storage-intelligence'
     | '/unauthorized'
-    | '/workflow-executions'
-    | '/workflow-policies'
-    | '/workflows'
     | '/archives/$archiveId'
     | '/chat/$conversationId'
-    | '/execution-jobs/$executionJobId'
-    | '/execution-plans/$executionPlanId'
     | '/files/$fileId'
+    | '/organization-recommendations/$recommendationId'
     | '/recommendations/$recommendationId'
     | '/storage-intelligence/candidates'
     | '/storage-intelligence/duplicates'
     | '/storage-intelligence/inactive-files'
     | '/storage-intelligence/large-files'
     | '/storage-intelligence/old-files'
-    | '/workflow-executions/$workflowExecutionId'
-    | '/workflows/$workflowId'
     | '/archives/'
     | '/chat/'
-    | '/execution-jobs/'
-    | '/execution-plans/'
     | '/files/'
+    | '/organization-recommendations/'
     | '/recommendations/'
     | '/storage-intelligence/'
     | '/trash/'
-    | '/workflows/'
     | '/connectors/google/callback'
     | '/storage-intelligence/duplicates/$groupId'
-    | '/workflows/$workflowId/builder'
     | '/storage-intelligence/duplicates/'
-    | '/workflows/$workflowId/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
-  ApprovalsRoute: typeof ApprovalsRoute
-  AutomationRoute: typeof AutomationRoute
-  AutomationTemplatesRoute: typeof AutomationTemplatesRoute
   ChatRoute: typeof ChatRouteWithChildren
   DashboardRoute: typeof DashboardRoute
-  ExecutionJobsRoute: typeof ExecutionJobsRouteWithChildren
-  ExecutionPlansRoute: typeof ExecutionPlansRouteWithChildren
   FilesRoute: typeof FilesRouteWithChildren
   LoginRoute: typeof LoginRoute
-  NotificationsRoute: typeof NotificationsRoute
   OrganizationRoute: typeof OrganizationRoute
+  OrganizationRecommendationsRoute: typeof OrganizationRecommendationsRouteWithChildren
   ProfileRoute: typeof ProfileRoute
   RecommendationsRoute: typeof RecommendationsRouteWithChildren
   ScansRoute: typeof ScansRoute
@@ -632,9 +451,6 @@ export interface RootRouteChildren {
   StorageConnectionsRoute: typeof StorageConnectionsRoute
   StorageIntelligenceRoute: typeof StorageIntelligenceRouteWithChildren
   UnauthorizedRoute: typeof UnauthorizedRoute
-  WorkflowExecutionsRoute: typeof WorkflowExecutionsRouteWithChildren
-  WorkflowPoliciesRoute: typeof WorkflowPoliciesRoute
-  WorkflowsRoute: typeof WorkflowsRouteWithChildren
   ArchivesArchiveIdRoute: typeof ArchivesArchiveIdRoute
   ArchivesIndexRoute: typeof ArchivesIndexRoute
   TrashIndexRoute: typeof TrashIndexRoute
@@ -648,27 +464,6 @@ declare module '@tanstack/react-router' {
       path: '/'
       fullPath: '/'
       preLoaderRoute: typeof IndexRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/approvals': {
-      id: '/approvals'
-      path: '/approvals'
-      fullPath: '/approvals'
-      preLoaderRoute: typeof ApprovalsRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/automation': {
-      id: '/automation'
-      path: '/automation'
-      fullPath: '/automation'
-      preLoaderRoute: typeof AutomationRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/automation-templates': {
-      id: '/automation-templates'
-      path: '/automation-templates'
-      fullPath: '/automation-templates'
-      preLoaderRoute: typeof AutomationTemplatesRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/chat': {
@@ -685,20 +480,6 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof DashboardRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/execution-jobs': {
-      id: '/execution-jobs'
-      path: '/execution-jobs'
-      fullPath: '/execution-jobs'
-      preLoaderRoute: typeof ExecutionJobsRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/execution-plans': {
-      id: '/execution-plans'
-      path: '/execution-plans'
-      fullPath: '/execution-plans'
-      preLoaderRoute: typeof ExecutionPlansRouteImport
-      parentRoute: typeof rootRouteImport
-    }
     '/files': {
       id: '/files'
       path: '/files'
@@ -713,18 +494,18 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof LoginRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/notifications': {
-      id: '/notifications'
-      path: '/notifications'
-      fullPath: '/notifications'
-      preLoaderRoute: typeof NotificationsRouteImport
-      parentRoute: typeof rootRouteImport
-    }
     '/organization': {
       id: '/organization'
       path: '/organization'
       fullPath: '/organization'
       preLoaderRoute: typeof OrganizationRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/organization-recommendations': {
+      id: '/organization-recommendations'
+      path: '/organization-recommendations'
+      fullPath: '/organization-recommendations'
+      preLoaderRoute: typeof OrganizationRecommendationsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/profile': {
@@ -776,27 +557,6 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof UnauthorizedRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/workflow-executions': {
-      id: '/workflow-executions'
-      path: '/workflow-executions'
-      fullPath: '/workflow-executions'
-      preLoaderRoute: typeof WorkflowExecutionsRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/workflow-policies': {
-      id: '/workflow-policies'
-      path: '/workflow-policies'
-      fullPath: '/workflow-policies'
-      preLoaderRoute: typeof WorkflowPoliciesRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/workflows': {
-      id: '/workflows'
-      path: '/workflows'
-      fullPath: '/workflows'
-      preLoaderRoute: typeof WorkflowsRouteImport
-      parentRoute: typeof rootRouteImport
-    }
     '/archives/': {
       id: '/archives/'
       path: '/archives'
@@ -825,34 +585,6 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ChatConversationIdRouteImport
       parentRoute: typeof ChatRoute
     }
-    '/execution-jobs/': {
-      id: '/execution-jobs/'
-      path: '/'
-      fullPath: '/execution-jobs/'
-      preLoaderRoute: typeof ExecutionJobsIndexRouteImport
-      parentRoute: typeof ExecutionJobsRoute
-    }
-    '/execution-jobs/$executionJobId': {
-      id: '/execution-jobs/$executionJobId'
-      path: '/$executionJobId'
-      fullPath: '/execution-jobs/$executionJobId'
-      preLoaderRoute: typeof ExecutionJobsExecutionJobIdRouteImport
-      parentRoute: typeof ExecutionJobsRoute
-    }
-    '/execution-plans/': {
-      id: '/execution-plans/'
-      path: '/'
-      fullPath: '/execution-plans/'
-      preLoaderRoute: typeof ExecutionPlansIndexRouteImport
-      parentRoute: typeof ExecutionPlansRoute
-    }
-    '/execution-plans/$executionPlanId': {
-      id: '/execution-plans/$executionPlanId'
-      path: '/$executionPlanId'
-      fullPath: '/execution-plans/$executionPlanId'
-      preLoaderRoute: typeof ExecutionPlansExecutionPlanIdRouteImport
-      parentRoute: typeof ExecutionPlansRoute
-    }
     '/files/': {
       id: '/files/'
       path: '/'
@@ -866,6 +598,20 @@ declare module '@tanstack/react-router' {
       fullPath: '/files/$fileId'
       preLoaderRoute: typeof FilesFileIdRouteImport
       parentRoute: typeof FilesRoute
+    }
+    '/organization-recommendations/': {
+      id: '/organization-recommendations/'
+      path: '/'
+      fullPath: '/organization-recommendations/'
+      preLoaderRoute: typeof OrganizationRecommendationsIndexRouteImport
+      parentRoute: typeof OrganizationRecommendationsRoute
+    }
+    '/organization-recommendations/$recommendationId': {
+      id: '/organization-recommendations/$recommendationId'
+      path: '/$recommendationId'
+      fullPath: '/organization-recommendations/$recommendationId'
+      preLoaderRoute: typeof OrganizationRecommendationsRecommendationIdRouteImport
+      parentRoute: typeof OrganizationRecommendationsRoute
     }
     '/recommendations/': {
       id: '/recommendations/'
@@ -930,27 +676,6 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof TrashIndexRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/workflow-executions/$workflowExecutionId': {
-      id: '/workflow-executions/$workflowExecutionId'
-      path: '/$workflowExecutionId'
-      fullPath: '/workflow-executions/$workflowExecutionId'
-      preLoaderRoute: typeof WorkflowExecutionsWorkflowExecutionIdRouteImport
-      parentRoute: typeof WorkflowExecutionsRoute
-    }
-    '/workflows/': {
-      id: '/workflows/'
-      path: '/'
-      fullPath: '/workflows/'
-      preLoaderRoute: typeof WorkflowsIndexRouteImport
-      parentRoute: typeof WorkflowsRoute
-    }
-    '/workflows/$workflowId': {
-      id: '/workflows/$workflowId'
-      path: '/$workflowId'
-      fullPath: '/workflows/$workflowId'
-      preLoaderRoute: typeof WorkflowsWorkflowIdRouteImport
-      parentRoute: typeof WorkflowsRoute
-    }
     '/connectors/google/callback': {
       id: '/connectors/google/callback'
       path: '/connectors/google/callback'
@@ -972,20 +697,6 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof StorageIntelligenceDuplicatesGroupIdRouteImport
       parentRoute: typeof StorageIntelligenceDuplicatesRoute
     }
-    '/workflows/$workflowId/': {
-      id: '/workflows/$workflowId/'
-      path: '/'
-      fullPath: '/workflows/$workflowId/'
-      preLoaderRoute: typeof WorkflowsWorkflowIdIndexRouteImport
-      parentRoute: typeof WorkflowsWorkflowIdRoute
-    }
-    '/workflows/$workflowId/builder': {
-      id: '/workflows/$workflowId/builder'
-      path: '/builder'
-      fullPath: '/workflows/$workflowId/builder'
-      preLoaderRoute: typeof WorkflowsWorkflowIdBuilderRouteImport
-      parentRoute: typeof WorkflowsWorkflowIdRoute
-    }
   }
 }
 
@@ -1001,34 +712,6 @@ const ChatRouteChildren: ChatRouteChildren = {
 
 const ChatRouteWithChildren = ChatRoute._addFileChildren(ChatRouteChildren)
 
-interface ExecutionJobsRouteChildren {
-  ExecutionJobsExecutionJobIdRoute: typeof ExecutionJobsExecutionJobIdRoute
-  ExecutionJobsIndexRoute: typeof ExecutionJobsIndexRoute
-}
-
-const ExecutionJobsRouteChildren: ExecutionJobsRouteChildren = {
-  ExecutionJobsExecutionJobIdRoute: ExecutionJobsExecutionJobIdRoute,
-  ExecutionJobsIndexRoute: ExecutionJobsIndexRoute,
-}
-
-const ExecutionJobsRouteWithChildren = ExecutionJobsRoute._addFileChildren(
-  ExecutionJobsRouteChildren,
-)
-
-interface ExecutionPlansRouteChildren {
-  ExecutionPlansExecutionPlanIdRoute: typeof ExecutionPlansExecutionPlanIdRoute
-  ExecutionPlansIndexRoute: typeof ExecutionPlansIndexRoute
-}
-
-const ExecutionPlansRouteChildren: ExecutionPlansRouteChildren = {
-  ExecutionPlansExecutionPlanIdRoute: ExecutionPlansExecutionPlanIdRoute,
-  ExecutionPlansIndexRoute: ExecutionPlansIndexRoute,
-}
-
-const ExecutionPlansRouteWithChildren = ExecutionPlansRoute._addFileChildren(
-  ExecutionPlansRouteChildren,
-)
-
 interface FilesRouteChildren {
   FilesFileIdRoute: typeof FilesFileIdRoute
   FilesIndexRoute: typeof FilesIndexRoute
@@ -1040,6 +723,24 @@ const FilesRouteChildren: FilesRouteChildren = {
 }
 
 const FilesRouteWithChildren = FilesRoute._addFileChildren(FilesRouteChildren)
+
+interface OrganizationRecommendationsRouteChildren {
+  OrganizationRecommendationsRecommendationIdRoute: typeof OrganizationRecommendationsRecommendationIdRoute
+  OrganizationRecommendationsIndexRoute: typeof OrganizationRecommendationsIndexRoute
+}
+
+const OrganizationRecommendationsRouteChildren: OrganizationRecommendationsRouteChildren =
+  {
+    OrganizationRecommendationsRecommendationIdRoute:
+      OrganizationRecommendationsRecommendationIdRoute,
+    OrganizationRecommendationsIndexRoute:
+      OrganizationRecommendationsIndexRoute,
+  }
+
+const OrganizationRecommendationsRouteWithChildren =
+  OrganizationRecommendationsRoute._addFileChildren(
+    OrganizationRecommendationsRouteChildren,
+  )
 
 interface RecommendationsRouteChildren {
   RecommendationsRecommendationIdRoute: typeof RecommendationsRecommendationIdRoute
@@ -1095,58 +796,15 @@ const StorageIntelligenceRouteChildren: StorageIntelligenceRouteChildren = {
 const StorageIntelligenceRouteWithChildren =
   StorageIntelligenceRoute._addFileChildren(StorageIntelligenceRouteChildren)
 
-interface WorkflowExecutionsRouteChildren {
-  WorkflowExecutionsWorkflowExecutionIdRoute: typeof WorkflowExecutionsWorkflowExecutionIdRoute
-}
-
-const WorkflowExecutionsRouteChildren: WorkflowExecutionsRouteChildren = {
-  WorkflowExecutionsWorkflowExecutionIdRoute:
-    WorkflowExecutionsWorkflowExecutionIdRoute,
-}
-
-const WorkflowExecutionsRouteWithChildren =
-  WorkflowExecutionsRoute._addFileChildren(WorkflowExecutionsRouteChildren)
-
-interface WorkflowsWorkflowIdRouteChildren {
-  WorkflowsWorkflowIdBuilderRoute: typeof WorkflowsWorkflowIdBuilderRoute
-  WorkflowsWorkflowIdIndexRoute: typeof WorkflowsWorkflowIdIndexRoute
-}
-
-const WorkflowsWorkflowIdRouteChildren: WorkflowsWorkflowIdRouteChildren = {
-  WorkflowsWorkflowIdBuilderRoute: WorkflowsWorkflowIdBuilderRoute,
-  WorkflowsWorkflowIdIndexRoute: WorkflowsWorkflowIdIndexRoute,
-}
-
-const WorkflowsWorkflowIdRouteWithChildren =
-  WorkflowsWorkflowIdRoute._addFileChildren(WorkflowsWorkflowIdRouteChildren)
-
-interface WorkflowsRouteChildren {
-  WorkflowsWorkflowIdRoute: typeof WorkflowsWorkflowIdRouteWithChildren
-  WorkflowsIndexRoute: typeof WorkflowsIndexRoute
-}
-
-const WorkflowsRouteChildren: WorkflowsRouteChildren = {
-  WorkflowsWorkflowIdRoute: WorkflowsWorkflowIdRouteWithChildren,
-  WorkflowsIndexRoute: WorkflowsIndexRoute,
-}
-
-const WorkflowsRouteWithChildren = WorkflowsRoute._addFileChildren(
-  WorkflowsRouteChildren,
-)
-
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
-  ApprovalsRoute: ApprovalsRoute,
-  AutomationRoute: AutomationRoute,
-  AutomationTemplatesRoute: AutomationTemplatesRoute,
   ChatRoute: ChatRouteWithChildren,
   DashboardRoute: DashboardRoute,
-  ExecutionJobsRoute: ExecutionJobsRouteWithChildren,
-  ExecutionPlansRoute: ExecutionPlansRouteWithChildren,
   FilesRoute: FilesRouteWithChildren,
   LoginRoute: LoginRoute,
-  NotificationsRoute: NotificationsRoute,
   OrganizationRoute: OrganizationRoute,
+  OrganizationRecommendationsRoute:
+    OrganizationRecommendationsRouteWithChildren,
   ProfileRoute: ProfileRoute,
   RecommendationsRoute: RecommendationsRouteWithChildren,
   ScansRoute: ScansRoute,
@@ -1154,9 +812,6 @@ const rootRouteChildren: RootRouteChildren = {
   StorageConnectionsRoute: StorageConnectionsRoute,
   StorageIntelligenceRoute: StorageIntelligenceRouteWithChildren,
   UnauthorizedRoute: UnauthorizedRoute,
-  WorkflowExecutionsRoute: WorkflowExecutionsRouteWithChildren,
-  WorkflowPoliciesRoute: WorkflowPoliciesRoute,
-  WorkflowsRoute: WorkflowsRouteWithChildren,
   ArchivesArchiveIdRoute: ArchivesArchiveIdRoute,
   ArchivesIndexRoute: ArchivesIndexRoute,
   TrashIndexRoute: TrashIndexRoute,

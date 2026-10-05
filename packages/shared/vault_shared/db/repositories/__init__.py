@@ -45,6 +45,7 @@ from vault_shared.db.repositories.file_extraction_repository import FileExtracti
 from vault_shared.db.repositories.file_intelligence_repository import (
     FileIntelligenceRepository,
 )
+from vault_shared.db.repositories.file_lifecycle_repository import FileLifecycleRepository
 from vault_shared.db.repositories.file_metadata_repository import FileMetadataRepository
 from vault_shared.db.repositories.file_relationship_repository import FileRelationshipRepository
 from vault_shared.db.repositories.file_repository import FileRepository
@@ -61,6 +62,19 @@ from vault_shared.db.repositories.knowledge_attribute_repository import (
     KnowledgeAttributeRepository,
 )
 from vault_shared.db.repositories.notification_repository import NotificationRepository
+from vault_shared.db.repositories.organization_analysis_job_repository import (
+    OrganizationAnalysisJobRepository,
+)
+from vault_shared.db.repositories.organization_entity_repository import (
+    FileEntityLinkRepository,
+    OrganizationEntityRepository,
+)
+from vault_shared.db.repositories.organization_memory_repository import (
+    OrganizationMemoryRepository,
+)
+from vault_shared.db.repositories.organization_recommendation_repository import (
+    OrganizationRecommendationRepository,
+)
 from vault_shared.db.repositories.organization_repository import OrganizationRepository
 from vault_shared.db.repositories.recommendation_event_repository import (
     RecommendationEventRepository,
@@ -129,8 +143,10 @@ __all__ = [
     "ExecutionResultRepository",
     "ExecutionStepRepository",
     "FileClassificationRepository",
+    "FileEntityLinkRepository",
     "FileExtractionRepository",
     "FileIntelligenceRepository",
+    "FileLifecycleRepository",
     "FileMetadataRepository",
     "FileRelationshipRepository",
     "FileRepository",
@@ -141,6 +157,10 @@ __all__ = [
     "IntelligenceProgressRepository",
     "KnowledgeAttributeRepository",
     "NotificationRepository",
+    "OrganizationAnalysisJobRepository",
+    "OrganizationEntityRepository",
+    "OrganizationMemoryRepository",
+    "OrganizationRecommendationRepository",
     "OrganizationRepository",
     "RecommendationEventRepository",
     "RecommendationJobRepository",

@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, createFileRoute, redirect } from "@tanstack/react-router";
 import type { ArchiveJobDetail, ExecutionPlan } from "@vault/types";
-import { Archive, ChevronLeft, Download, Trash2 } from "lucide-react";
+import { Archive, ChevronLeft, Download, ExternalLink, ShieldCheck, Trash2 } from "lucide-react";
 import { useState } from "react";
 
 import { AppShell } from "@/components/app-shell/app-shell";
@@ -13,6 +13,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableRow } from "@/components/ui/table";
 import { toast } from "@/components/ui/toaster";
 import { ApiError, apiClient } from "@/lib/api-client";
+import { trackAction } from "@/lib/storage-action";
 import { archiveStatusBadgeVariant, archiveStatusLabel } from "@/lib/archive-style";
 import { downloadFile } from "@/lib/download-file";
 import { formatBytes } from "@/lib/format-bytes";
@@ -27,6 +28,13 @@ export const Route = createFileRoute("/archives/$archiveId")({
   },
   component: ArchiveDetailPage,
 });
+
+function compressionNote(original: number | null, compressed: number | null): string | null {
+  if (original === null || compressed === null || original <= 0) return null;
+  const saved = original - compressed;
+  if (saved <= 0) return "No space saved — zip overhead outweighs savings for files this small or already compressed";
+  return `${formatBytes(saved)} smaller (${Math.round((saved / original) * 100)}%)`;
+}
 
 function ArchiveDetailPage() {
   const { archiveId } = Route.useParams();
@@ -68,19 +76,10 @@ function ArchiveDetailPage() {
         action_type: "archive",
       }),
     onSuccess: (plan) => {
-      void queryClient.invalidateQueries({ queryKey: ["execution-plans"] });
-      toast.success("Moving originals to Trash now", {
-        description: "Recoverable from Google Drive's Trash.",
-        action: {
-          label: "View progress",
-          onClick: () => {
-            window.location.href = `/execution-plans/${plan.id}`;
-          },
-        },
-      });
+      void trackAction(plan.id, "Moving originals to Trash…");
     },
     onError: (error) => {
-      toast.error(error instanceof ApiError ? error.message : "Couldn't create a cleanup plan.");
+      toast.error(error instanceof ApiError ? error.message : "Couldn't start — nothing was changed.");
     },
   });
 
@@ -114,10 +113,24 @@ function ArchiveDetailPage() {
                     </p>
                   </div>
                 </div>
-                <Badge variant={archiveStatusBadgeVariant(archive.status)}>
-                  {archiveStatusLabel(archive.status)}
-                </Badge>
+                <div className="flex flex-wrap items-center gap-2">
+                  {archive.verified_at && (
+                    <Badge variant="success">
+                      <ShieldCheck className="size-3" /> Verified in Google Drive
+                    </Badge>
+                  )}
+                  <Badge variant={archiveStatusBadgeVariant(archive.status)}>
+                    {archiveStatusLabel(archive.status)}
+                  </Badge>
+                </div>
               </div>
+
+              {archive.destination_path && (
+                <p className="mt-4 text-sm">
+                  <span className="text-muted-foreground">Saved to </span>
+                  <span className="font-medium">{archive.destination_path}</span>
+                </p>
+              )}
 
               <div className="mt-5 grid grid-cols-2 gap-4 sm:grid-cols-4">
                 <div>
@@ -133,33 +146,59 @@ function ArchiveDetailPage() {
                       ? formatBytes(archive.compressed_size_bytes)
                       : "—"}
                   </p>
+                  {compressionNote(archive.original_size_bytes, archive.compressed_size_bytes) && (
+                    <p className="text-xs text-muted-foreground">
+                      {compressionNote(archive.original_size_bytes, archive.compressed_size_bytes)}
+                    </p>
+                  )}
                 </div>
                 <div>
                   <p className="text-xs text-muted-foreground">Files</p>
                   <p className="text-sm font-medium">{archive.file_count}</p>
                 </div>
                 <div>
-                  <p className="text-xs text-muted-foreground">Status</p>
-                  <p className="text-sm font-medium">{archiveStatusLabel(archive.status)}</p>
+                  <p className="text-xs text-muted-foreground">Originals removed</p>
+                  <p className="text-sm font-medium">
+                    {archive.originals_removed_count} of {archive.file_count}
+                  </p>
                 </div>
               </div>
 
               <div className="mt-5 flex flex-wrap items-center gap-2">
+                {archive.destination_web_view_link && (
+                  <Button asChild variant="outline">
+                    <a
+                      href={archive.destination_web_view_link}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                    >
+                      <ExternalLink className="size-4" /> Open in Google Drive
+                    </a>
+                  </Button>
+                )}
                 <Button
                   variant="outline"
-                  disabled={archive.status !== "completed" || downloadMutation.isPending}
+                  disabled={
+                    archive.status !== "completed" ||
+                    !archive.object_storage_key ||
+                    downloadMutation.isPending
+                  }
                   onClick={() => downloadMutation.mutate(archive)}
                 >
                   <Download className="size-4" />
                   {downloadMutation.isPending ? "Downloading…" : "Download Archive"}
                 </Button>
-                {canManage && (
+                {canManage && archive.originals_removed_count < archive.file_count && (
                   <Button
                     variant="outline"
-                    disabled={archive.status !== "completed" || removeOriginalsMutation.isPending}
+                    disabled={
+                      archive.status !== "completed" ||
+                      !archive.verified_at ||
+                      removeOriginalsMutation.isPending
+                    }
                     onClick={() => removeOriginalsMutation.mutate(archive)}
                   >
-                    {removeOriginalsMutation.isPending ? "Creating plan…" : "Remove Originals"}
+                    {removeOriginalsMutation.isPending ? "Starting…" : "Remove Originals"}
                   </Button>
                 )}
                 {canManage && (
@@ -169,11 +208,13 @@ function ArchiveDetailPage() {
                     onClick={() => setConfirmingDelete(true)}
                   >
                     <Trash2 className="size-4" />
-                    Delete Archive
+                    Remove from AI Vault
                   </Button>
                 )}
               </div>
-              {canManage && archive.status === "completed" && (
+              {canManage &&
+                archive.status === "completed" &&
+                archive.originals_removed_count < archive.file_count && (
                 <p className="mt-3 text-xs text-muted-foreground">
                   Creating this archive only made a backup — it hasn&rsquo;t freed any storage yet.
                   Click <strong>Remove Originals</strong> to move the {archive.file_count} original
@@ -219,11 +260,12 @@ function ArchiveDetailPage() {
       <Dialog open={confirmingDelete} onOpenChange={setConfirmingDelete}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Delete this archive?</DialogTitle>
+            <DialogTitle>Remove this archive from AI Vault?</DialogTitle>
           </DialogHeader>
           <p className="text-sm text-muted-foreground">
-            This permanently deletes the compressed package. It does not affect the original files
-            in Google Drive.
+            This removes the archive from AI Vault and deletes AI Vault&rsquo;s cached copy. The
+            zip saved in your Google Drive stays where it is — delete it there if you no longer
+            need it. Your original files are not affected.
           </p>
           <DialogFooter>
             <Button variant="outline" onClick={() => setConfirmingDelete(false)}>
@@ -234,7 +276,7 @@ function ArchiveDetailPage() {
               disabled={deleteMutation.isPending}
               onClick={() => deleteMutation.mutate()}
             >
-              {deleteMutation.isPending ? "Deleting…" : "Delete Archive"}
+              {deleteMutation.isPending ? "Removing…" : "Remove"}
             </Button>
           </DialogFooter>
         </DialogContent>

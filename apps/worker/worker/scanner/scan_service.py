@@ -154,9 +154,25 @@ class ScannerService:
             return
 
         connector.last_synced_at = datetime.now(UTC)
+        self._record_quota(connector, adapter)
         self._jobs.mark_completed(job)
         self._events.record(scan_job_id=job.id, event_type="scan_completed")
         self._db.commit()
+
+    @staticmethod
+    def _record_quota(connector: StorageConnector, adapter: StorageAdapter) -> None:
+        """Provider-reported used/total storage, for the connections page and
+        the dashboard. Optional: a provider that can't report it, or a
+        transient failure, never fails an otherwise-complete scan."""
+        try:
+            quota = adapter.storage_quota()
+        except Exception:  # noqa: BLE001 - quota is informational
+            logger.warning("storage_quota_unavailable", extra={"connector_id": str(connector.id)})
+            return
+        connector.storage_used_bytes = quota.used_bytes
+        connector.storage_total_bytes = quota.total_bytes
+        connector.storage_trash_bytes = quota.trash_bytes
+        connector.quota_checked_at = datetime.now(UTC)
 
     def _discover_sources(
         self, connector: StorageConnector, adapter: StorageAdapter
@@ -227,7 +243,7 @@ class ScannerService:
 
             for item in page.changed:
                 if item.trashed:
-                    self._remove_item(source, item.provider_file_id)
+                    self._record_trashed(source, item.provider_file_id)
                 else:
                     self._ingest_item(source, item)
                     pending_folders += 1 if item.is_folder else 0
@@ -299,16 +315,27 @@ class ScannerService:
                 scanned_at=now,
             )
 
+    def _record_trashed(self, source: StorageSource, provider_file_id: str) -> None:
+        # A trashed file can still be restored, so its row (and every action
+        # recorded against it) stays; a trashed folder has no such history.
+        if not self._files.record_observed_trash(
+            storage_source_id=source.id, provider_file_id=provider_file_id
+        ):
+            self._folders.delete_by_source_and_provider_id(
+                storage_source_id=source.id, provider_file_id=provider_file_id
+            )
+
     def _remove_item(self, source: StorageSource, provider_file_id: str) -> None:
         # The Changes API reports only a fileId for a removal, not whether it
         # was a folder or a file — try both; the (source, provider_file_id)
-        # unique constraint guarantees at most one ever matches.
-        self._folders.delete_by_source_and_provider_id(
+        # unique constraint guarantees at most one ever matches. A file row is
+        # kept (marked deleted) so its action history survives.
+        if not self._files.record_observed_removal(
             storage_source_id=source.id, provider_file_id=provider_file_id
-        )
-        self._files.delete_by_source_and_provider_id(
-            storage_source_id=source.id, provider_file_id=provider_file_id
-        )
+        ):
+            self._folders.delete_by_source_and_provider_id(
+                storage_source_id=source.id, provider_file_id=provider_file_id
+            )
 
     def _resolve_hierarchy(self, source: StorageSource) -> None:
         folders = self._folders.list_for_source(source.id)
@@ -328,9 +355,7 @@ class ScannerService:
 
             visiting.add(folder.provider_file_id)
             parent = (
-                by_provider_id.get(folder.provider_parent_id)
-                if folder.provider_parent_id
-                else None
+                by_provider_id.get(folder.provider_parent_id) if folder.provider_parent_id else None
             )
             path = f"{resolve_path(parent)}/{folder.name}" if parent else f"/{folder.name}"
             path = path[:_MAX_PATH_LENGTH]
@@ -341,9 +366,7 @@ class ScannerService:
 
         for folder in folders:
             parent = (
-                by_provider_id.get(folder.provider_parent_id)
-                if folder.provider_parent_id
-                else None
+                by_provider_id.get(folder.provider_parent_id) if folder.provider_parent_id else None
             )
             folder.path = resolve_path(folder)
             folder.parent_folder_id = parent.id if parent else None

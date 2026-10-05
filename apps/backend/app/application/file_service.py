@@ -8,20 +8,28 @@ from vault_shared import NotFoundError
 from vault_shared.db.models import (
     File,
     FileClassification,
+    FileEntityLink,
     FileExtraction,
     FileIntelligence,
+    FileLifecycle,
     FileMetadata,
     FileRelationship,
+    Folder,
     KnowledgeAttribute,
+    OrganizationEntity,
 )
 from vault_shared.db.repositories import (
     FileClassificationRepository,
+    FileEntityLinkRepository,
     FileExtractionRepository,
     FileIntelligenceRepository,
+    FileLifecycleRepository,
     FileMetadataRepository,
     FileRelationshipRepository,
     FileRepository,
+    FolderRepository,
     KnowledgeAttributeRepository,
+    OrganizationEntityRepository,
     StorageConnectorRepository,
 )
 from vault_shared.storage import ExportPurpose, ProviderFileId, StorageAdapterProvider
@@ -34,6 +42,12 @@ class RelatedFile:
 
 
 @dataclass(frozen=True)
+class LinkedEntity:
+    link: FileEntityLink
+    entity: OrganizationEntity
+
+
+@dataclass(frozen=True)
 class FileDetail:
     file: File
     metadata: FileMetadata | None
@@ -42,6 +56,8 @@ class FileDetail:
     intelligence: FileIntelligence | None
     knowledge_attributes: list[KnowledgeAttribute]
     related_files: list[RelatedFile]
+    entity_links: list[LinkedEntity]
+    lifecycle: FileLifecycle | None
 
 
 class FileService:
@@ -60,12 +76,16 @@ class FileService:
         self._storage = storage
         self._connectors = StorageConnectorRepository(db)
         self._files = FileRepository(db)
+        self._folders = FolderRepository(db)
         self._file_metadata = FileMetadataRepository(db)
         self._classifications = FileClassificationRepository(db)
         self._extractions = FileExtractionRepository(db)
         self._intelligence = FileIntelligenceRepository(db)
         self._knowledge_attributes = KnowledgeAttributeRepository(db)
         self._relationships = FileRelationshipRepository(db)
+        self._entity_links = FileEntityLinkRepository(db)
+        self._entities = OrganizationEntityRepository(db)
+        self._lifecycles = FileLifecycleRepository(db)
 
     def list_for_connector(
         self,
@@ -87,11 +107,11 @@ class FileService:
 
     def search_folders(
         self, connector_id: uuid.UUID, *, organization_id: uuid.UUID, query: str, limit: int
-    ) -> list[File]:
+    ) -> list[Folder]:
         connector = self._connectors.get_by_id(connector_id)
         if connector is None or connector.organization_id != organization_id:
             raise NotFoundError("Connector not found.")
-        return self._files.search_folders_for_connector(connector_id, query=query, limit=limit)
+        return self._folders.search_for_connector(connector_id, query=query, limit=limit)
 
     def list_trashed_for_connector(
         self, connector_id: uuid.UUID, *, organization_id: uuid.UUID, limit: int, offset: int
@@ -127,6 +147,21 @@ class FileService:
             if other_side(row) in related_files_by_id
         ]
 
+        entity_link_rows = self._entity_links.list_for_file(file.id)
+        entities_by_id = {
+            entity.id: entity
+            for entity in (
+                self._entities.get_owned(link.entity_id, organization_id=organization_id)
+                for link in entity_link_rows
+            )
+            if entity is not None
+        }
+        entity_links = [
+            LinkedEntity(link=link, entity=entities_by_id[link.entity_id])
+            for link in entity_link_rows
+            if link.entity_id in entities_by_id
+        ]
+
         return FileDetail(
             file=file,
             metadata=self._file_metadata.get_by_file_id(file.id),
@@ -135,6 +170,8 @@ class FileService:
             intelligence=self._intelligence.get_by_file_id(file.id),
             knowledge_attributes=self._knowledge_attributes.list_for_file(file.id),
             related_files=related_files,
+            entity_links=entity_links,
+            lifecycle=self._lifecycles.get_by_file_id(file.id),
         )
 
     def get_download_stream(

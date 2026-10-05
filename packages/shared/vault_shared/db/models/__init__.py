@@ -43,6 +43,7 @@ from vault_shared.db.models.file import File
 from vault_shared.db.models.file_classification import FileClassification
 from vault_shared.db.models.file_extraction import ExtractionStatus, FileExtraction
 from vault_shared.db.models.file_intelligence import FileIntelligence, IntelligenceStatus
+from vault_shared.db.models.file_lifecycle import FileLifecycle, FileLifecycleState
 from vault_shared.db.models.file_metadata import FileMetadata
 from vault_shared.db.models.file_relationship import FileRelationship, RelationshipType
 from vault_shared.db.models.folder import Folder
@@ -61,6 +62,23 @@ from vault_shared.db.models.notification import (
     NotificationStatus,
 )
 from vault_shared.db.models.organization import Organization
+from vault_shared.db.models.organization_analysis_job import (
+    OrganizationAnalysisJob,
+    OrganizationAnalysisJobStatus,
+)
+from vault_shared.db.models.organization_entity import (
+    EntityLinkSource,
+    EntityStatus,
+    EntityType,
+    FileEntityLink,
+    OrganizationEntity,
+)
+from vault_shared.db.models.organization_memory import MemoryType, OrganizationMemory
+from vault_shared.db.models.organization_recommendation import (
+    OrganizationRecommendation,
+    OrganizationRecommendationKind,
+    OrganizationRecommendationStatus,
+)
 from vault_shared.db.models.recommendation import (
     Recommendation,
     RecommendationCategory,
@@ -92,6 +110,7 @@ from vault_shared.db.models.storage_connector import (
     ConnectorProvider,
     ConnectorStatus,
     StorageConnector,
+    provider_display_name,
 )
 from vault_shared.db.models.storage_source import DriveType, StorageSource
 from vault_shared.db.models.user import User
@@ -155,11 +174,17 @@ __all__ = [
     "ExecutionResultStatus",
     "ExecutionStep",
     "ExecutionStepStatus",
+    "EntityLinkSource",
+    "EntityStatus",
+    "EntityType",
     "ExtractionStatus",
     "File",
     "FileClassification",
+    "FileEntityLink",
     "FileExtraction",
     "FileIntelligence",
+    "FileLifecycle",
+    "FileLifecycleState",
     "FileMetadata",
     "FileRelationship",
     "Folder",
@@ -175,7 +200,16 @@ __all__ = [
     "Notification",
     "NotificationChannel",
     "NotificationStatus",
+    "MemoryType",
     "Organization",
+    "OrganizationAnalysisJob",
+    "OrganizationAnalysisJobStatus",
+    "OrganizationEntity",
+    "OrganizationMemory",
+    "OrganizationRecommendation",
+    "OrganizationRecommendationKind",
+    "OrganizationRecommendationStatus",
+    "provider_display_name",
     "Recommendation",
     "RecommendationCategory",
     "RecommendationEvent",

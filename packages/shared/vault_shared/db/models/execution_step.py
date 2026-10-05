@@ -33,6 +33,9 @@ class ExecutionActionType(enum.StrEnum):
     # Real, unrecoverable Drive deletion — only reachable from a file
     # that's already `trashed`, never auto-approved, never rollback-able.
     PERMANENT_DELETE = "permanent_delete"
+    # Un-trash a file — the inverse of ARCHIVE/REMOVE_DUPLICATE, only
+    # reachable for a file that is currently `trashed`.
+    RESTORE = "restore"
 
 
 class ExecutionStepStatus(enum.StrEnum):

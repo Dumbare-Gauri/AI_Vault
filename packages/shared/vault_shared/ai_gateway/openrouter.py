@@ -1,13 +1,18 @@
 """The one place completion providers are constructed.
 
-Organization-supplied API keys are only ever sent to OpenRouter's fixed base
-URL (`OPENROUTER_BASE_URL`), never to a URL an organization can choose — a
-tenant must not be able to point the server at an arbitrary endpoint.
+Organization-supplied API keys are only ever sent to the fixed endpoint of
+the provider they chose from `provider_catalog.AI_PROVIDERS`, never to a URL
+an organization can choose — a tenant must not be able to point the server
+at an arbitrary endpoint.
 """
 
 from vault_shared import AIUnavailableError, get_settings
 from vault_shared.ai_gateway.gateway import AIGateway, GatewayPolicy
-from vault_shared.ai_gateway.interfaces import EmbeddingResult, Message
+from vault_shared.ai_gateway.interfaces import CompletionProvider, EmbeddingResult, Message
+from vault_shared.ai_gateway.provider_catalog import AI_PROVIDERS, DEFAULT_AI_PROVIDER
+from vault_shared.ai_gateway.providers.anthropic_completion_provider import (
+    AnthropicCompletionProvider,
+)
 from vault_shared.ai_gateway.providers.openai_compatible_completion_provider import (
     OpenAICompatibleCompletionProvider,
 )
@@ -45,6 +50,21 @@ def build_provider(
     )
 
 
+def build_catalog_provider(*, provider: str, api_key: str, model_name: str) -> CompletionProvider:
+    """An organization's chosen provider, at that provider's fixed endpoint."""
+    spec = AI_PROVIDERS.get(provider) or AI_PROVIDERS[DEFAULT_AI_PROVIDER]
+    if spec.protocol == "anthropic_messages":
+        settings = get_settings()
+        return AnthropicCompletionProvider(
+            base_url=spec.base_url,
+            api_key=api_key,
+            model_name=model_name,
+            timeout_seconds=settings.completion_request_timeout_seconds,
+            temperature=settings.ai_temperature,
+        )
+    return build_provider(api_key=api_key, model_name=model_name, base_url=spec.base_url)
+
+
 def build_gateway_policy() -> GatewayPolicy:
     settings = get_settings()
     return GatewayPolicy(
@@ -67,13 +87,17 @@ class _NoEmbeddings:
         )
 
 
-def check_connection(*, api_key: str, model_name: str) -> tuple[bool, str | None]:
+def check_connection(
+    *, api_key: str, model_name: str, provider: str = DEFAULT_AI_PROVIDER
+) -> tuple[bool, str | None]:
     """Validates a candidate key/model through the gateway (so timeouts,
     error normalization and logging apply) without persisting anything.
     One attempt only — a user is waiting on the answer."""
     gateway = AIGateway(
         embedding_provider=_NoEmbeddings(),
-        completion_provider=build_provider(api_key=api_key, model_name=model_name),
+        completion_provider=build_catalog_provider(
+            provider=provider, api_key=api_key, model_name=model_name
+        ),
         policy=GatewayPolicy(max_attempts=1),
     )
     try:

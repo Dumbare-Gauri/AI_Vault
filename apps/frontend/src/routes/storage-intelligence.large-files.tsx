@@ -12,8 +12,8 @@ export const Route = createFileRoute("/storage-intelligence/large-files")({
   },
   component: () => (
     <StorageFileListPage
-      title="Large unused files"
-      description="Files that take up significant space, largest first."
+      title="Large files"
+      description="Files over 100 MB, largest first — whether or not they are still in use."
       apiPath="/v1/storage/large-files"
       emptyIcon={FileWarning}
       emptyTitle="No large files found"

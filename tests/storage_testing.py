@@ -14,6 +14,7 @@
 Nothing here talks to a network or a real provider.
 """
 
+import hashlib
 import uuid
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
@@ -49,6 +50,7 @@ from vault_shared.storage import (
     StorageInvalidRequestError,
     StorageNotFoundError,
     StoragePermission,
+    StorageQuota,
     StorageRateLimitedError,
     StorageUnauthorizedError,
     StorageUnavailableError,
@@ -359,6 +361,16 @@ class FakeDriveApi:
         del self.files[file_id]
         self.changes.append(("removed", file_id))
 
+    def list_trashed_files(self, *, access_token: str) -> list[DriveFile]:
+        self._enter("list_trashed_files", access_token)
+        return [item for item in self.files.values() if item.trashed]
+
+    def empty_drive_trash(self, *, access_token: str) -> None:
+        self._enter("empty_trash", access_token)
+        for file_id in [fid for fid, item in self.files.items() if item.trashed]:
+            del self.files[file_id]
+            self.changes.append(("removed", file_id))
+
     def update_app_properties(
         self, *, access_token: str, file_id: str, properties: dict[str, str]
     ) -> DriveFile:
@@ -411,6 +423,32 @@ class FakeDriveApi:
     def get_account_email(self, *, access_token: str) -> str | None:
         self._enter("get_account_email", access_token)
         return self.account_email
+
+    def get_storage_quota(self, *, access_token: str) -> tuple[int | None, int | None, int | None]:
+        self._enter("get_storage_quota", access_token)
+        return sum(len(c) for c in self.content.values()), 15 * 1024**3, 0
+
+    def upload_file(
+        self,
+        *,
+        access_token: str,
+        name: str,
+        parent_id: str | None,
+        mime_type: str,
+        chunks,  # noqa: ANN001
+    ) -> DriveFile:
+        self._enter("upload_file", access_token)
+        parent = parent_id or "root-folder"
+        self._check_parent(parent)
+        content = b"".join(chunks)
+        file_id = f"drv-{uuid.uuid4().hex[:10]}"
+        item = self._new(file_id, name, mime_type, [parent], len(content), False)
+        item = replace(item, checksum=hashlib.md5(content).hexdigest())  # noqa: S324
+        self.files[file_id] = item
+        self.content[file_id] = content
+        self.container_of[file_id] = "root"
+        self.changes.append(("changed", file_id))
+        return item
 
 
 # ---------------------------------------------------------------------------
@@ -626,6 +664,22 @@ class InMemoryStorageAdapter:
         self._require(Capability.THUMBNAILS)
         self._get(file_id)
         return b"thumb"
+
+    def list_trash(self) -> list[StorageFile]:
+        self._enter("list_trash")
+        return [item.file for item in self.items.values() if item.file.trashed]
+
+    def empty_trash(self) -> None:
+        self._enter("empty_trash")
+        for file_id in [fid for fid, item in self.items.items() if item.file.trashed]:
+            del self.items[file_id]
+            self.log.append(("removed", file_id))
+
+    def storage_quota(self) -> StorageQuota:
+        self._enter("storage_quota")
+        return StorageQuota(
+            used_bytes=sum(len(item.content) for item in self.items.values()), total_bytes=None
+        )
 
     def rename(self, file_id: ProviderFileId, new_name: str) -> StorageFile:
         self._enter("rename")

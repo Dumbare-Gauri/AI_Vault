@@ -37,15 +37,18 @@ CLIENT_WRITE_METHODS = frozenset(
         "delete_file",
         "update_app_properties",
         "copy_file",
+        "upload_file",
+        "empty_drive_trash",
     }
 )
 GOOGLE_ADAPTER = "packages/shared/vault_shared/storage/adapters/google_drive.py"
 HTTP_WRITE_MARKERS = ('"PATCH"', '"DELETE"', '"POST"', '"PUT"', "_patch(")
-FILE_MIRROR_MUTATIONS = frozenset({"mark_trashed", "mark_permanently_deleted"})
+FILE_MIRROR_MUTATIONS = frozenset({"mark_trashed", "mark_permanently_deleted", "mirror_location"})
 
 OUTBOUND_HTTP_MODULES = frozenset({"requests", "httpx", "aiohttp", "urllib.request"})
 OUTBOUND_HTTP_ALLOWED = frozenset(
     {
+        "packages/shared/vault_shared/ai_gateway/providers/anthropic_completion_provider.py",
         "packages/shared/vault_shared/ai_gateway/providers/openai_compatible_completion_provider.py",
         "packages/shared/vault_shared/connectors/google_drive.py",
         "packages/shared/vault_shared/connectors/google_workspace.py",
@@ -249,6 +252,8 @@ class TestOnlyTheExecutionEngineMutatesStorage:
             "export_format_for",
             "is_native_document",
             "get_thumbnail",
+            "storage_quota",
+            "list_trash",
         }
 
         assert protocol_methods == read_only | set(MUTATING_METHODS), (

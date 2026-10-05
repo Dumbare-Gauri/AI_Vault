@@ -13,6 +13,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { toast } from "@/components/ui/toaster";
 import { ApiError, apiClient } from "@/lib/api-client";
+import { trackAction } from "@/lib/storage-action";
 
 interface RenameDialogProps {
   onOpenChange: (open: boolean) => void;
@@ -37,9 +38,9 @@ export function RenameDialog({ onOpenChange, fileId, currentName, onRenamed }: R
         action_type: "rename",
         new_name: name.trim(),
       }),
-    onSuccess: () => {
+    onSuccess: (plan) => {
       void queryClient.invalidateQueries({ queryKey: ["files"] });
-      toast.success("Renaming now");
+      void trackAction(plan.id, `Renaming to "${name.trim()}"…`);
       onOpenChange(false);
       onRenamed?.();
     },

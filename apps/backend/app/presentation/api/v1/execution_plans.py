@@ -76,6 +76,7 @@ def create_execution_plan(
             user_id=user.id,
             new_name=request.new_name,
             new_parent_id=request.new_parent_id,
+            remove_originals=request.remove_originals,
             require_approval=False,
         )
     return ExecutionPlanResponse.from_model(plan)
