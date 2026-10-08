@@ -224,3 +224,40 @@ def test_falls_back_to_configured_model_name_when_response_omits_it() -> None:
 
     assert result.model_name == "z-ai/glm-test"
     assert result.tokens_used is None
+
+
+def test_a_rejected_request_says_why_in_the_providers_own_words() -> None:
+    body = {
+        "error": {"message": "nvidia/nemotron-3-ultra:free is not a valid model ID", "code": 400}
+    }
+
+    with _raises_ai_error(_response(400, body)), pytest.raises(AIUnavailableError) as error:
+        _complete()
+
+    assert "not a valid model ID" in str(error.value)
+    assert error.value.reason == AIUnavailableError.REJECTED_REQUEST
+
+
+def test_a_very_long_provider_reason_is_shortened() -> None:
+    body = {"error": {"message": "x" * 5000}}
+
+    with _raises_ai_error(_response(400, body)), pytest.raises(AIUnavailableError) as error:
+        _complete()
+
+    assert len(str(error.value)) < 300
+
+
+def test_a_model_that_only_reasoned_is_explained() -> None:
+    body = {
+        "choices": [
+            {
+                "finish_reason": "length",
+                "message": {"content": "", "reasoning": "Let me think about how to reply..."},
+            }
+        ]
+    }
+
+    with _raises_ai_error(_response(200, body)), pytest.raises(AIUnavailableError) as error:
+        _complete()
+
+    assert "reasoning" in str(error.value)

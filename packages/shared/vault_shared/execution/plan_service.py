@@ -33,6 +33,7 @@ from vault_shared.db.repositories import (
     OrganizationRecommendationRepository,
     RecommendationRepository,
     StorageConnectorRepository,
+    StorageSourceRepository,
 )
 from vault_shared.execution.permission_validation import validate_execution_permissions
 from vault_shared.formatting import human_bytes
@@ -138,6 +139,7 @@ class ExecutionPlanService:
         self._credentials = ConnectorCredentialsRepository(db)
         self._files = FileRepository(db)
         self._folders = FolderRepository(db)
+        self._sources = StorageSourceRepository(db)
         self._archive_jobs = ArchiveJobRepository(db)
         self._execution_audits = ExecutionAuditRepository(db)
         self._audit_logs = AuditLogRepository(db)
@@ -398,6 +400,19 @@ class ExecutionPlanService:
             require_approval=require_approval,
         )
 
+    def _provider_of(self, files: list[File]) -> str:
+        """The storage provider all of a plan's files live in. One action
+        works on one storage, so a mix is refused."""
+        providers: set[str] = set()
+        for source_id in {file.storage_source_id for file in files}:
+            source = self._sources.get_by_id(source_id)
+            connector = self._connectors.get_by_id(source.connector_id) if source else None
+            if connector is not None:
+                providers.add(connector.provider)
+        if len(providers) != 1:
+            raise ValidationError("Choose files from one storage at a time.")
+        return providers.pop()
+
     def _finalize_plan(
         self,
         *,
@@ -413,17 +428,18 @@ class ExecutionPlanService:
         rollback_available: bool = True,
     ) -> ExecutionPlan:
         total_bytes = sum(f.size_bytes or 0 for f in ordered_files)
+        provider = self._provider_of(ordered_files)
         plan = self._plans.create(
             organization_id=organization_id,
             recommendation_id=recommendation_id,
             duplicate_group_id=duplicate_group_id,
             created_by_user_id=user_id,
-            target_provider="google_workspace",
+            target_provider=provider,
             estimated_impact=f"{len(ordered_files)} files, ~{human_bytes(total_bytes)}",
             estimated_storage_savings_bytes=total_bytes or None,
             risk_level=self._risk_level_for(len(ordered_files)),
             rollback_available=rollback_available,
-            required_permissions=["google_workspace:drive:write"],
+            required_permissions=[f"{provider}:write"],
         )
         for index, file in enumerate(ordered_files):
             planned_change = (planned_change_by_file_id or {}).get(file.id, {"action": action_type})

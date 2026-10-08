@@ -5,6 +5,7 @@ import requests
 from vault_shared import AIUnavailableError, get_logger, get_request_id, get_task_id
 from vault_shared.ai_gateway.boundary import attach_untrusted_context
 from vault_shared.ai_gateway.interfaces import CompletionResult, Message
+from vault_shared.ai_gateway.providers.error_detail import rejected_message
 
 logger = get_logger("vault_shared.ai_gateway.openai_compatible_completion_provider")
 
@@ -108,7 +109,7 @@ class OpenAICompatibleCompletionProvider:
                 reason=AIUnavailableError.PROVIDER_ERROR,
             )
         raise AIUnavailableError(
-            f"The AI provider rejected the request ({status}).",
+            rejected_message(status, response),
             reason=AIUnavailableError.REJECTED_REQUEST,
         )
 
@@ -133,6 +134,12 @@ class OpenAICompatibleCompletionProvider:
         except (KeyError, IndexError, TypeError) as exc:
             raise _invalid("The AI provider response had no message content.") from exc
         if not isinstance(text, str) or not text.strip():
+            choice = body["choices"][0]
+            if choice.get("finish_reason") == "length" or choice["message"].get("reasoning"):
+                raise _invalid(
+                    "The model spent its whole reply on reasoning and gave no answer. "
+                    "Choose a non-reasoning model, or one with a larger reply budget."
+                )
             raise _invalid("The AI provider returned an empty message.")
 
         usage = body.get("usage")

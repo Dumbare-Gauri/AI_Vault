@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.application.conversation_service import AssistantTurn, ConversationDetail
 from app.application.dashboard_service import DashboardOverview
@@ -11,6 +11,7 @@ from app.application.execution_plan_service import ExecutionPlanDetail
 from app.application.file_service import FileDetail
 from app.application.organization_entity_service import OrganizationEntityDetail
 from app.application.search_service import SearchResult
+from app.application.vault_ai.blocks import public as public_blocks
 from app.application.workflow_execution_service import WorkflowExecutionDetail
 from app.application.workflow_service import WorkflowDetail
 from vault_shared.ai_gateway.provider_catalog import AI_PROVIDERS, DEFAULT_AI_PROVIDER
@@ -44,6 +45,7 @@ from vault_shared.db.models import (
     IntelligenceJob,
     IntelligenceProgress,
     KnowledgeAttribute,
+    LocalAgent,
     Notification,
     Organization,
     OrganizationAnalysisJob,
@@ -383,6 +385,10 @@ class EmptyTrashRequest(BaseModel):
     confirmation: str = Field(max_length=50)
 
 
+class CopyFileRequest(BaseModel):
+    new_name: str | None = Field(default=None, max_length=255)
+
+
 class CreatedItemResponse(BaseModel):
     id: str
     name: str
@@ -589,6 +595,8 @@ class FileDetailResponse(BaseModel):
     related_files: list[RelatedFileResponse]
     entity_links: list[FileEntityLinkResponse]
     lifecycle: FileLifecycleResponse | None
+    connector_id: str | None = None
+    provider: str | None = None
 
     @classmethod
     def from_detail(cls, detail: FileDetail) -> "FileDetailResponse":
@@ -603,6 +611,8 @@ class FileDetailResponse(BaseModel):
             owner_email=file.owner_email,
             provider_modified_at=file.provider_modified_at,
             web_view_link=file.web_view_link,
+            connector_id=str(detail.connector_id) if detail.connector_id else None,
+            provider=detail.provider,
             metadata=FileMetadataResponse.from_model(detail.metadata) if detail.metadata else None,
             classification=(
                 FileClassificationResponse.from_model(detail.classification)
@@ -850,6 +860,8 @@ class CitationResponse(BaseModel):
     snippet: str | None
     confidence: float
     retrieval_method: str
+    page_number: int | None = None
+    passage_index: int | None = None
     file_name: str | None = None
     file_size_bytes: int | None = None
     file_mime_type: str | None = None
@@ -862,6 +874,8 @@ class CitationResponse(BaseModel):
             snippet=citation.snippet,
             confidence=citation.confidence,
             retrieval_method=citation.retrieval_method,
+            page_number=citation.page_number,
+            passage_index=citation.passage_index,
             file_name=file.name if file else None,
             file_size_bytes=file.size_bytes if file else None,
             file_mime_type=file.mime_type if file else None,
@@ -878,6 +892,8 @@ class ConversationMessageResponse(BaseModel):
     tool_name: str | None
     created_at: datetime
     citations: list[CitationResponse] = []
+    # Structured answer parts (file lists, duplicate groups, proposals…).
+    blocks: list[dict] = []
 
     @classmethod
     def from_model(
@@ -897,6 +913,7 @@ class ConversationMessageResponse(BaseModel):
             token_usage=message.token_usage,
             tool_name=message.tool_name,
             created_at=message.created_at,
+            blocks=public_blocks(message.blocks or []),
             citations=[
                 CitationResponse.from_model(c, file=files_by_id.get(c.file_id))
                 for c in citations or []
@@ -939,6 +956,12 @@ class ConversationDetailResponse(ConversationResponse):
                 for message in detail.messages
             ],
         )
+
+
+class ResultPageResponse(BaseModel):
+    total: int
+    items: list[dict] = []
+    groups: list[dict] = []
 
 
 class AskRequest(BaseModel):
@@ -2072,3 +2095,119 @@ class ActivityItemResponse(BaseModel):
 
 class ActivityResponse(BaseModel):
     items: list[ActivityItemResponse]
+
+
+class CreateLocalAgentRequest(BaseModel):
+    name: str = Field(default="This computer", max_length=255)
+
+
+class LocalAgentKeyResponse(BaseModel):
+    """The agent key is in this response only — AI Vault keeps just a hash."""
+
+    connector_id: str
+    agent_key: str
+
+
+class AgentVolume(BaseModel):
+    mount: str = Field(max_length=4096)
+    label: str | None = Field(default=None, max_length=255)
+    filesystem: str | None = Field(default=None, max_length=64)
+    kind: str = Field(max_length=32)
+    total_bytes: int = Field(ge=0)
+    used_bytes: int = Field(ge=0)
+    free_bytes: int = Field(ge=0)
+
+
+class LocalAgentResponse(BaseModel):
+    connector_id: str
+    name: str | None
+    device_name: str | None
+    platform: str | None
+    online: bool
+    last_seen_at: datetime | None
+    roots: list[str]
+    offline_roots: list[str]
+    volumes: list[AgentVolume]
+
+    @classmethod
+    def from_models(
+        cls, connector: StorageConnector, agent: LocalAgent | None, *, online: bool
+    ) -> "LocalAgentResponse":
+        return cls(
+            connector_id=str(connector.id),
+            name=connector.display_name,
+            device_name=agent.device_name if agent else None,
+            platform=agent.platform if agent else None,
+            online=online,
+            last_seen_at=agent.last_seen_at if agent else None,
+            roots=list(agent.roots) if agent else [],
+            offline_roots=list(agent.offline_roots or []) if agent else [],
+            volumes=[AgentVolume(**volume) for volume in agent.volumes] if agent else [],
+        )
+
+
+class AgentHeartbeatRequest(BaseModel):
+    device_name: str = Field(max_length=255)
+    platform: str = Field(max_length=255)
+    roots: list[str] = Field(max_length=50)
+    offline_roots: list[str] = Field(default_factory=list, max_length=50)
+    volumes: list[AgentVolume] = Field(max_length=100)
+
+
+class AgentFolderRequest(BaseModel):
+    path: str = Field(min_length=1, max_length=4096)
+
+
+class AgentBrowseFolder(BaseModel):
+    name: str
+    path: str
+    can_add: bool
+    reason: str | None
+    added: bool
+
+
+class AgentBrowseResponse(BaseModel):
+    """Folder names inside one folder on the connected computer — never files."""
+
+    path: str
+    parent: str | None
+    can_add: bool
+    reason: str | None
+    folders: list[AgentBrowseFolder]
+    truncated: bool
+
+
+class AgentRootsResponse(BaseModel):
+    roots: list[str]
+
+
+class AgentScanBatchRequest(BaseModel):
+    root: str = Field(max_length=4096)
+    root_id: str = Field(max_length=100)
+    entries: list[dict] = Field(max_length=2000)
+    first: bool = False
+    final: bool = False
+    errors: list[dict] = Field(default_factory=list, max_length=10000)
+
+
+class AgentScanBatchResponse(BaseModel):
+    stored: int
+
+
+class AgentCommandResponse(BaseModel):
+    id: str
+    op: str
+    params: dict
+
+
+class AgentCommandResultRequest(BaseModel):
+    """What the agent saw after running a command: `ok`, and either the
+    resulting state or the reason it failed."""
+
+    model_config = ConfigDict(extra="allow")
+
+    ok: bool
+
+
+class AgentCommandsResponse(BaseModel):
+    commands: list[AgentCommandResponse]

@@ -8,7 +8,7 @@ from storage_testing import google_adapter
 
 from vault_shared import ForbiddenError
 from vault_shared.db.models import ExtractionStatus, File
-from worker.enrichment.extraction import ContentExtractionService
+from worker.enrichment.extraction import ContentExtractionService, _sanitize
 
 
 def _adapter(drive):
@@ -210,3 +210,7 @@ def test_extract_reports_forbidden_for_a_google_native_export_too() -> None:
     outcome = service.extract(storage=_adapter(drive), file=file)
 
     assert outcome.status == ExtractionStatus.FORBIDDEN
+
+
+def test_page_breaks_survive_cleaning_so_answers_can_cite_pages() -> None:
+    assert _sanitize("page one\fpage two\x00") == "page one\fpage two"

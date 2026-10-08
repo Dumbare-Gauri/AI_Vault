@@ -11,8 +11,10 @@ from sqlalchemy.orm import Session
 from vault_shared.connectors.google_drive import GoogleDriveClient
 from vault_shared.connectors.google_workspace import GoogleWorkspaceOAuthClient
 from vault_shared.db.models import ConnectorProvider, StorageConnector
+from vault_shared.db.session import get_session_factory
 from vault_shared.storage.adapter import StorageAdapter
 from vault_shared.storage.adapters.google_drive import GoogleDriveAdapter
+from vault_shared.storage.adapters.local_agent import LocalAgentAdapter
 from vault_shared.storage.connector_credentials import ConnectorCredentialSource
 from vault_shared.storage.registry import StorageAdapterRegistry
 
@@ -38,6 +40,10 @@ def build_storage_registry(
             connection_id=connector.id,
         )
 
+    def local_agent(connector: StorageConnector) -> StorageAdapter:
+        return LocalAgentAdapter(connector=connector, session_factory=get_session_factory())
+
     registry = StorageAdapterRegistry()
     registry.register(ConnectorProvider.GOOGLE_WORKSPACE.value, google_drive)
+    registry.register(ConnectorProvider.LOCAL_AGENT.value, local_agent)
     return registry

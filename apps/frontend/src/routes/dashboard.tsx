@@ -79,17 +79,11 @@ function StorageHero({
   connectors,
   dashboard,
   overview,
-  canManage,
 }: {
   connectors: Connector[];
   dashboard: Dashboard;
   overview: StorageOverview | undefined;
-  canManage: boolean;
 }) {
-  const [emptyingConnectorId, setEmptyingConnectorId] = useState<string | null>(null);
-  const trashConnector = connectors.find(
-    (connector) => connector.status === "connected" && (connector.storage_trash_bytes ?? 0) > 0,
-  );
   const summary = summarizeStorage(
     connectors,
     dashboard.latest_snapshot?.total_storage_bytes ?? 0,
@@ -119,31 +113,6 @@ function StorageHero({
             : "used across connected storage"}
         </p>
       </div>
-      {summary.trashBytes > 0 && (
-        <div className="mt-3 flex max-w-2xl flex-wrap items-center gap-3 rounded-lg bg-warning-muted px-3 py-2 text-sm">
-          <Trash2 className="size-4 shrink-0 text-warning" aria-hidden="true" />
-          <p className="flex-1">
-            <span className="font-medium">{formatBytes(summary.trashBytes)}</span> of this is in
-            Google Drive&rsquo;s Trash and still counts until the Trash is emptied.
-          </p>
-          {canManage && trashConnector && (
-            <Button
-              size="sm"
-              variant="destructive"
-              className="shrink-0"
-              onClick={() => setEmptyingConnectorId(trashConnector.id)}
-            >
-              <Trash2 className="size-4" /> Empty Drive Trash
-            </Button>
-          )}
-        </div>
-      )}
-      {emptyingConnectorId && (
-        <EmptyTrashDialog
-          connectorId={emptyingConnectorId}
-          onOpenChange={(open) => !open && setEmptyingConnectorId(null)}
-        />
-      )}
       {summary.accountsWithQuota > 0 && overview?.total_size_bytes != null && (
         <p className="mt-3 max-w-xl text-sm text-muted-foreground">
           Account storage as Google reports it — Gmail and Google Photos count too. Your own
@@ -200,6 +169,38 @@ function StorageHero({
         <p className="mt-3 text-xs text-muted-foreground">
           Potential savings appear after the first storage analysis.
         </p>
+      )}
+    </Card>
+  );
+}
+
+/** Google keeps counting trashed files against the quota until the Trash is
+ * emptied — shown on its own so it isn't mistaken for part of the total. */
+function DriveTrashCard({ connectors, canManage }: { connectors: Connector[]; canManage: boolean }) {
+  const [emptying, setEmptying] = useState(false);
+  const trashConnector = connectors.find(
+    (connector) => connector.status === "connected" && (connector.storage_trash_bytes ?? 0) > 0,
+  );
+  if (!trashConnector) return null;
+  return (
+    <Card className="flex flex-wrap items-center gap-4 p-5">
+      <span className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-warning-muted">
+        <Trash2 className="size-5 text-warning" aria-hidden="true" />
+      </span>
+      <div className="min-w-0 flex-1">
+        <p className="text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">Google Drive Trash</p>
+        <p className="mt-1 text-2xl font-semibold">{formatBytes(trashConnector.storage_trash_bytes ?? 0)}</p>
+        <p className="text-sm text-muted-foreground">
+          Still counts against your Google storage until the Trash is emptied.
+        </p>
+      </div>
+      {canManage && (
+        <Button variant="destructive" className="shrink-0" onClick={() => setEmptying(true)}>
+          <Trash2 className="size-4" /> Empty Drive Trash
+        </Button>
+      )}
+      {emptying && (
+        <EmptyTrashDialog connectorId={trashConnector.id} onOpenChange={(open) => !open && setEmptying(false)} />
       )}
     </Card>
   );
@@ -434,14 +435,10 @@ function DashboardPage() {
         {dashboard && (
           <>
             <div className="grid gap-4 lg:grid-cols-3">
-              <StorageHero
-                connectors={connectors}
-                dashboard={dashboard}
-                overview={overview}
-                canManage={canManage}
-              />
+              <StorageHero connectors={connectors} dashboard={dashboard} overview={overview} />
               <AccountsCard connectors={connectors} />
             </div>
+            <DriveTrashCard connectors={connectors} canManage={canManage} />
 
             <section className="flex flex-col gap-3">
               <div className="flex items-center justify-between">

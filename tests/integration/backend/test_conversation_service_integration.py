@@ -202,7 +202,7 @@ def test_ask_creates_a_new_conversation_with_a_derived_title(db: Session) -> Non
 
 
 @requires_infra
-def test_ask_with_no_matching_context_uses_the_no_context_fallback(db: Session) -> None:
+def test_ask_with_no_matching_files_says_so_instead_of_guessing(db: Session) -> None:
     user = _provision_user(db)
     service = ConversationService(db, ai_gateway=_gateway())
 
@@ -214,7 +214,9 @@ def test_ask_with_no_matching_context_uses_the_no_context_fallback(db: Session) 
     )
 
     assert turn.citations == []
-    assert "don't have any relevant documents" in turn.assistant_message.content
+    assert turn.assistant_message.content == (
+        "I couldn't find that information in the connected files."
+    )
 
 
 @requires_infra

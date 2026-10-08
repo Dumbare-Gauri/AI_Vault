@@ -1,7 +1,7 @@
 import uuid
 from datetime import UTC, datetime
 
-from sqlalchemy import func, or_
+from sqlalchemy import ColumnElement, case, func, or_
 from sqlalchemy.orm import Query, Session
 
 from vault_shared.db.like import escape_like
@@ -19,6 +19,16 @@ from vault_shared.db.models import (
     StorageSource,
 )
 from vault_shared.search.file_query import FILE_CATEGORIES, FileQuery
+
+
+def _owned_by_connection() -> ColumnElement[bool]:
+    """Files the connected account itself owns. A connection with no account
+    identity (a local disk) has no files owned by anyone else, so everything
+    on it counts as the user's."""
+    return or_(
+        File.owner_email == StorageConnector.account_email,
+        StorageConnector.account_email.is_(None),
+    )
 
 
 class FileRepository:
@@ -272,9 +282,9 @@ class FileRepository:
         if ownership is not None:
             query = query.join(StorageConnector, StorageSource.connector_id == StorageConnector.id)
             if ownership == "mine":
-                query = query.filter(File.owner_email == StorageConnector.account_email)
+                query = query.filter(_owned_by_connection())
             elif ownership == "shared":
-                query = query.filter(File.owner_email != StorageConnector.account_email)
+                query = query.filter(~_owned_by_connection())
         return query
 
     def list_for_connector(
@@ -416,6 +426,61 @@ class FileRepository:
             .all()
         )
 
+    def rank_by_terms(
+        self, organization_id: uuid.UUID, terms: list[str], *, limit: int
+    ) -> list[tuple[File, StorageConnector, float]]:
+        """Files ranked by how many of `terms` they match — in the name (3),
+        inside the extracted text (2), in a linked project/client/campaign
+        name (2) or in the path (1). Unlike `query_files`, a file needs only
+        some of the words, so a question like "what does the payroll file
+        say" finds the payroll file, and content counts, so "the contract
+        mentioning the payment amount" finds the contract. Every term is a
+        bound parameter."""
+        if not terms:
+            return []
+        score_parts = []
+        for term in terms:
+            pattern = f"%{escape_like(term)}%"
+            in_content = (
+                self._session.query(FileExtraction.file_id)
+                .filter(
+                    FileExtraction.file_id == File.id,
+                    FileExtraction.extracted_text.ilike(pattern, escape="\\"),
+                )
+                .exists()
+            )
+            in_entity = (
+                self._session.query(FileEntityLink.id)
+                .join(OrganizationEntity, OrganizationEntity.id == FileEntityLink.entity_id)
+                .filter(
+                    FileEntityLink.file_id == File.id,
+                    OrganizationEntity.name.ilike(pattern, escape="\\"),
+                )
+                .exists()
+            )
+            score_parts += [
+                case((File.name.ilike(pattern, escape="\\"), 3), else_=0),
+                case((in_content, 2), else_=0),
+                case((in_entity, 2), else_=0),
+                case((File.path.ilike(pattern, escape="\\"), 1), else_=0),
+            ]
+        score = sum(score_parts[1:], score_parts[0]).label("score")
+        rows = (
+            self._session.query(File, StorageConnector, score)
+            .join(StorageSource, File.storage_source_id == StorageSource.id)
+            .join(StorageConnector, StorageSource.connector_id == StorageConnector.id)
+            .filter(
+                StorageConnector.organization_id == organization_id,
+                File.trashed.is_(False),
+                File.permanently_deleted_at.is_(None),
+                score > 0,
+            )
+            .order_by(score.desc(), File.provider_modified_at.desc().nulls_last())
+            .limit(limit)
+            .all()
+        )
+        return [(file, connector, float(value)) for file, connector, value in rows]
+
     def query_files(
         self, organization_id: uuid.UUID, query: FileQuery
     ) -> tuple[list[tuple[File, StorageConnector]], int]:
@@ -477,11 +542,9 @@ class FileRepository:
         if query.connector_id:
             base = base.filter(StorageConnector.id == uuid.UUID(query.connector_id))
         if query.ownership == "mine":
-            base = base.filter(File.owner_email == StorageConnector.account_email)
+            base = base.filter(_owned_by_connection())
         elif query.ownership == "shared":
-            base = base.filter(
-                or_(File.owner_email.is_(None), File.owner_email != StorageConnector.account_email)
-            )
+            base = base.filter(~_owned_by_connection())
 
         total = base.count()
         if query.sort == "largest":
@@ -559,7 +622,9 @@ class FileRepository:
     # Storage Intelligence Layer (Phase 1) queries — read-only, org-scoped.
     # ------------------------------------------------------------------
 
-    def _for_organization(self, organization_id: uuid.UUID) -> Query[File]:
+    def _for_organization(
+        self, organization_id: uuid.UUID, connector_id: uuid.UUID | None = None
+    ) -> Query[File]:
         """Every Storage Intelligence listing (overview totals, large/old/
         inactive/temporary-candidate/duplicate-group queries) builds on
         this one base. Two exclusions here fix all of them at once, not
@@ -576,16 +641,19 @@ class FileRepository:
           connected account has no write access to someone else's file.
           Counting it toward "storage used" and offering an Archive button
           that can never succeed are both wrong for the same reason."""
-        return (
+        query = (
             self._session.query(File)
             .join(StorageSource, File.storage_source_id == StorageSource.id)
             .join(StorageConnector, StorageSource.connector_id == StorageConnector.id)
             .filter(
                 StorageConnector.organization_id == organization_id,
                 File.trashed.is_(False),
-                File.owner_email == StorageConnector.account_email,
+                _owned_by_connection(),
             )
         )
+        if connector_id is not None:
+            query = query.filter(StorageConnector.id == connector_id)
+        return query
 
     def list_signal_bearing_for_organization(self, organization_id: uuid.UUID) -> list[File]:
         """Files with at least one real knowledge signal (a deterministic
@@ -639,7 +707,7 @@ class FileRepository:
                 StorageConnector.organization_id == organization_id,
                 File.checksum.isnot(None),
                 File.trashed.is_(False),
-                File.owner_email == StorageConnector.account_email,
+                _owned_by_connection(),
             )
             .group_by(File.checksum)
             .having(func.count(File.id) > 1)
@@ -653,9 +721,15 @@ class FileRepository:
         return self._for_organization(organization_id).filter(File.checksum == checksum).all()
 
     def list_large_for_organization(
-        self, organization_id: uuid.UUID, *, min_size_bytes: int, limit: int, offset: int
+        self,
+        organization_id: uuid.UUID,
+        *,
+        min_size_bytes: int,
+        limit: int,
+        offset: int,
+        connector_id: uuid.UUID | None = None,
     ) -> tuple[list[File], int]:
-        query = self._for_organization(organization_id).filter(
+        query = self._for_organization(organization_id, connector_id).filter(
             File.size_bytes.isnot(None), File.size_bytes >= min_size_bytes
         )
         total = query.count()
@@ -663,12 +737,18 @@ class FileRepository:
         return items, total
 
     def list_old_for_organization(
-        self, organization_id: uuid.UUID, *, older_than: datetime, limit: int, offset: int
+        self,
+        organization_id: uuid.UUID,
+        *,
+        older_than: datetime,
+        limit: int,
+        offset: int,
+        connector_id: uuid.UUID | None = None,
     ) -> tuple[list[File], int]:
         """ "Old" = content staleness, judged by `provider_modified_at`
         alone (Phase 1 spec §9) — deliberately distinct from "inactive"
         below, which also considers view activity."""
-        query = self._for_organization(organization_id).filter(
+        query = self._for_organization(organization_id, connector_id).filter(
             File.provider_modified_at.isnot(None), File.provider_modified_at < older_than
         )
         total = query.count()
@@ -676,7 +756,13 @@ class FileRepository:
         return items, total
 
     def list_inactive_for_organization(
-        self, organization_id: uuid.UUID, *, inactive_since: datetime, limit: int, offset: int
+        self,
+        organization_id: uuid.UUID,
+        *,
+        inactive_since: datetime,
+        limit: int,
+        offset: int,
+        connector_id: uuid.UUID | None = None,
     ) -> tuple[list[File], int]:
         """ "Inactive" = usage staleness, judged by whichever of
         `provider_modified_at`/`provider_viewed_at` is more recent (Phase 1
@@ -686,7 +772,7 @@ class FileRepository:
         `list_unknown_activity_for_organization`), never guessed as
         inactive."""
         last_activity = func.greatest(File.provider_modified_at, File.provider_viewed_at)
-        query = self._for_organization(organization_id).filter(
+        query = self._for_organization(organization_id, connector_id).filter(
             or_(File.provider_modified_at.isnot(None), File.provider_viewed_at.isnot(None)),
             last_activity < inactive_since,
         )
@@ -702,7 +788,12 @@ class FileRepository:
         )
 
     def list_temporary_candidates_for_organization(
-        self, organization_id: uuid.UUID, *, limit: int, offset: int
+        self,
+        organization_id: uuid.UUID,
+        *,
+        limit: int,
+        offset: int,
+        connector_id: uuid.UUID | None = None,
     ) -> tuple[list[File], int]:
         """Deterministic filename/extension heuristics only (Phase 1 spec
         §11) — never a certainty claim; callers must label these as
@@ -723,7 +814,7 @@ class FileRepository:
                 "%.old",
             )
         ]
-        query = self._for_organization(organization_id).filter(or_(*patterns))
+        query = self._for_organization(organization_id, connector_id).filter(or_(*patterns))
         total = query.count()
         items = (
             query.order_by(File.size_bytes.desc().nulls_last()).limit(limit).offset(offset).all()

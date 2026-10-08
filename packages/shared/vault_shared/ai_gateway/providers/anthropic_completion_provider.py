@@ -5,6 +5,7 @@ import requests
 from vault_shared import AIUnavailableError, get_logger
 from vault_shared.ai_gateway.boundary import attach_untrusted_context
 from vault_shared.ai_gateway.interfaces import CompletionResult, Message
+from vault_shared.ai_gateway.providers.error_detail import rejected_message
 
 logger = get_logger("vault_shared.ai_gateway.anthropic_completion_provider")
 
@@ -124,6 +125,6 @@ class AnthropicCompletionProvider:
                 reason=AIUnavailableError.PROVIDER_ERROR,
             )
         raise AIUnavailableError(
-            f"The AI provider rejected the request ({status}).",
+            rejected_message(status, response),
             reason=AIUnavailableError.REJECTED_REQUEST,
         )

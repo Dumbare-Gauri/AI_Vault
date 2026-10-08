@@ -15,6 +15,7 @@ from vault_shared.db.models import (
     ExecutionStepStatus,
     VerificationStatus,
     provider_display_name,
+    provider_location,
 )
 from vault_shared.db.repositories import (
     ArchiveJobRepository,
@@ -40,13 +41,13 @@ _VERBS: dict[str, str] = {
     ExecutionActionType.UPDATE_METADATA: "updated",
 }
 _PROGRESS: dict[str, str] = {
-    ExecutionActionType.RENAME: "Renaming {files} in {provider}…",
-    ExecutionActionType.MOVE_FILE: "Moving {files} in {provider}…",
-    ExecutionActionType.MOVE_FOLDER: "Moving {files} in {provider}…",
-    ExecutionActionType.ARCHIVE: "Moving {files} to Trash in {provider}…",
-    ExecutionActionType.REMOVE_DUPLICATE: "Moving {duplicates} to Trash in {provider}…",
-    ExecutionActionType.RESTORE: "Restoring {files} from Trash in {provider}…",
-    ExecutionActionType.PERMANENT_DELETE: "Permanently deleting {files} in {provider}…",
+    ExecutionActionType.RENAME: "Renaming {files} {where}…",
+    ExecutionActionType.MOVE_FILE: "Moving {files} {where}…",
+    ExecutionActionType.MOVE_FOLDER: "Moving {files} {where}…",
+    ExecutionActionType.ARCHIVE: "Moving {files} to Trash {where}…",
+    ExecutionActionType.REMOVE_DUPLICATE: "Moving {duplicates} to Trash {where}…",
+    ExecutionActionType.RESTORE: "Restoring {files} from Trash {where}…",
+    ExecutionActionType.PERMANENT_DELETE: "Permanently deleting {files} {where}…",
     ExecutionActionType.CREATE_ARCHIVE: "Archiving {files} to {provider}…",
 }
 _IN_PROGRESS = {
@@ -159,15 +160,16 @@ class ActionService:
             if result.status != "cancelled" and result.total > 0
         ]
         for audit in self._audits.list_events_for_organization(
-            organization_id, event_types=["folder_created", "file_created"], limit=_ACTIVITY_LIMIT
+            organization_id,
+            event_types=["folder_created", "file_created", "file_copied", "trash_emptied"],
+            limit=_ACTIVITY_LIMIT,
         ):
-            noun = "Folder" if audit.event_type == "folder_created" else "File"
             items.append(
                 ActivityItem(
                     id=str(audit.id),
                     kind=audit.event_type,
                     status="done",
-                    message=f"{noun} “{audit.metadata_.get('name', '')}” created",
+                    message=_audit_message(audit.event_type, audit.metadata_),
                     at=audit.created_at,
                 )
             )
@@ -223,27 +225,29 @@ class ActionService:
 
         status = "in_progress" if plan.status in _IN_PROGRESS else _STATUS.get(plan.status, "done")
         provider = provider_display_name(plan.target_provider)
+        where = provider_location(plan.target_provider)
         verb = _VERBS.get(kind, "processed")
         files = "file" if total == 1 else "files"
         if undoing:
             status = "in_progress"
-            message = f"Undoing — putting {total} {files} back in {provider}…"
+            message = f"Undoing — putting {total} {files} back {where}…"
         elif status == "in_progress":
-            message = _PROGRESS.get(kind, "Working on {files} in {provider}…").format(
+            message = _PROGRESS.get(kind, "Working on {files} {where}…").format(
                 files=f"{total} {files}",
                 duplicates=f"{total} duplicate {files}",
                 provider=provider,
+                where=where,
             )
         elif status == "undone":
             message = f"Undone — {succeeded} {files} put back the way they were"
         elif succeeded == 0:
             message = f"Nothing was {verb} — {failed} of {total} {files} failed"
         else:
-            message = f"{succeeded} of {total} {files} {verb} in {provider}"
+            message = f"{succeeded} of {total} {files} {verb} {where}"
             if verified == succeeded:
                 message += " — confirmed"
             if kind in (ExecutionActionType.ARCHIVE, ExecutionActionType.REMOVE_DUPLICATE):
-                message += ". Google counts the space until Drive's Trash is emptied"
+                message += ". The space comes back once the Trash is emptied"
 
         archive = None
         if kind == ExecutionActionType.CREATE_ARCHIVE:
@@ -260,7 +264,7 @@ class ActionService:
                 if status in ("done", "partial") and archive_job.destination_path:
                     folder = archive_job.destination_path.rsplit("/", 1)[0].lstrip("/")
                     kept = archive_job.originals_removed_count == 0
-                    message = f"{succeeded} {files} zipped into '{folder}' in {provider} — " + (
+                    message = f"{succeeded} {files} zipped into '{folder}' {where} — " + (
                         "originals kept where they were"
                         if kept
                         else f"{archive_job.originals_removed_count} originals moved to Trash"
@@ -285,3 +289,15 @@ class ActionService:
             problems=problems,
             archive=archive,
         )
+
+
+def _audit_message(event_type: str, metadata: dict) -> str:
+    name = metadata.get("name", "")
+    if event_type == "folder_created":
+        return f"Folder “{name}” created"
+    if event_type == "file_copied":
+        return f"Copy “{name}” created and confirmed"
+    if event_type == "trash_emptied":
+        count = metadata.get("deleted_count", metadata.get("file_count", 0))
+        return f"Drive's Trash emptied — {count} files permanently deleted"
+    return f"File “{name}” created"

@@ -15,6 +15,7 @@ from app.presentation.api.v1.execution_jobs import execution_jobs_router
 from app.presentation.api.v1.execution_plans import execution_plans_router
 from app.presentation.api.v1.files import files_router
 from app.presentation.api.v1.intelligence import intelligence_router
+from app.presentation.api.v1.local_agents import local_agents_router
 from app.presentation.api.v1.notifications import notifications_router
 from app.presentation.api.v1.organization import organization_router
 from app.presentation.api.v1.organizations import organizations_router
@@ -38,6 +39,7 @@ v1_router.include_router(connectors_router)
 v1_router.include_router(scans_router)
 v1_router.include_router(enrichment_router)
 v1_router.include_router(files_router)
+v1_router.include_router(local_agents_router)
 v1_router.include_router(embedding_router)
 v1_router.include_router(intelligence_router)
 v1_router.include_router(search_router)

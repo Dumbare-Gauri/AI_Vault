@@ -246,9 +246,12 @@ function FilesPage() {
     queryFn: () => apiClient.get<Connector[]>("/v1/connectors"),
   });
 
-  const connector = connectorsQuery.data?.find(
-    (candidate) => candidate.provider === "google_workspace" && candidate.status === "connected",
+  const connected = (connectorsQuery.data ?? []).filter(
+    (candidate) => candidate.status === "connected",
   );
+  const [chosenConnectorId, setChosenConnectorId] = useState<string | null>(null);
+  const connector =
+    connected.find((candidate) => candidate.id === chosenConnectorId) ?? connected[0];
 
   const filesQuery = useQuery({
     queryKey: ["files", connector?.id, page, ownership],
@@ -325,6 +328,29 @@ function FilesPage() {
 
         {connector && (
           <>
+            {connected.length > 1 && (
+              <div className="flex w-fit items-center gap-1 rounded-lg bg-secondary p-1">
+                {connected.map((candidate) => (
+                  <button
+                    key={candidate.id}
+                    type="button"
+                    onClick={() => {
+                      setChosenConnectorId(candidate.id);
+                      setPage(0);
+                    }}
+                    aria-pressed={candidate.id === connector.id}
+                    className={cn(
+                      "rounded-md px-3 py-1.5 text-sm transition-colors",
+                      candidate.id === connector.id
+                        ? "bg-card shadow-clay-sm"
+                        : "text-muted-foreground",
+                    )}
+                  >
+                    {candidate.display_name ?? candidate.provider_name}
+                  </button>
+                ))}
+              </div>
+            )}
             <div className="flex items-center gap-1 rounded-lg bg-secondary p-1 w-fit">
               {(
                 [
@@ -410,10 +436,18 @@ function FilesPage() {
             {filesQuery.isSuccess && files.length === 0 && ownership === "all" && (
               <EmptyState
                 title="No files yet"
-                description="Run a scan to let Vault index this connector's storage."
+                description={
+                  connector?.provider === "local_agent"
+                    ? "Add a folder or drive on this computer, or wait for the agent to finish scanning."
+                    : "Run a scan to let Vault index this connector's storage."
+                }
                 action={
                   <Button asChild variant="outline">
-                    <Link to="/scans">Go to Scans</Link>
+                    {connector?.provider === "local_agent" ? (
+                      <Link to="/storage-connections">Add a folder or drive</Link>
+                    ) : (
+                      <Link to="/scans">Go to Scans</Link>
+                    )}
                   </Button>
                 }
               />
@@ -437,7 +471,7 @@ function FilesPage() {
                     <FileRow
                       key={file.id}
                       file={file}
-                      isOwned={file.owner_email === connector.account_email}
+                      isOwned={connector.account_email === null || file.owner_email === connector.account_email}
                       canManage={canManage}
                       onRename={setRenamingFile}
                       onMove={setMovingFile}
@@ -450,7 +484,7 @@ function FilesPage() {
                     <FileGridCard
                       key={file.id}
                       file={file}
-                      isOwned={file.owner_email === connector.account_email}
+                      isOwned={connector.account_email === null || file.owner_email === connector.account_email}
                       canManage={canManage}
                       onRename={setRenamingFile}
                       onMove={setMovingFile}

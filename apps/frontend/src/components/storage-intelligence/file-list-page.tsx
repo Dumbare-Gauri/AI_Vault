@@ -6,6 +6,7 @@ import type { LucideIcon } from "lucide-react";
 import { useState } from "react";
 
 import { AppShell } from "@/components/app-shell/app-shell";
+import { StorageScopeSwitcher, useStorageScope } from "@/components/storage-intelligence/storage-scope-switcher";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -18,6 +19,7 @@ import { fileTypeIconElement } from "@/lib/file-icon";
 import { formatBytes } from "@/lib/format-bytes";
 import { formatRelativeTime } from "@/lib/format-relative-time";
 import { useAuthStore } from "@/stores/auth-store";
+import { scopedPath } from "@/stores/storage-scope-store";
 
 const PAGE_SIZE = 20;
 
@@ -51,12 +53,13 @@ export function StorageFileListPage({
   const user = useAuthStore((state) => state.user);
   const canManage = user?.role === "owner" || user?.role === "admin";
 
+  const { connectorId } = useStorageScope();
   const separator = apiPath.includes("?") ? "&" : "?";
   const listQuery = useQuery({
-    queryKey: ["storage-intelligence", apiPath, page],
+    queryKey: ["storage-intelligence", apiPath, page, connectorId],
     queryFn: () =>
       apiClient.get<StorageFileListResponse>(
-        `${apiPath}${separator}limit=${PAGE_SIZE}&offset=${page * PAGE_SIZE}`,
+        scopedPath(`${apiPath}${separator}limit=${PAGE_SIZE}&offset=${page * PAGE_SIZE}`, connectorId),
       ),
   });
 
@@ -134,6 +137,7 @@ export function StorageFileListPage({
             {total > 0 ? `${total.toLocaleString()} files found. ${description}` : description}
           </p>
         </div>
+        <StorageScopeSwitcher />
 
         {listQuery.isLoading && (
           <div className="flex flex-col gap-2">

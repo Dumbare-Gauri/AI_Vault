@@ -496,3 +496,109 @@ def test_analysis_is_organization_scoped_and_isolated(db: Session) -> None:
     # Organization B was never analyzed — no snapshot exists for it yet,
     # proving analyzing A never touched or leaked B's data.
     assert snapshot_b is None
+
+
+def _provision_local_connector(db: Session, *, organization_id: uuid.UUID, user_id: uuid.UUID):
+    connector = StorageConnectorRepository(db).upsert_connected(
+        organization_id=organization_id,
+        provider=ConnectorProvider.LOCAL_AGENT,
+        connected_by_user_id=user_id,
+        account_email=None,
+        workspace_domain=None,
+    )
+    db.commit()
+    return connector
+
+
+def _provision_local_file(db: Session, *, connector_id: uuid.UUID, name: str, size: int, checksum: str):
+    source = StorageSourceRepository(db).upsert(
+        connector_id=connector_id,
+        provider_drive_id="root-id",
+        name="C:\Projects",
+        drive_type=DriveType.LOCAL_FOLDER,
+    )
+    file = FileRepository(db).upsert(
+        storage_source_id=source.id,
+        provider_file_id=f"local-{name}",
+        provider_parent_id=None,
+        parent_folder_id=None,
+        name=name,
+        path=f"/{name}",
+        mime_type="video/mp4",
+        size_bytes=size,
+        owner_email=None,
+        is_shared=False,
+        permissions_summary=None,
+        version_id=None,
+        checksum=checksum,
+        web_view_link=None,
+        provider_created_at=datetime.now(UTC),
+        provider_modified_at=datetime.now(UTC),
+        provider_viewed_at=None,
+        scanned_at=datetime.now(UTC),
+    )
+    db.commit()
+    return file
+
+
+@pytest.fixture
+def two_storages(db: Session):
+    user = _provision_user(db)
+    drive = _provision_connector(db, organization_id=user.organization_id, user_id=user.id)
+    computer = _provision_local_connector(db, organization_id=user.organization_id, user_id=user.id)
+    _provision_file(db, connector_id=drive.id, name="brief.txt", provider_file_id="d-1", size_bytes=1_000)
+    _provision_local_file(db, connector_id=computer.id, name="clip.mp4", size=500_000_000, checksum="v1")
+    _provision_local_file(db, connector_id=computer.id, name="clip copy.mp4", size=500_000_000, checksum="v1")
+    StorageIntelligenceService(db).run(_create_job(db, organization_id=user.organization_id).id)
+    return user, drive, computer
+
+
+@requires_infra
+def test_each_connected_storage_gets_its_own_snapshot(db: Session, two_storages) -> None:  # noqa: ANN001
+    user, drive, computer = two_storages
+    snapshots = StorageAnalysisSnapshotRepository(db)
+
+    whole = snapshots.get_latest_for_organization(user.organization_id)
+    on_drive = snapshots.get_latest_for_organization(user.organization_id, connector_id=drive.id)
+    on_computer = snapshots.get_latest_for_organization(user.organization_id, connector_id=computer.id)
+
+    assert (whole.total_files, on_drive.total_files, on_computer.total_files) == (3, 1, 2)
+    assert on_drive.total_size_bytes == 1_000
+    assert on_computer.total_size_bytes == 1_000_000_000
+
+
+@requires_infra
+def test_a_duplicate_counts_in_the_storage_that_holds_the_copy(db: Session, two_storages) -> None:  # noqa: ANN001
+    user, drive, computer = two_storages
+    snapshots = StorageAnalysisSnapshotRepository(db)
+
+    on_drive = snapshots.get_latest_for_organization(user.organization_id, connector_id=drive.id)
+    on_computer = snapshots.get_latest_for_organization(user.organization_id, connector_id=computer.id)
+
+    assert (on_drive.duplicate_group_count, on_drive.duplicate_recoverable_bytes) == (0, 0)
+    assert (on_computer.duplicate_group_count, on_computer.duplicate_recoverable_bytes) == (1, 500_000_000)
+    assert on_computer.total_potential_savings_bytes >= 500_000_000
+
+
+@requires_infra
+def test_lists_can_be_narrowed_to_one_storage(db: Session, two_storages) -> None:  # noqa: ANN001
+    user, drive, computer = two_storages
+    files = FileRepository(db)
+    groups = DuplicateGroupRepository(db)
+
+    large_on_drive, _ = files.list_large_for_organization(
+        user.organization_id, min_size_bytes=100, limit=10, offset=0, connector_id=drive.id
+    )
+    large_on_computer, _ = files.list_large_for_organization(
+        user.organization_id, min_size_bytes=100, limit=10, offset=0, connector_id=computer.id
+    )
+    _, drive_groups = groups.list_for_organization(
+        user.organization_id, limit=10, offset=0, connector_id=drive.id
+    )
+    _, computer_groups = groups.list_for_organization(
+        user.organization_id, limit=10, offset=0, connector_id=computer.id
+    )
+
+    assert [f.name for f in large_on_drive] == ["brief.txt"]
+    assert {f.name for f in large_on_computer} == {"clip.mp4", "clip copy.mp4"}
+    assert (drive_groups, computer_groups) == (0, 1)

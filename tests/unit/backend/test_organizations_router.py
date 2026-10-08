@@ -97,6 +97,12 @@ def test_get_ai_provider_config_reports_unconfigured_by_default(owner_user) -> N
         "openai",
         "anthropic",
         "gemini",
+        "ollama",
+        "zai",
+        "deepseek",
+        "groq",
+        "mistral",
+        "xai",
     }
 
 

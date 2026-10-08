@@ -19,9 +19,29 @@ class ConnectorProvider(enum.StrEnum):
     never a migration."""
 
     GOOGLE_WORKSPACE = "google_workspace"
+    # A folder or drive on the user's own machine, through the Local Agent.
+    LOCAL_AGENT = "local_agent"
 
 
-_PROVIDER_DISPLAY_NAMES: dict[str, str] = {ConnectorProvider.GOOGLE_WORKSPACE: "Google Drive"}
+# Providers whose write access is an OAuth scope granted at connect time.
+OAUTH_SCOPED_PROVIDERS = frozenset({ConnectorProvider.GOOGLE_WORKSPACE})
+
+_PROVIDER_DISPLAY_NAMES: dict[str, str] = {
+    ConnectorProvider.GOOGLE_WORKSPACE: "Google Drive",
+    ConnectorProvider.LOCAL_AGENT: "this computer",
+}
+
+
+_PROVIDER_LOCATIONS: dict[str, str] = {
+    ConnectorProvider.GOOGLE_WORKSPACE: "in Google Drive",
+    ConnectorProvider.LOCAL_AGENT: "on this computer",
+}
+
+
+def provider_location(provider: str) -> str:
+    """Where a provider's files are, as words: "in Google Drive", "on this
+    computer"."""
+    return _PROVIDER_LOCATIONS.get(provider, "in your storage")
 
 
 def provider_display_name(provider: str) -> str:

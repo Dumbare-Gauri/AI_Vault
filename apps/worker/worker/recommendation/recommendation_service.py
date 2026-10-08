@@ -124,7 +124,7 @@ class RecommendationService:
         owned_file_ids = {
             file.id
             for file, _m, _c, _d, account_email in detail_rows
-            if file.owner_email == account_email
+            if account_email is None or file.owner_email == account_email
         }
         owned_rows = [row for row in rows if row.file.id in owned_file_ids]
         context = RuleContext(

@@ -2,7 +2,7 @@ import uuid
 
 from sqlalchemy.orm import Session
 
-from vault_shared import NotFoundError, VaultError
+from vault_shared import NotFoundError, ValidationError, VaultError
 from vault_shared.connectors.google_workspace import get_google_workspace_oauth_client
 from vault_shared.db.models import DriveType
 from vault_shared.db.repositories import FolderRepository, StorageSourceRepository
@@ -95,10 +95,12 @@ def _resolve_source_id(
             raise NotFoundError("Parent folder not found.")
         return folder.storage_source_id
     sources = StorageSourceRepository(session).list_for_connector(connector_id)
-    primary = next((s for s in sources if s.drive_type == DriveType.MY_DRIVE), None)
-    if primary is None:
+    primary = [s for s in sources if s.drive_type in (DriveType.MY_DRIVE, DriveType.LOCAL_FOLDER)]
+    if not primary:
         raise NotFoundError("This connection hasn't been scanned yet — scan it first.")
-    return primary.id
+    if len(primary) > 1:
+        raise ValidationError("Choose which folder to create it in.")
+    return primary[0].id
 
 
 @celery_app.task(name="worker.storage.create_folder")
@@ -153,6 +155,28 @@ def create_text_file(
             content=content,
             mime_type=mime_type,
             parent_folder_id=parent,
+        )
+        return {
+            "ok": True,
+            "id": str(file.id),
+            "name": file.name,
+            "path": file.path,
+            "web_view_link": file.web_view_link,
+        }
+    except VaultError as exc:
+        return {"ok": False, "error": exc.message}
+    finally:
+        session.close()
+
+
+@celery_app.task(name="worker.storage.make_copy")
+def make_copy(organization_id: str, file_id: str, new_name: str | None) -> dict:
+    session = get_session_factory()()
+    try:
+        file = _execution_service(session).make_copy(
+            organization_id=uuid.UUID(organization_id),
+            file_id=uuid.UUID(file_id),
+            new_name=new_name,
         )
         return {
             "ok": True,

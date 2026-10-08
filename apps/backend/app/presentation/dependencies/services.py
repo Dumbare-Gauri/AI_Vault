@@ -24,8 +24,10 @@ from app.application.organization_service import OrganizationService
 from app.application.recommendation_service import RecommendationService
 from app.application.scan_service import ScanService
 from app.application.search_service import SearchService
+from app.application.storage_context_service import StorageContextService
 from app.application.storage_intelligence_service import StorageIntelligenceService
 from app.application.storage_operation_service import StorageOperationService
+from app.application.vault_action_service import VaultActionService
 from app.application.workflow_execution_service import WorkflowExecutionService
 from app.application.workflow_policy_service import WorkflowPolicyService
 from app.application.workflow_service import WorkflowService
@@ -102,9 +104,17 @@ def get_context_builder_service(db: Session = Depends(get_db)) -> ContextBuilder
 
 
 def get_conversation_service(
-    db: Session = Depends(get_db), ai_gateway: AIGateway = Depends(get_ai_gateway)
+    db: Session = Depends(get_db),
+    ai_gateway: AIGateway = Depends(get_ai_gateway),
+    registry: StorageAdapterRegistry = Depends(get_storage_registry),
 ) -> ConversationService:
-    return ConversationService(db, ai_gateway=ai_gateway)
+    return ConversationService(
+        db, ai_gateway=ai_gateway, storage_context=StorageContextService(db, registry=registry)
+    )
+
+
+def get_vault_action_service(db: Session = Depends(get_db)) -> VaultActionService:
+    return VaultActionService(db)
 
 
 def get_dashboard_service(db: Session = Depends(get_db)) -> DashboardService:

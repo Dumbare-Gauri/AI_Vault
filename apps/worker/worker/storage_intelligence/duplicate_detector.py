@@ -78,9 +78,7 @@ class DuplicateDetector:
                 recommended_keep_reason=reason,
                 recommended_keep_confidence=confidence,
             )
-            self._groups.replace_members(
-                group, [(f.id, f.id == keep_file.id) for f in members]
-            )
+            self._groups.replace_members(group, [(f.id, f.id == keep_file.id) for f in members])
 
             total_file_count += len(members)
             total_recoverable += recoverable
@@ -130,8 +128,7 @@ def _recommend_keep(members: list[File]) -> tuple[File, str, float]:
         confidence = 0.65
     elif is_most_recent:
         reason = (
-            f"Most recently modified copy, though its location may not be canonical "
-            f"({best.path})."
+            f"Most recently modified copy, though its location may not be canonical ({best.path})."
         )
         confidence = 0.55
     else:

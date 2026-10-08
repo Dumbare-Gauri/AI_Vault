@@ -137,6 +137,8 @@ class _FakeFileDetail:
     related_files: list
     entity_links: list = field(default_factory=list)
     lifecycle: _FakeFileLifecycle | None = None
+    connector_id: uuid.UUID = field(default_factory=uuid.uuid4)
+    provider: str = "google_drive"
 
 
 @pytest.fixture

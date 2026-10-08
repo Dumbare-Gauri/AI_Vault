@@ -6,6 +6,7 @@ from app.infrastructure.queue.storage_operation_producer import (
     CREATE_FOLDER_TASK,
     CREATE_TEXT_FILE_TASK,
     EMPTY_TRASH_TASK,
+    MAKE_COPY_TASK,
     PREVIEW_TRASH_TASK,
     run_storage_operation,
 )
@@ -13,6 +14,7 @@ from vault_shared import NotFoundError, ValidationError
 from vault_shared.ai_gateway.recommendation import validate_component_name
 from vault_shared.db.repositories import (
     AuditLogRepository,
+    FileRepository,
     FolderRepository,
     StorageConnectorRepository,
     StorageSourceRepository,
@@ -34,6 +36,7 @@ class StorageOperationService:
         self._connectors = StorageConnectorRepository(db)
         self._sources = StorageSourceRepository(db)
         self._folders = FolderRepository(db)
+        self._files = FileRepository(db)
         self._audit_logs = AuditLogRepository(db)
 
     def create_folder(
@@ -90,6 +93,24 @@ class StorageOperationService:
         )
         return self._finish(
             result, organization_id=organization_id, user_id=user_id, event="file_created"
+        )
+
+    def make_copy(
+        self,
+        file_id: uuid.UUID,
+        *,
+        organization_id: uuid.UUID,
+        user_id: uuid.UUID,
+        new_name: str | None,
+    ) -> dict:
+        if not self._files.list_owned_by_organization([file_id], organization_id=organization_id):
+            raise NotFoundError("File not found.")
+        result = run_storage_operation(
+            MAKE_COPY_TASK,
+            args=[str(organization_id), str(file_id), _valid_name(new_name) if new_name else None],
+        )
+        return self._finish(
+            result, organization_id=organization_id, user_id=user_id, event="file_copied"
         )
 
     def preview_trash(self, connector_id: uuid.UUID, *, organization_id: uuid.UUID) -> dict:

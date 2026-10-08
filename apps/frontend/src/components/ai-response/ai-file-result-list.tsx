@@ -1,9 +1,9 @@
 import { useMutation } from "@tanstack/react-query";
-import { Link } from "@tanstack/react-router";
 import type { Citation, ExecutionPlan } from "@vault/types";
 import { Archive, ChevronDown, ChevronUp, FolderArchive } from "lucide-react";
 import { useState } from "react";
 
+import { FilePreviewDialog, type PreviewableFile } from "@/components/file-preview/file-preview-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -36,6 +36,7 @@ export function AIFileResultList({
   // Retrieval-method/confidence is debug-ish provenance info, not the
   // result itself — collapsed by default so the file list reads clean.
   const [showDetails, setShowDetails] = useState(false);
+  const [previewing, setPreviewing] = useState<PreviewableFile | null>(null);
 
   const archiveMutation = useMutation({
     mutationFn: () =>
@@ -96,7 +97,7 @@ export function AIFileResultList({
               onClick={() => createArchiveMutation.mutate()}
             >
               <FolderArchive className="size-3.5" />
-              {createArchiveMutation.isPending ? "Creating plan…" : "Create Archive"}
+              {createArchiveMutation.isPending ? "Starting…" : "Zip into archive"}
             </Button>
             <Button
               size="sm"
@@ -105,7 +106,7 @@ export function AIFileResultList({
               onClick={() => archiveMutation.mutate()}
             >
               <Archive className="size-3.5" />
-              {archiveMutation.isPending ? "Creating plan…" : `Archive ${selected.size} selected`}
+              {archiveMutation.isPending ? "Starting…" : `Move ${selected.size} to Trash`}
             </Button>
           </div>
         )}
@@ -130,20 +131,30 @@ export function AIFileResultList({
                 </span>
               </TableCell>
               <TableCell>
-                <Link
-                  to="/files/$fileId"
-                  params={{ fileId: citation.file_id }}
-                  className="block min-w-0"
+                <button
+                  type="button"
+                  onClick={() =>
+                    setPreviewing({
+                      id: citation.file_id,
+                      name: citation.file_name ?? "File",
+                      mime_type: citation.file_mime_type,
+                      size_bytes: citation.file_size_bytes,
+                    })
+                  }
+                  className="block min-w-0 text-left"
                 >
                   <span className="block truncate font-medium text-foreground/90">
                     {citation.file_name ?? "View file"}
                   </span>
                   {citation.snippet && (
                     <span className="block truncate text-muted-foreground">
+                      {citation.page_number !== null && (
+                        <span className="font-medium">Page {citation.page_number} · </span>
+                      )}
                       {citation.snippet.slice(0, 80).replaceAll("\n", " ")}
                     </span>
                   )}
-                </Link>
+                </button>
               </TableCell>
               <TableCell className="whitespace-nowrap text-right text-muted-foreground">
                 {citation.file_size_bytes !== null && formatBytes(citation.file_size_bytes)}
@@ -174,8 +185,11 @@ export function AIFileResultList({
       )}
       {canManage && selected.size === 0 && (
         <p className="mt-2 text-xs text-muted-foreground">
-          Select files above to archive them (runs immediately, reversible).
+          Select files to move them to Trash or zip them — you can undo either.
         </p>
+      )}
+      {previewing && (
+        <FilePreviewDialog file={previewing} onOpenChange={(open) => !open && setPreviewing(null)} />
       )}
     </div>
   );

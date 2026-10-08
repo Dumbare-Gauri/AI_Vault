@@ -8,6 +8,7 @@ from vault_shared import DependencyUnavailableError
 CREATE_FOLDER_TASK = "worker.storage.create_folder"
 CREATE_TEXT_FILE_TASK = "worker.storage.create_text_file"
 PREVIEW_TRASH_TASK = "worker.storage.preview_trash"
+MAKE_COPY_TASK = "worker.storage.make_copy"
 EMPTY_TRASH_TASK = "worker.storage.empty_trash"
 
 _WAIT_SECONDS = 60

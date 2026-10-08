@@ -10,6 +10,7 @@ from pypdf import PdfReader
 
 from vault_shared import ForbiddenError, get_logger
 from vault_shared.db.models import ExtractionStatus, File
+from vault_shared.grounding import PAGE_BREAK
 from vault_shared.storage import (
     ExportPurpose,
     ProviderFileId,
@@ -41,7 +42,8 @@ def _extract_plain_text(content: bytes) -> str:
 
 def _extract_pdf(content: bytes) -> str:
     reader = PdfReader(io.BytesIO(content))
-    return "\n".join(page.extract_text() or "" for page in reader.pages)
+    # Pages stay separable so answers can cite the page they came from.
+    return PAGE_BREAK.join(page.extract_text() or "" for page in reader.pages)
 
 
 def _extract_docx(content: bytes) -> str:
@@ -86,7 +88,8 @@ _MIME_EXTRACTORS: dict[str, tuple[str, Callable[[bytes], str]]] = {
     ),
 }
 
-_CONTROL_CHARS_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
+# Form feed (\x0c) is kept: it is the page break `PAGE_BREAK` relies on.
+_CONTROL_CHARS_RE = re.compile(r"[\x00-\x08\x0b\x0e-\x1f]")
 
 
 def _sanitize(text: str) -> str:

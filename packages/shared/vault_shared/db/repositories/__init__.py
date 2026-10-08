@@ -61,6 +61,10 @@ from vault_shared.db.repositories.intelligence_progress_repository import (
 from vault_shared.db.repositories.knowledge_attribute_repository import (
     KnowledgeAttributeRepository,
 )
+from vault_shared.db.repositories.local_agent_repository import (
+    AgentCommandRepository,
+    LocalAgentRepository,
+)
 from vault_shared.db.repositories.notification_repository import NotificationRepository
 from vault_shared.db.repositories.organization_analysis_job_repository import (
     OrganizationAnalysisJobRepository,
@@ -158,6 +162,8 @@ __all__ = [
     "KnowledgeAttributeRepository",
     "NotificationRepository",
     "OrganizationAnalysisJobRepository",
+    "AgentCommandRepository",
+    "LocalAgentRepository",
     "OrganizationEntityRepository",
     "OrganizationMemoryRepository",
     "OrganizationRecommendationRepository",

@@ -14,6 +14,7 @@ function message(overrides: Partial<ConversationMessage>): ConversationMessage {
     tool_name: null,
     created_at: "2026-01-01T00:00:00Z",
     citations: [],
+    blocks: [],
     ...overrides,
   };
 }
@@ -24,6 +25,8 @@ const citation = {
   snippet: null,
   confidence: 1,
   retrieval_method: "tool" as const,
+  page_number: null,
+  passage_index: null,
   file_name: "report.pdf",
   file_size_bytes: 1024,
   file_mime_type: "application/pdf",

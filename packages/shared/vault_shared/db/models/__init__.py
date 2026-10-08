@@ -56,6 +56,7 @@ from vault_shared.db.models.intelligence_job import (
 )
 from vault_shared.db.models.intelligence_progress import IntelligenceProgress
 from vault_shared.db.models.knowledge_attribute import KnowledgeAttribute
+from vault_shared.db.models.local_agent import AgentCommand, AgentCommandStatus, LocalAgent
 from vault_shared.db.models.notification import (
     Notification,
     NotificationChannel,
@@ -107,10 +108,12 @@ from vault_shared.db.models.storage_analysis_job import (
 )
 from vault_shared.db.models.storage_analysis_snapshot import StorageAnalysisSnapshot
 from vault_shared.db.models.storage_connector import (
+    OAUTH_SCOPED_PROVIDERS,
     ConnectorProvider,
     ConnectorStatus,
     StorageConnector,
     provider_display_name,
+    provider_location,
 )
 from vault_shared.db.models.storage_source import DriveType, StorageSource
 from vault_shared.db.models.user import User
@@ -203,13 +206,18 @@ __all__ = [
     "MemoryType",
     "Organization",
     "OrganizationAnalysisJob",
+    "AgentCommand",
+    "AgentCommandStatus",
+    "LocalAgent",
     "OrganizationAnalysisJobStatus",
     "OrganizationEntity",
     "OrganizationMemory",
     "OrganizationRecommendation",
     "OrganizationRecommendationKind",
     "OrganizationRecommendationStatus",
+    "OAUTH_SCOPED_PROVIDERS",
     "provider_display_name",
+    "provider_location",
     "Recommendation",
     "RecommendationCategory",
     "RecommendationEvent",

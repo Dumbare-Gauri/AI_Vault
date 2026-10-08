@@ -1,9 +1,10 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, createFileRoute, redirect } from "@tanstack/react-router";
-import type { Connector, FileDetail } from "@vault/types";
+import type { Connector, CreatedItem, FileDetail } from "@vault/types";
 import {
   Archive,
   BrainCircuit,
+  Copy,
   ChevronLeft,
   Download,
   ExternalLink,
@@ -74,16 +75,34 @@ function FileDetailPage() {
     enabled: canManage,
   });
   const connector = connectorsQuery.data?.find(
-    (candidate) => candidate.provider === "google_workspace" && candidate.status === "connected",
+    (candidate) =>
+      candidate.id === fileQuery.data?.connector_id && candidate.status === "connected",
   );
 
   const file = fileQuery.data;
-  const isOwned = file !== undefined && file.owner_email === connector?.account_email;
+  // A connection with no account (a local disk) has no files owned by others.
+  const isOwned =
+    file !== undefined &&
+    connector !== undefined &&
+    (connector.account_email === null || file.owner_email === connector.account_email);
 
   const downloadMutation = useMutation({
     mutationFn: () => downloadFile(`/v1/files/${fileId}/download`, file?.name ?? "download"),
     onError: (error) => {
       toast.error(error instanceof ApiError ? error.message : "Couldn't download this file.");
+    },
+  });
+
+  const copyMutation = useMutation({
+    mutationFn: () => apiClient.post<CreatedItem>(`/v1/files/${fileId}/copy`, {}),
+    onSuccess: (copied) => {
+      void queryClient.invalidateQueries({ queryKey: ["files"] });
+      toast.success(
+        `"${copied.name}" created in ${connector?.provider_name ?? "your storage"} — confirmed`,
+      );
+    },
+    onError: (error) => {
+      toast.error(error instanceof ApiError ? error.message : "Couldn't copy this file.");
     },
   });
 
@@ -166,6 +185,17 @@ function FileDetailPage() {
                 {canManage && isOwned && connector && (
                   <Button variant="outline" size="sm" onClick={() => setMoving(true)}>
                     <FolderInput className="size-4" /> Move
+                  </Button>
+                )}
+                {canManage && isOwned && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={copyMutation.isPending}
+                    onClick={() => copyMutation.mutate()}
+                  >
+                    <Copy className="size-4" />
+                    {copyMutation.isPending ? "Copying…" : "Make a copy"}
                   </Button>
                 )}
                 {canManage && isOwned && (

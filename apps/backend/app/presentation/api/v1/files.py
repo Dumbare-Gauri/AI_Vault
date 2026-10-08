@@ -9,6 +9,7 @@ from app.application.archive_service import ArchiveService
 from app.application.file_service import FileService
 from app.application.storage_operation_service import StorageOperationService
 from app.presentation.api.v1.schemas import (
+    CopyFileRequest,
     CreatedItemResponse,
     CreateFolderRequest,
     CreateTextFileRequest,
@@ -193,4 +194,24 @@ def empty_provider_trash(
             expected_count=request.expected_count,
             confirmation=request.confirmation,
         )
+    )
+
+
+@files_router.post("/files/{file_id}/copy", response_model=CreatedItemResponse, status_code=201)
+def make_copy(
+    file_id: uuid.UUID,
+    request: CopyFileRequest,
+    user: User = Depends(_require_owner_or_admin),
+    service: StorageOperationService = Depends(get_storage_operation_service),
+) -> CreatedItemResponse:
+    """Copies the file in the connected storage itself, next to the original;
+    responds only once the provider's copy has been checked against it."""
+    result = service.make_copy(
+        file_id, organization_id=user.organization_id, user_id=user.id, new_name=request.new_name
+    )
+    return CreatedItemResponse(
+        id=result["id"],
+        name=result["name"],
+        path=result["path"],
+        web_view_link=result.get("web_view_link"),
     )

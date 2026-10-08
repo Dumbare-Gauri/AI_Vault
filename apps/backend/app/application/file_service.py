@@ -58,6 +58,10 @@ class FileDetail:
     related_files: list[RelatedFile]
     entity_links: list[LinkedEntity]
     lifecycle: FileLifecycle | None
+    # The connection the file lives in, so the client acts through the
+    # right storage.
+    connector_id: uuid.UUID | None = None
+    provider: str | None = None
 
 
 class FileService:
@@ -162,6 +166,8 @@ class FileService:
             if link.entity_id in entities_by_id
         ]
 
+        owned = self._files.get_owned_with_connector(file.id, organization_id=organization_id)
+        connector = owned[1] if owned else None
         return FileDetail(
             file=file,
             metadata=self._file_metadata.get_by_file_id(file.id),
@@ -172,6 +178,8 @@ class FileService:
             related_files=related_files,
             entity_links=entity_links,
             lifecycle=self._lifecycles.get_by_file_id(file.id),
+            connector_id=connector.id if connector else None,
+            provider=connector.provider if connector else None,
         )
 
     def get_download_stream(

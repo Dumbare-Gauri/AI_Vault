@@ -133,6 +133,7 @@ AI_CORE_FILES = _files_in(
 )
 AI_CONSUMER_FILES = _files_in(
     "apps/backend/app/application/assistant",
+    "apps/backend/app/application/vault_ai",
     "apps/backend/app/application/conversation_service.py",
     "apps/backend/app/application/context_builder_service.py",
     "apps/backend/app/application/ai_status_service.py",
@@ -386,6 +387,8 @@ DEFAULT_REGISTRY = "packages/shared/vault_shared/storage/default_registry.py"
 ADAPTER_CONSUMERS = frozenset(
     {
         "apps/backend/app/application/file_service.py",
+        # Reads each storage's capabilities only, to tell Ask Vault what's possible.
+        "apps/backend/app/application/storage_context_service.py",
         "apps/worker/worker/execution/execution_service.py",
         "apps/worker/worker/scanner/scan_service.py",
         "apps/worker/worker/enrichment/enrichment_service.py",

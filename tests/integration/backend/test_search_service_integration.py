@@ -16,6 +16,7 @@ from vault_shared.ai_gateway.providers import ExtractiveCompletionProvider
 from vault_shared.db.models import ConnectorProvider, DriveType
 from vault_shared.db.repositories import (
     EmbeddingRepository,
+    FileExtractionRepository,
     FileRepository,
     StorageConnectorRepository,
     StorageSourceRepository,
@@ -188,7 +189,7 @@ def test_search_ranks_semantic_matches_by_similarity(db: Session) -> None:
     service = SearchService(db, ai_gateway=gateway)
 
     results = service.search(
-        "content that means the same as alpha",
+        "content that means the same thing",
         organization_id=user.organization_id,
         user_id=user.id,
     )
@@ -296,6 +297,35 @@ def test_similar_content_is_offered_when_nothing_matches_exactly(db: Session) ->
 
     assert [r.file.id for r in outcome.results] == [similar.id]
     assert any("similar content" in part for part in outcome.understood)
+
+
+@requires_infra
+def test_a_file_is_found_by_words_inside_it_when_no_name_matches(db: Session) -> None:
+    user = _provision_user(db)
+    connector = _provision_connector(db, organization_id=user.organization_id, user_id=user.id)
+    contract = _provision_file(db, connector_id=connector.id, name="Blarrow_Contract_2026.pdf")
+    FileExtractionRepository(db).upsert(
+        file_id=contract.id,
+        status="success",
+        extractor_name="pdf_text",
+        extracted_text="Payment Terms. The client will pay INR 2,50,000.",
+        char_count=48,
+        error=None,
+        extracted_at=datetime.now(UTC),
+    )
+    db.commit()
+    gateway = AIGateway(
+        embedding_provider=_FixedVectorEmbeddingProvider([1.0, 0.0, 0.0, 0.0]),
+        completion_provider=ExtractiveCompletionProvider(),
+    )
+
+    outcome = SearchService(db, ai_gateway=gateway).find(
+        "contract mentioning the payment amount",
+        organization_id=user.organization_id,
+        user_id=user.id,
+    )
+
+    assert [r.file.id for r in outcome.results] == [contract.id]
 
 
 @requires_infra

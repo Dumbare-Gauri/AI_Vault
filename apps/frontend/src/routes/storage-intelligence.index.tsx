@@ -23,6 +23,11 @@ import {
 import type { LucideIcon } from "lucide-react";
 
 import { AppShell } from "@/components/app-shell/app-shell";
+import {
+  StorageScopeNote,
+  StorageScopeSwitcher,
+  useStorageScope,
+} from "@/components/storage-intelligence/storage-scope-switcher";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -35,6 +40,7 @@ import { formatRelativeTime } from "@/lib/format-relative-time";
 import { entityTypeLabel } from "@/lib/organization-style";
 import { analysisStatusBadgeVariant, analysisStatusLabel } from "@/lib/storage-intelligence-style";
 import { useAuthStore } from "@/stores/auth-store";
+import { scopedPath } from "@/stores/storage-scope-store";
 
 export const Route = createFileRoute("/storage-intelligence/")({
   beforeLoad: () => {
@@ -74,24 +80,30 @@ function StorageIntelligencePage() {
   const queryClient = useQueryClient();
   const user = useAuthStore((state) => state.user);
   const canManage = user?.role === "owner" || user?.role === "admin";
+  const { connectorId, connector } = useStorageScope();
 
   const overviewQuery = useQuery({
-    queryKey: ["storage-intelligence", "overview"],
-    queryFn: () => apiClient.get<StorageOverview>("/v1/storage/overview"),
+    queryKey: ["storage-intelligence", "overview", connectorId],
+    queryFn: () => apiClient.get<StorageOverview>(scopedPath("/v1/storage/overview", connectorId)),
   });
   const statisticsQuery = useQuery({
-    queryKey: ["storage-intelligence", "statistics"],
-    queryFn: () => apiClient.get<StorageStatistics>("/v1/storage/statistics"),
+    queryKey: ["storage-intelligence", "statistics", connectorId],
+    queryFn: () =>
+      apiClient.get<StorageStatistics>(scopedPath("/v1/storage/statistics", connectorId)),
   });
   const duplicatesQuery = useQuery({
-    queryKey: ["storage-intelligence", "duplicates", "preview"],
+    queryKey: ["storage-intelligence", "duplicates", "preview", connectorId],
     queryFn: () =>
-      apiClient.get<DuplicateGroupListResponse>("/v1/storage/duplicates?limit=5&offset=0"),
+      apiClient.get<DuplicateGroupListResponse>(
+        scopedPath("/v1/storage/duplicates?limit=5&offset=0", connectorId),
+      ),
   });
   const largeFilesQuery = useQuery({
-    queryKey: ["storage-intelligence", "large-files", "preview"],
+    queryKey: ["storage-intelligence", "large-files", "preview", connectorId],
     queryFn: () =>
-      apiClient.get<StorageFileListResponse>("/v1/storage/large-files?limit=5&offset=0"),
+      apiClient.get<StorageFileListResponse>(
+        scopedPath("/v1/storage/large-files?limit=5&offset=0", connectorId),
+      ),
   });
 
   const analyzeMutation = useMutation({
@@ -157,6 +169,11 @@ function StorageIntelligencePage() {
                 : "Re-analyze storage"}
             </Button>
           )}
+        </div>
+
+        <div className="flex flex-col gap-2">
+          <StorageScopeSwitcher />
+          <StorageScopeNote connector={connector} />
         </div>
 
         <Card>
@@ -238,7 +255,7 @@ function StorageIntelligencePage() {
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
               <StatCard
                 icon={HardDrive}
-                label="Storage used"
+                label="Indexed files"
                 value={formatBytes(overview.total_size_bytes ?? 0)}
                 sub={`${(overview.total_files ?? 0).toLocaleString()} files`}
               />

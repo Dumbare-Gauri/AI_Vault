@@ -33,6 +33,7 @@ function baseMessage(overrides: Partial<ConversationMessage>): ConversationMessa
     tool_name: null,
     created_at: "2026-01-01T00:00:00Z",
     citations: [],
+    blocks: [],
     ...overrides,
   };
 }
@@ -41,8 +42,9 @@ describe("AIResponseRenderer", () => {
   it("renders a structured file list instead of relying on flattened text alone", () => {
     renderWithQueryClient(
       <AIResponseRenderer
+        conversationId="conversation-1"
         message={baseMessage({
-          tool_name: "get_large_files",
+          tool_name: "vault:largest_files",
           citations: [
             {
               id: "cit-1",
@@ -50,6 +52,8 @@ describe("AIResponseRenderer", () => {
               snippet: null,
               confidence: 1,
               retrieval_method: "tool",
+              page_number: null,
+              passage_index: null,
               file_name: "SPEAKERS.stl",
               file_size_bytes: 51_302,
               file_mime_type: "model/stl",
@@ -60,6 +64,8 @@ describe("AIResponseRenderer", () => {
               snippet: null,
               confidence: 1,
               retrieval_method: "tool",
+              page_number: null,
+              passage_index: null,
               file_name: "GTA SA Sd Data.rar",
               file_size_bytes: 3_880_000,
               file_mime_type: "application/x-rar-compressed",
@@ -88,10 +94,12 @@ describe("AIResponseRenderer", () => {
   it("renders prose-only with no table when a tool produced no citations", () => {
     renderWithQueryClient(
       <AIResponseRenderer
+        conversationId="conversation-1"
         message={baseMessage({
           content: "You're using 842 GB across 12,400 files.",
-          tool_name: "get_storage_overview",
+          tool_name: "vault:storage_summary",
           citations: [],
+    blocks: [],
         })}
       />,
     );
@@ -103,6 +111,7 @@ describe("AIResponseRenderer", () => {
   it("renders an expanded single-file card for get_file", () => {
     renderWithQueryClient(
       <AIResponseRenderer
+        conversationId="conversation-1"
         message={baseMessage({
           content: "Here's what I found.",
           tool_name: "get_file",
@@ -113,6 +122,8 @@ describe("AIResponseRenderer", () => {
               snippet: "some snippet",
               confidence: 1,
               retrieval_method: "tool",
+              page_number: null,
+              passage_index: null,
               file_name: "Q3 Board Deck.pdf",
               file_size_bytes: 2_500_000,
               file_mime_type: "application/pdf",
@@ -131,8 +142,9 @@ describe("AIResponseRenderer", () => {
     // only stores the first fired tool's name.
     renderWithQueryClient(
       <AIResponseRenderer
+        conversationId="conversation-1"
         message={baseMessage({
-          tool_name: "get_storage_overview",
+          tool_name: "vault:storage_summary",
           citations: [
             {
               id: "cit-1",
@@ -140,6 +152,8 @@ describe("AIResponseRenderer", () => {
               snippet: null,
               confidence: 1,
               retrieval_method: "tool",
+              page_number: null,
+              passage_index: null,
               file_name: "old-project.zip",
               file_size_bytes: 900_000,
               file_mime_type: "application/zip",

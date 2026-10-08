@@ -24,13 +24,19 @@ const CONFIRM_PHRASE = "EMPTY TRASH";
 
 interface EmptyTrashDialogProps {
   connectorId: string;
+  /** Whose Trash this is, as words: "Google Drive" or "this computer". */
+  storage?: string;
   onOpenChange: (open: boolean) => void;
 }
 
-/** Permanently empties the connected Google Drive's Trash. Shows exactly what
+/** Permanently empties a connected storage's Trash. Shows exactly what
  * will be deleted (read live from Drive) and requires an explicit acknowledgement.
  * Mounted only while open, so the confirmation starts unticked. */
-export function EmptyTrashDialog({ connectorId, onOpenChange }: EmptyTrashDialogProps) {
+export function EmptyTrashDialog({
+  connectorId,
+  onOpenChange,
+  storage = "Google Drive",
+}: EmptyTrashDialogProps) {
   const [acknowledged, setAcknowledged] = useState(false);
   const queryClient = useQueryClient();
 
@@ -48,15 +54,15 @@ export function EmptyTrashDialog({ connectorId, onOpenChange }: EmptyTrashDialog
       }),
     onSuccess: (emptied) => {
       if (emptied.file_count === 0) {
-        toast.success("Google Drive's Trash is already empty.");
+        toast.success(`${storage}'s Trash is already empty.`);
       } else if (emptied.still_deleting_count > 0) {
-        toast.success(`Google is permanently deleting ${emptied.file_count} files from Drive's Trash`, {
+        toast.success(`Permanently deleting ${emptied.file_count} files from ${storage}'s Trash`, {
           description: `${emptied.still_deleting_count} are still being removed — your storage updates within a few minutes.`,
         });
       } else {
         toast.success(
-          `Google Drive's Trash is empty — ${emptied.file_count} files permanently deleted, ${formatBytes(emptied.total_bytes)} freed`,
-          { description: "Confirmed with Google Drive." },
+          `${storage}'s Trash is empty — ${emptied.file_count} files permanently deleted, ${formatBytes(emptied.total_bytes)} freed`,
+          { description: `Confirmed with ${storage}.` },
         );
       }
       void queryClient.invalidateQueries();
@@ -80,23 +86,23 @@ export function EmptyTrashDialog({ connectorId, onOpenChange }: EmptyTrashDialog
       <DialogContent className="max-w-lg">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2 text-destructive">
-            <Trash2 className="size-5" /> Empty Google Drive&rsquo;s Trash
+            <Trash2 className="size-5" /> Empty {storage}&rsquo;s Trash
           </DialogTitle>
           <DialogDescription>
-            Everything in your Drive&rsquo;s Trash is deleted permanently. This can&rsquo;t be
-            undone — not by AI Vault, and not by Google.
+            Everything in {storage}&rsquo;s Trash is deleted permanently. This can&rsquo;t be
+            undone.
           </DialogDescription>
         </DialogHeader>
 
         {previewQuery.isLoading && <Skeleton className="h-40 rounded-lg" />}
         {previewQuery.isError && (
           <p className="text-sm text-destructive">
-            Couldn&rsquo;t read your Drive&rsquo;s Trash. Close this and try again.
+            Couldn&rsquo;t read {storage}&rsquo;s Trash. Close this and try again.
           </p>
         )}
 
         {preview && preview.file_count === 0 && (
-          <p className="text-sm text-muted-foreground">Your Drive&rsquo;s Trash is already empty.</p>
+          <p className="text-sm text-muted-foreground">{storage}&rsquo;s Trash is already empty.</p>
         )}
 
         {preview && preview.file_count > 0 && (

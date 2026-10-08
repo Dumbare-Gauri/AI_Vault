@@ -46,6 +46,48 @@ AI_PROVIDERS: dict[str, AIProviderSpec] = {
             base_url="https://generativelanguage.googleapis.com/v1beta/openai",
             model_hint="gemini-2.5-flash",
         ),
+        AIProviderSpec(
+            id="ollama",
+            label="Ollama Cloud",
+            protocol="openai_chat",
+            base_url="https://ollama.com/v1",
+            model_hint="gpt-oss:120b",
+        ),
+        AIProviderSpec(
+            id="zai",
+            label="Z.ai (GLM)",
+            protocol="openai_chat",
+            base_url="https://api.z.ai/api/paas/v4",
+            model_hint="glm-4.6",
+        ),
+        AIProviderSpec(
+            id="deepseek",
+            label="DeepSeek",
+            protocol="openai_chat",
+            base_url="https://api.deepseek.com/v1",
+            model_hint="deepseek-chat",
+        ),
+        AIProviderSpec(
+            id="groq",
+            label="Groq",
+            protocol="openai_chat",
+            base_url="https://api.groq.com/openai/v1",
+            model_hint="llama-3.3-70b-versatile",
+        ),
+        AIProviderSpec(
+            id="mistral",
+            label="Mistral",
+            protocol="openai_chat",
+            base_url="https://api.mistral.ai/v1",
+            model_hint="mistral-small-latest",
+        ),
+        AIProviderSpec(
+            id="xai",
+            label="xAI (Grok)",
+            protocol="openai_chat",
+            base_url="https://api.x.ai/v1",
+            model_hint="grok-4",
+        ),
     )
 }
 DEFAULT_AI_PROVIDER = "openrouter"

@@ -2,7 +2,7 @@ import uuid
 
 from sqlalchemy.orm import Session
 
-from vault_shared.db.models import DuplicateGroup, DuplicateGroupMember, File
+from vault_shared.db.models import DuplicateGroup, DuplicateGroupMember, File, StorageSource
 
 
 class DuplicateGroupRepository:
@@ -82,9 +82,27 @@ class DuplicateGroupRepository:
         self._session.flush()
 
     def list_for_organization(
-        self, organization_id: uuid.UUID, *, limit: int, offset: int
+        self,
+        organization_id: uuid.UUID,
+        *,
+        limit: int,
+        offset: int,
+        connector_id: uuid.UUID | None = None,
     ) -> tuple[list[DuplicateGroup], int]:
+        """With `connector_id`, only groups that have a redundant copy in
+        that storage — the copies that storage could free."""
         query = self._session.query(DuplicateGroup).filter_by(organization_id=organization_id)
+        if connector_id is not None:
+            in_storage = (
+                self._session.query(DuplicateGroupMember.duplicate_group_id)
+                .join(File, DuplicateGroupMember.file_id == File.id)
+                .join(StorageSource, File.storage_source_id == StorageSource.id)
+                .filter(
+                    StorageSource.connector_id == connector_id,
+                    DuplicateGroupMember.is_recommended_keep.is_(False),
+                )
+            )
+            query = query.filter(DuplicateGroup.id.in_(in_storage))
         total = query.count()
         items = (
             query.order_by(DuplicateGroup.recoverable_size_bytes.desc())
@@ -102,6 +120,27 @@ class DuplicateGroupRepository:
             .filter_by(id=group_id, organization_id=organization_id)
             .first()
         )
+
+    def list_recoverable_members_for_organization(
+        self, organization_id: uuid.UUID
+    ) -> list[tuple[uuid.UUID, uuid.UUID, int]]:
+        """`(group_id, file_id, size)` for every redundant copy — lets a
+        per-storage summary count only the copies in that storage."""
+        rows = (
+            self._session.query(
+                DuplicateGroupMember.duplicate_group_id,
+                DuplicateGroupMember.file_id,
+                File.size_bytes,
+            )
+            .join(DuplicateGroup, DuplicateGroupMember.duplicate_group_id == DuplicateGroup.id)
+            .join(File, DuplicateGroupMember.file_id == File.id)
+            .filter(
+                DuplicateGroup.organization_id == organization_id,
+                DuplicateGroupMember.is_recommended_keep.is_(False),
+            )
+            .all()
+        )
+        return [(group_id, file_id, size or 0) for group_id, file_id, size in rows]
 
     def list_recoverable_file_ids_with_sizes_for_organization(
         self, organization_id: uuid.UUID
@@ -129,6 +168,26 @@ class DuplicateGroupRepository:
         one file is a non-kept duplicate — a single-file lookup, unlike
         every other method on this repository which operates group-first."""
         return self._session.query(DuplicateGroupMember).filter_by(file_id=file_id).first()
+
+    def list_members_with_files_for_groups(
+        self, group_ids: list[uuid.UUID]
+    ) -> dict[uuid.UUID, list[tuple[DuplicateGroupMember, File]]]:
+        """Every listed group's members in one query, kept copy first."""
+        members: dict[uuid.UUID, list[tuple[DuplicateGroupMember, File]]] = {
+            group_id: [] for group_id in group_ids
+        }
+        if not group_ids:
+            return members
+        rows = (
+            self._session.query(DuplicateGroupMember, File)
+            .join(File, DuplicateGroupMember.file_id == File.id)
+            .filter(DuplicateGroupMember.duplicate_group_id.in_(group_ids))
+            .order_by(DuplicateGroupMember.is_recommended_keep.desc(), File.name)
+            .all()
+        )
+        for member, file in rows:
+            members[member.duplicate_group_id].append((member, file))
+        return members
 
     def list_members_with_files(
         self, group_id: uuid.UUID

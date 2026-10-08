@@ -1,25 +1,17 @@
-import hashlib
-import json
+import re
 import uuid
 from dataclasses import dataclass
+from typing import Any
 
 from sqlalchemy.orm import Session
 
-from app.application.assistant import (
-    STORAGE_ASSISTANT_SYSTEM_PROMPT,
-    TOOL_REGISTRY,
-    ToolCall,
-    ToolContext,
-    ToolSpec,
-    classify_intent,
-    extract_citable_file_ids,
-    render_deterministic_answer,
-    render_tool_context,
-)
+from app.application.assistant import NOT_FOUND_IN_FILES, STORAGE_ASSISTANT_SYSTEM_PROMPT
 from app.application.context_builder_service import CitationCandidate, ContextBuilderService
-from app.application.search_service import SearchService
-from app.infrastructure.cache.rate_limit_counter import check_rate_limit
-from app.infrastructure.cache.response_cache import get_cached_json, set_cached_json
+from app.application.search_service import SearchResult, SearchService
+from app.application.storage_context_service import StorageContextService
+from app.application.vault_ai.assistant import VaultAssistant
+from app.application.vault_ai.reasoning import ModelReasoning
+from app.application.vault_ai.understanding import Request, understand
 from vault_shared import AIUnavailableError, NotFoundError, get_logger, get_settings
 from vault_shared.ai_gateway import AIGateway, Message
 from vault_shared.ai_gateway.boundary import with_boundary_rules
@@ -35,6 +27,7 @@ from vault_shared.db.repositories import (
     CitationRepository,
     ConversationMessageRepository,
     ConversationRepository,
+    FileIntelligenceRepository,
     FileRepository,
 )
 from vault_shared.metrics import record_assistant_tool_used
@@ -44,11 +37,16 @@ _TITLE_MAX_LENGTH = 80
 # not the up-to-20-result set the standalone /search page shows — this caps
 # how many files ground a single conversational turn.
 _MAX_GROUNDING_RESULTS = 6
-# `AIGateway.get_ai_gateway()`'s stub adapter — checked so a tool turn with
-# no real completion provider configured answers deterministically from the
-# tool result directly, rather than routing through the stub's generic
-# context echo (see `render_deterministic_answer`).
+# `AIGateway.get_ai_gateway()`'s stub adapter — with no real model
+# configured, nothing that needs one (classifying, grouping) is attempted.
 _STUB_PROVIDER_NAME = "extractive_fallback"
+# A request the fixed rules didn't recognize but that reads like an
+# instruction — worth asking the model what it means.
+_LOOKS_LIKE_COMMAND = re.compile(
+    r"^\s*(please\s+)?(put|group|gather|collect|bundle|sort|clear|consolidate|merge|combine|"
+    r"split|separate|file\s+away|set\s+up|build|tidy|clean|declutter|make|get)\b",
+    re.IGNORECASE,
+)
 # Shown when the AI reasoning service fails mid-conversation: the storage
 # product must keep answering from its own deterministic data instead of
 # failing the request (and never leaks the provider's error text).
@@ -100,9 +98,16 @@ class ConversationService:
     organization's or user's history (Conversations are user-scoped, not
     just org-scoped — see `ConversationRepository.get_owned`)."""
 
-    def __init__(self, db: Session, *, ai_gateway: AIGateway) -> None:
+    def __init__(
+        self,
+        db: Session,
+        *,
+        ai_gateway: AIGateway,
+        storage_context: StorageContextService | None = None,
+    ) -> None:
         self._db = db
         self._ai_gateway = ai_gateway
+        self._storage_context = storage_context or StorageContextService(db)
         self._settings = get_settings()
         self._conversations = ConversationRepository(db)
         self._messages = ConversationMessageRepository(db)
@@ -140,8 +145,7 @@ class ConversationService:
         for citation in citations:
             citations_by_message_id[citation.message_id].append(citation)
         files_by_id = {
-            file.id: file
-            for file in self._files.list_by_ids(list({c.file_id for c in citations}))
+            file.id: file for file in self._files.list_by_ids(list({c.file_id for c in citations}))
         }
         return ConversationDetail(
             conversation=conversation,
@@ -149,6 +153,50 @@ class ConversationService:
             citations_by_message_id=citations_by_message_id,
             files_by_id=files_by_id,
         )
+
+    def result_page(
+        self,
+        conversation_id: uuid.UUID,
+        message_id: uuid.UUID,
+        block_index: int,
+        *,
+        organization_id: uuid.UUID,
+        user_id: uuid.UUID,
+        offset: int,
+        limit: int,
+    ) -> dict[str, Any]:
+        """One page of a list an answer showed — every result stays
+        reachable, not just the first page that came with the message."""
+        conversation = self.get_owned(
+            conversation_id, organization_id=organization_id, user_id=user_id
+        )
+        message = next(
+            (
+                m
+                for m in self._messages.list_for_conversation(conversation.id)
+                if m.id == message_id
+            ),
+            None,
+        )
+        if message is None or not 0 <= block_index < len(message.blocks or []):
+            raise NotFoundError("That result is no longer available.")
+        block = message.blocks[block_index]
+        assistant = VaultAssistant(
+            self._db,
+            organization_id=organization_id,
+            user_id=user_id,
+            search=self._search,
+            storage_context=self._storage_context,
+            reasoning=None,
+        )
+        if block.get("type") == "duplicate_groups":
+            ids = block.get("group_ids") or []
+            return {
+                "total": len(ids),
+                "groups": assistant.duplicate_page(ids[offset : offset + limit]),
+            }
+        ids = block.get("file_ids") or []
+        return {"total": len(ids), "items": assistant.file_page(ids[offset : offset + limit])}
 
     def ask(
         self,
@@ -185,43 +233,45 @@ class ConversationService:
         if org_completion_provider is not None:
             ai_gateway = self._ai_gateway.with_completion_provider(org_completion_provider)
 
-        tool_calls = classify_intent(question)[: self._settings.ai_max_tool_calls]
-        if tool_calls and not self._check_tool_rate_limit(organization_id, user_id):
-            # Degrade to the RAG path rather than raising — the route-level
-            # `conversation-ask` rate limiter is already the hard stop for
-            # this endpoint; this narrower, service-layer limit's job is
-            # capping expensive tool dispatch specifically, so it sheds
-            # that work rather than failing the whole request.
-            record_assistant_tool_used("rate_limited")
-            tool_calls = []
+        has_model = ai_gateway.completion_provider_name != _STUB_PROVIDER_NAME
+        reasoning = (
+            ModelReasoning(ai_gateway, summaries=FileIntelligenceRepository(self._db))
+            if has_model
+            else None
+        )
+        state = dict(conversation.state or {})
+        request = understand(question)
+        if request.kind == "ask" and reasoning and _LOOKS_LIKE_COMMAND.search(question):
+            request = reasoning.classify(question, request)
 
-        if tool_calls:
-            assistant_message, citations = self._answer_with_tools(
+        if request.kind != "ask":
+            assistant_message, citations = self._answer_with_vault(
                 conversation=conversation,
-                history=history,
-                question=question,
-                tool_calls=tool_calls,
+                request=request,
+                state=state,
                 organization_id=organization_id,
                 user_id=user_id,
                 ai_gateway=ai_gateway,
+                reasoning=reasoning,
             )
         else:
             assistant_message, citations = self._answer_with_search(
                 conversation=conversation,
                 history=history,
                 question=question,
+                request=request,
+                state=state,
                 organization_id=organization_id,
                 user_id=user_id,
                 ai_gateway=ai_gateway,
             )
-            record_assistant_tool_used("none")
+        record_assistant_tool_used(request.kind)
 
         self._conversations.touch(conversation)
         self._db.commit()
 
         files_by_id = {
-            file.id: file
-            for file in self._files.list_by_ids(list({c.file_id for c in citations}))
+            file.id: file for file in self._files.list_by_ids(list({c.file_id for c in citations}))
         }
         return AssistantTurn(
             conversation=conversation,
@@ -231,79 +281,38 @@ class ConversationService:
             files_by_id=files_by_id,
         )
 
-    def _answer_with_tools(
+    def _answer_with_vault(
         self,
         *,
         conversation: Conversation,
-        history: list[ConversationMessage],
-        question: str,
-        tool_calls: list[ToolCall],
+        request: Request,
+        state: dict[str, Any],
         organization_id: uuid.UUID,
         user_id: uuid.UUID,
         ai_gateway: AIGateway,
+        reasoning: ModelReasoning | None,
     ) -> tuple[ConversationMessage, list[Citation]]:
-        ctx = ToolContext(
-            db=self._db,
+        """Storage questions and requests: answered from AI Vault's own data,
+        with changes proposed for the user to confirm."""
+        assistant = VaultAssistant(
+            self._db,
             organization_id=organization_id,
             user_id=user_id,
-            ai_gateway=ai_gateway,
+            search=SearchService(self._db, ai_gateway=ai_gateway),
+            storage_context=self._storage_context,
+            reasoning=reasoning,
         )
-        results: list[tuple[str, dict]] = []
-        for call in tool_calls:
-            spec = TOOL_REGISTRY.get(call.name)
-            if spec is None:
-                continue
-
-            cached = self._get_cached_tool_result(spec, organization_id, call.args)
-            if cached is not None:
-                result = cached
-            else:
-                try:
-                    result = spec.handler(ctx, call.args)
-                except NotFoundError:
-                    result = {"error": "That could not be found."}
-                if spec.cacheable:
-                    self._set_cached_tool_result(spec, organization_id, call.args, result)
-
-            results.append((call.name, result))
-            record_assistant_tool_used(call.name)
-
-        completion_messages = self._build_completion_messages(history, question)
-
-        if ai_gateway.completion_provider_name == _STUB_PROVIDER_NAME:
-            text = render_deterministic_answer(results)
-            provider = _STUB_PROVIDER_NAME
-            token_usage = None
-        else:
-            context_text = render_tool_context(results)
-            try:
-                completion = ai_gateway.complete(
-                    messages=completion_messages,
-                    context=context_text,
-                    max_tokens=self._settings.ai_max_output_tokens,
-                )
-                text = completion.text
-                provider = completion.provider
-                token_usage = completion.tokens_used
-            except AIUnavailableError as exc:
-                logger.warning("assistant_degraded_to_deterministic", extra={"reason": exc.reason})
-                record_assistant_tool_used("ai_degraded")
-                text = _DEGRADED_NOTICE + render_deterministic_answer(results)
-                provider = _STUB_PROVIDER_NAME
-                token_usage = None
-
-        assistant_message = self._messages.create(
+        reply = assistant.handle(request, state)
+        conversation.state = reply.state
+        message = self._messages.create(
             conversation_id=conversation.id,
             role=MessageRole.ASSISTANT,
-            content=text,
+            content=reply.text,
             retrieval_method="tool",
-            provider=provider,
-            token_usage=token_usage,
-            tool_name=tool_calls[0].name,
+            tool_name=f"vault:{request.kind}"[:50],
+            blocks=reply.blocks,
         )
-
-        citations = self._create_tool_citations(assistant_message.id, results)
-        return assistant_message, citations
+        return message, []
 
     def _answer_with_search(
         self,
@@ -311,17 +320,33 @@ class ConversationService:
         conversation: Conversation,
         history: list[ConversationMessage],
         question: str,
+        request: Request,
+        state: dict[str, Any],
         organization_id: uuid.UUID,
         user_id: uuid.UUID,
         ai_gateway: AIGateway,
     ) -> tuple[ConversationMessage, list[Citation]]:
-        results = self._search.search(
-            question,
-            organization_id=organization_id,
-            user_id=user_id,
-            limit=_MAX_GROUNDING_RESULTS,
-        )
-        context_bundle = self._context_builder.build(results)
+        results = self._files_in_view(request, state, organization_id=organization_id)
+        if not results:
+            results = self._search.search(
+                question,
+                organization_id=organization_id,
+                user_id=user_id,
+                limit=_MAX_GROUNDING_RESULTS,
+            )
+        context_bundle = self._context_builder.build(results, question=question)
+        if not context_bundle.citations:
+            # Nothing in the connected files to ground an answer in — say so
+            # rather than letting the model answer from general knowledge.
+            assistant_message = self._messages.create(
+                conversation_id=conversation.id,
+                role=MessageRole.ASSISTANT,
+                content=NOT_FOUND_IN_FILES,
+                retrieval_method=None,
+                provider=None,
+                token_usage=None,
+            )
+            return assistant_message, []
         completion_messages = self._build_completion_messages(history, question)
         try:
             completion = ai_gateway.complete(
@@ -350,6 +375,13 @@ class ConversationService:
             token_usage=token_usage,
         )
 
+        conversation.state = {
+            **state,
+            "last_result": {
+                "label": "the files I used to answer",
+                "file_ids": [str(c.file.id) for c in context_bundle.citations],
+            },
+        }
         citations = [
             self._citations.create(
                 message_id=assistant_message.id,
@@ -357,6 +389,8 @@ class ConversationService:
                 snippet=candidate.snippet,
                 confidence=candidate.confidence,
                 retrieval_method=candidate.retrieval_method,
+                page_number=candidate.page_number,
+                passage_index=candidate.passage_index,
             )
             for candidate in context_bundle.citations
         ]
@@ -371,62 +405,18 @@ class ConversationService:
             + [Message(role=MessageRole.USER, content=question)]
         )
 
-    def _create_tool_citations(
-        self, message_id: uuid.UUID, results: list[tuple[str, dict]]
-    ) -> list[Citation]:
-        citations = []
-        for tool_name, result in results:
-            spec = TOOL_REGISTRY.get(tool_name)
-            if spec is None or not spec.cite_files:
-                continue
-            for file_id in extract_citable_file_ids(tool_name, result):
-                citations.append(
-                    self._citations.create(
-                        message_id=message_id,
-                        file_id=uuid.UUID(file_id),
-                        snippet=None,
-                        confidence=1.0,
-                        retrieval_method="tool",
-                    )
-                )
-        return citations
-
-    def _check_tool_rate_limit(self, organization_id: uuid.UUID, user_id: uuid.UUID) -> bool:
-        key = f"ratelimit:ai_assistant_tools:{organization_id}:{user_id}"
-        return check_rate_limit(
-            key, limit=self._settings.ai_tool_rate_limit_per_minute, window_seconds=60
+    def _files_in_view(
+        self, request: Request, state: dict[str, Any], *, organization_id: uuid.UUID
+    ) -> list[SearchResult]:
+        """ "What does this contract say?" right after a search means the
+        files just shown — ground the answer in those."""
+        if not request.refers_to_previous:
+            return []
+        ids = [uuid.UUID(i) for i in (state.get("last_result") or {}).get("file_ids") or []]
+        files = self._files.list_owned_by_organization(
+            ids[:_MAX_GROUNDING_RESULTS], organization_id=organization_id
         )
-
-    def _cache_key(self, spec: ToolSpec, organization_id: uuid.UUID, args: dict) -> str:
-        fingerprint = hashlib.sha256(
-            json.dumps(args, sort_keys=True, default=str).encode("utf-8")
-        ).hexdigest()[:16]
-        return f"ai_assistant:{spec.name}:{organization_id}:{fingerprint}"
-
-    def _get_cached_tool_result(
-        self, spec: ToolSpec, organization_id: uuid.UUID, args: dict
-    ) -> dict | None:
-        if not spec.cacheable:
-            return None
-        cached = get_cached_json(self._cache_key(spec, organization_id, args))
-        if cached is None:
-            return None
-        try:
-            return json.loads(cached)
-        except (ValueError, TypeError):
-            # A malformed/legacy cache entry degrades to a live call rather
-            # than breaking the turn — same fail-open posture as the cache
-            # infra itself.
-            return None
-
-    def _set_cached_tool_result(
-        self, spec: ToolSpec, organization_id: uuid.UUID, args: dict, result: dict
-    ) -> None:
-        set_cached_json(
-            self._cache_key(spec, organization_id, args),
-            json.dumps(result, default=str),
-            ttl_seconds=self._settings.ai_tool_cache_ttl_seconds,
-        )
+        return [SearchResult(file=file, score=1.0, retrieval_method="metadata") for file in files]
 
 
 def _combined_retrieval_method(citations: list[CitationCandidate]) -> str | None:

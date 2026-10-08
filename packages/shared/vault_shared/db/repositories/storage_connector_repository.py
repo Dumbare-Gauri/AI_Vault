@@ -36,7 +36,7 @@ class StorageConnectorRepository:
         organization_id: uuid.UUID,
         provider: str,
         connected_by_user_id: uuid.UUID,
-        account_email: str,
+        account_email: str | None,
         workspace_domain: str | None,
     ) -> StorageConnector:
         """Creates the connector row on first connect, or reuses the same row

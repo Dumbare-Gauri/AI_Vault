@@ -35,7 +35,13 @@ function ThinkingBubble() {
   );
 }
 
-function MessageBubble({ message }: { message: ConversationMessage }) {
+function MessageBubble({
+  message,
+  conversationId,
+}: {
+  message: ConversationMessage;
+  conversationId: string;
+}) {
   if (message.role === "user") {
     return (
       <div className="flex flex-col items-end gap-2">
@@ -48,7 +54,7 @@ function MessageBubble({ message }: { message: ConversationMessage }) {
     );
   }
 
-  return <AIResponseRenderer message={message} />;
+  return <AIResponseRenderer message={message} conversationId={conversationId} />;
 }
 
 function ChatDetailPage() {
@@ -93,7 +99,7 @@ function ChatDetailPage() {
 
   return (
     <AppShell title="Conversation">
-      <div className="mx-auto flex max-w-2xl flex-col gap-4">
+      <div className="mx-auto flex max-w-3xl flex-col gap-4">
         <Link
           to="/chat"
           className="flex w-fit items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
@@ -119,7 +125,7 @@ function ChatDetailPage() {
 
             <div className="flex flex-col gap-5">
               {conversation.messages.map((message) => (
-                <MessageBubble key={message.id} message={message} />
+                <MessageBubble key={message.id} message={message} conversationId={conversationId} />
               ))}
               {pendingQuestion && (
                 <>
@@ -137,7 +143,13 @@ function ChatDetailPage() {
               <textarea
                 value={question}
                 onChange={(event) => setQuestion(event.target.value)}
-                placeholder="Ask a follow-up question…"
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" && !event.shiftKey) {
+                    event.preventDefault();
+                    event.currentTarget.form?.requestSubmit();
+                  }
+                }}
+                placeholder="Ask a follow-up, or say what to do — “move them into Finance”…"
                 rows={1}
                 className="flex-1 resize-none rounded-full border border-input bg-card px-4 py-2.5 text-sm shadow-clay placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               />

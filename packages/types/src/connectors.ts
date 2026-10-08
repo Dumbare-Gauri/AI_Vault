@@ -3,7 +3,7 @@
  * token values, those never leave the backend. */
 export interface Connector {
   id: string;
-  provider: "google_workspace";
+  provider: "google_workspace" | "local_agent";
   status: "pending" | "connected" | "error" | "disconnected" | "reauth_required";
   account_email: string | null;
   workspace_domain: string | null;
@@ -54,4 +54,54 @@ export interface TrashSummary {
 export interface EmptyTrashRequest {
   expected_count: number;
   confirmation: string;
+}
+
+export interface AgentVolume {
+  mount: string;
+  label: string | null;
+  filesystem: string | null;
+  kind: string;
+  total_bytes: number;
+  used_bytes: number;
+  free_bytes: number;
+}
+
+/** A computer connected through the AI Vault Local Agent. */
+export interface LocalAgent {
+  connector_id: string;
+  name: string | null;
+  device_name: string | null;
+  platform: string | null;
+  online: boolean;
+  last_seen_at: string | null;
+  /** The folders and drives the user authorized the agent to work in. */
+  roots: string[];
+  /** Remembered folders on a drive that isn't plugged in right now. */
+  offline_roots: string[];
+  volumes: AgentVolume[];
+}
+
+/** One folder inside the folder being browsed on the connected computer. */
+export interface AgentBrowseFolder {
+  name: string;
+  path: string;
+  can_add: boolean;
+  reason: string | null;
+  added: boolean;
+}
+
+/** Folder names inside one folder on the connected computer — never files. */
+export interface AgentBrowseResult {
+  path: string;
+  parent: string | null;
+  can_add: boolean;
+  reason: string | null;
+  folders: AgentBrowseFolder[];
+  truncated: boolean;
+}
+
+/** Returned once when a computer is connected; AI Vault keeps only a hash. */
+export interface LocalAgentKey {
+  connector_id: string;
+  agent_key: string;
 }

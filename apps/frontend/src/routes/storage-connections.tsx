@@ -12,6 +12,11 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { Skeleton } from "@/components/ui/skeleton";
 import { apiClient } from "@/lib/api-client";
 import { connectorStatusBadgeVariant } from "@/lib/connector-status";
+import {
+  ConnectComputerDialog,
+  LocalAgentCard,
+  useLocalAgents,
+} from "@/components/local-agent/local-agent-card";
 import { formatBytes } from "@/lib/format-bytes";
 import { formatRelativeTime } from "@/lib/format-relative-time";
 import { useAuthStore } from "@/stores/auth-store";
@@ -25,7 +30,7 @@ export const Route = createFileRoute("/storage-connections")({
   component: StorageConnectionsPage,
 });
 
-const UPCOMING_PROVIDERS = ["Microsoft OneDrive", "Dropbox", "Local storage"];
+const UPCOMING_PROVIDERS = ["Microsoft OneDrive", "Dropbox"];
 
 function StorageConnectionsPage() {
   const queryClient = useQueryClient();
@@ -63,6 +68,9 @@ function StorageConnectionsPage() {
     onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["connectors"] }),
   });
 
+  const localAgentsQuery = useLocalAgents();
+  const [connectingComputer, setConnectingComputer] = useState(false);
+
   const hasActiveGoogleConnector = connectorsQuery.data?.some(
     (connector) => connector.provider === "google_workspace" && connector.status !== "disconnected",
   );
@@ -84,7 +92,13 @@ function StorageConnectionsPage() {
           />
         )}
 
-        {connectorsQuery.data?.map((connector) => (
+        {localAgentsQuery.data?.map((agent) => (
+          <LocalAgentCard key={agent.connector_id} agent={agent} canManage={canManage} />
+        ))}
+
+        {connectorsQuery.data
+          ?.filter((connector) => connector.provider !== "local_agent")
+          .map((connector) => (
           <Card key={connector.id} className="p-4">
             <div className="flex items-center justify-between">
               <div>
@@ -176,7 +190,7 @@ function StorageConnectionsPage() {
                 ))}
             </div>
           </Card>
-        ))}
+          ))}
 
         {canManage && (
           <section className="mt-2 flex flex-col gap-3">
@@ -202,6 +216,20 @@ function StorageConnectionsPage() {
                   </Button>
                 )}
               </Card>
+              <Card className="flex items-center justify-between gap-3 p-4">
+                <div>
+                  <p className="font-medium">This computer</p>
+                  <p className="text-xs text-muted-foreground">Local folders and external drives</p>
+                </div>
+                {(localAgentsQuery.data?.length ?? 0) > 0 ? (
+                  <Badge variant="success">Connected</Badge>
+                ) : (
+                  <Button size="sm" onClick={() => setConnectingComputer(true)}>
+                    <Link2 className="size-4" />
+                    Connect
+                  </Button>
+                )}
+              </Card>
               {UPCOMING_PROVIDERS.map((provider) => (
                 <Card key={provider} className="flex items-center justify-between gap-3 p-4 opacity-70">
                   <p className="font-medium">{provider}</p>
@@ -210,6 +238,9 @@ function StorageConnectionsPage() {
               ))}
             </div>
           </section>
+        )}
+        {connectingComputer && (
+          <ConnectComputerDialog onOpenChange={(open) => !open && setConnectingComputer(false)} />
         )}
         {connectMutation.isError && (
           <p className="text-sm text-destructive">Couldn&rsquo;t start the connection. Please try again.</p>

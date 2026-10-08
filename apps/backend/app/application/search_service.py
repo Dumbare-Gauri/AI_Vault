@@ -11,6 +11,7 @@ from vault_shared.db.repositories import (
     FileRepository,
     SearchSessionRepository,
 )
+from vault_shared.grounding import question_terms
 from vault_shared.search import FileQuery, merge_queries, parse_file_query
 
 # Empirically validated against this project's own real scanned files
@@ -92,6 +93,21 @@ class SearchService:
         }
 
         understood = list(query.understood)
+        if total == 0 and query.text and not query.has_filters and query.offset == 0:
+            # Nothing is named like this — look inside the files' text, so
+            # "the contract mentioning the payment amount" still finds it.
+            for file, connector, score in self._files.rank_by_terms(
+                organization_id, question_terms(query.text), limit=query.limit
+            ):
+                results_by_file_id[file.id] = SearchResult(
+                    file=file,
+                    score=min(1.0, score / 10),
+                    retrieval_method="metadata",
+                    connector=connector,
+                )
+            total = len(results_by_file_id)
+            if total:
+                understood.append("matched words inside file names and content")
         if query.text and not query.has_filters and query.offset == 0:
             # Exact matches stand on their own in the search page; similar-
             # content files are offered only when nothing matched exactly.
@@ -142,15 +158,35 @@ class SearchService:
         user_id: uuid.UUID,
         limit: int = _MAX_RESULTS,
     ) -> list[SearchResult]:
-        """For conversation retrieval — same structured search, no AI
-        translation step (the caller is already an AI turn)."""
-        return self.find(
-            query_text,
-            organization_id=organization_id,
-            user_id=user_id,
-            filters=FileQuery(limit=limit),
-            allow_ai=False,
-        ).results
+        """For answering a question from file content: files ranked by how many
+        of the question's meaningful words they match — in the name, inside the
+        file's text, in a linked project/client name or the path — followed by
+        files with semantically similar content. No AI translation step (the
+        caller is already an AI turn)."""
+        ranked = self._files.rank_by_terms(organization_id, question_terms(query_text), limit=limit)
+        best = max((score for _, _, score in ranked), default=1.0)
+        results = [
+            SearchResult(
+                file=file, score=score / best, retrieval_method="metadata", connector=connector
+            )
+            for file, connector, score in ranked
+        ]
+        by_id = {result.file.id: index for index, result in enumerate(results)}
+        for file, similarity in self._semantic_matches(query_text, organization_id=organization_id):
+            index = by_id.get(file.id)
+            if index is not None:
+                found = results[index]
+                results[index] = SearchResult(
+                    file=file,
+                    score=max(found.score, similarity),
+                    retrieval_method="both",
+                    connector=found.connector,
+                )
+            elif len(results) < limit:
+                results.append(
+                    SearchResult(file=file, score=similarity, retrieval_method="semantic")
+                )
+        return results
 
     def _semantic_matches(
         self, query_text: str, *, organization_id: uuid.UUID

@@ -183,6 +183,21 @@ class _FakeGoogleDriveClient:
         self.calls.append(("delete_file", file_id))
         self._files.pop(file_id, None)
 
+    def copy_file(
+        self, *, access_token: str, file_id: str, new_name: str | None, parent_id: str | None
+    ) -> DriveFile:
+        copy_id = f"copy-{uuid.uuid4().hex[:8]}"
+        self.calls.append(("copy_file", file_id))
+        original = self._files[file_id]
+        copied = replace(
+            original,
+            id=copy_id,
+            name=new_name or original.name,
+            parents=[parent_id] if parent_id else list(original.parents),
+        )
+        self._files[copy_id] = copied
+        return copied
+
     def list_trashed_files(self, *, access_token: str) -> list[DriveFile]:
         return [item for item in self._files.values() if item.trashed]
 
@@ -1450,3 +1465,80 @@ def test_an_already_empty_trash_is_reported_as_empty_not_as_a_conflict(db: Sessi
 
     assert summary.file_count == 0
     assert ("empty_trash", "") not in drive.calls
+
+
+@requires_infra
+def test_copying_a_file_creates_a_verified_copy_next_to_the_original(db: Session) -> None:
+    user = _provision_user(db)
+    connector = _provision_connector(
+        db, organization_id=user.organization_id, user_id=user.id, granted_scopes=DRIVE_WRITE_SCOPE
+    )
+    original = _provision_file(
+        db, connector_id=connector.id, name="Brief.txt", provider_file_id="f-1"
+    )
+    drive = _FakeGoogleDriveClient(files={"f-1": _drive_file(file_id="f-1", name="Brief.txt")})
+
+    copy = _service_for(db, drive).make_copy(
+        organization_id=user.organization_id, file_id=original.id
+    )
+
+    assert copy.name == "Copy of Brief.txt"
+    assert copy.provider_file_id in drive._files
+    assert drive._files[copy.provider_file_id].name == "Copy of Brief.txt"
+    assert ("copy_file", "f-1") in drive.calls
+
+
+@requires_infra
+def test_copying_another_organizations_file_is_refused(db: Session) -> None:
+    user = _provision_user(db)
+    connector = _provision_connector(
+        db, organization_id=user.organization_id, user_id=user.id, granted_scopes=DRIVE_WRITE_SCOPE
+    )
+    original = _provision_file(
+        db, connector_id=connector.id, name="Brief.txt", provider_file_id="f-1"
+    )
+    drive = _FakeGoogleDriveClient(files={"f-1": _drive_file(file_id="f-1", name="Brief.txt")})
+    stranger = _provision_user(db)
+
+    with pytest.raises(NotFoundError):
+        _service_for(db, drive).make_copy(
+            organization_id=stranger.organization_id, file_id=original.id
+        )
+
+    assert ("copy_file", "f-1") not in drive.calls
+
+
+class _LaggingQuotaDrive(_FakeGoogleDriveClient):
+    """Google keeps reporting the old Trash size for a while after the
+    Trash is actually empty."""
+
+    def get_storage_quota(self, *, access_token: str) -> tuple[int, int, int]:
+        return 100, 1000, 383_000_000
+
+
+@requires_infra
+def test_an_empty_trash_clears_a_stale_trash_size_even_if_the_quota_lags(db: Session) -> None:
+    user, connector, _, _, _, _ = _trash_workspace(db)
+    connector.storage_trash_bytes = 383_000_000
+    db.commit()
+
+    _service_for(db, _LaggingQuotaDrive(files={})).empty_trash(
+        organization_id=user.organization_id, connector_id=connector.id, expected_count=0
+    )
+
+    db.expire_all()
+    assert StorageConnectorRepository(db).get_by_id(connector.id).storage_trash_bytes == 0
+
+
+@requires_infra
+def test_reviewing_the_trash_refreshes_what_the_dashboard_shows(db: Session) -> None:
+    user, connector, _, _, _, _ = _trash_workspace(db)
+    connector.storage_trash_bytes = 383_000_000
+    db.commit()
+
+    _service_for(db, _LaggingQuotaDrive(files={})).preview_trash(
+        organization_id=user.organization_id, connector_id=connector.id
+    )
+
+    db.expire_all()
+    assert StorageConnectorRepository(db).get_by_id(connector.id).storage_trash_bytes == 0

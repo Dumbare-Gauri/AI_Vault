@@ -111,6 +111,14 @@ class FolderRepository:
     def count_for_source(self, storage_source_id: uuid.UUID) -> int:
         return self._session.query(Folder).filter_by(storage_source_id=storage_source_id).count()
 
+    def count_for_connector(self, connector_id: uuid.UUID) -> int:
+        return (
+            self._session.query(Folder)
+            .join(StorageSource, Folder.storage_source_id == StorageSource.id)
+            .filter(StorageSource.connector_id == connector_id)
+            .count()
+        )
+
     def count_for_organization(self, organization_id: uuid.UUID) -> int:
         return (
             self._session.query(Folder)

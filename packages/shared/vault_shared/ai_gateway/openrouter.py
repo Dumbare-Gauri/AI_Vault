@@ -20,7 +20,8 @@ from vault_shared.ai_gateway.providers.openai_compatible_completion_provider imp
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 
 _CONNECTION_TEST_MESSAGE = "Reply with exactly one word: OK."
-_CONNECTION_TEST_MAX_TOKENS = 10
+# Room for "reasoning" models, which think before they answer.
+_CONNECTION_TEST_MAX_TOKENS = 512
 
 _REASON_MESSAGES = {
     AIUnavailableError.AUTH_FAILED: "That API key was rejected.",

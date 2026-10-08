@@ -5,10 +5,11 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
-# apps/backend and apps/worker are independent Python projects (ADR-012), not
-# installed as packages — tests import their "app"/"worker" packages directly,
-# so both need to be on sys.path regardless of the cwd pytest is invoked from.
-for app_dir in ("backend", "worker"):
+# apps/backend, apps/worker and apps/local-agent are independent Python
+# projects (ADR-012), not installed as packages — tests import their
+# "app"/"worker"/"aivault_agent" packages directly, so all need to be on
+# sys.path regardless of the cwd pytest is invoked from.
+for app_dir in ("backend", "worker", "local-agent"):
     path = str(REPO_ROOT / "apps" / app_dir)
     if path not in sys.path:
         sys.path.insert(0, path)

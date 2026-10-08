@@ -138,6 +138,9 @@ export interface FileLifecycle {
 
 export interface FileDetail {
   id: string;
+  /** The connection the file lives in. */
+  connector_id: string | null;
+  provider: string | null;
   name: string;
   path: string;
   mime_type: string | null;

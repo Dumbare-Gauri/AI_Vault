@@ -324,8 +324,10 @@ class ExecutionService:
         """What emptying the provider's Trash would permanently delete — read
         only. `backed_up` marks files that already have a completed AI Vault
         archive; everything else would be gone for good."""
-        _, adapter = self._connected_adapter(organization_id, connector_id)
-        return self._summarize_trash(organization_id, adapter.list_trash())
+        connector, adapter = self._connected_adapter(organization_id, connector_id)
+        trashed = adapter.list_trash()
+        self._record_trash_state(connector, adapter, trash_is_empty=not trashed)
+        return self._summarize_trash(organization_id, trashed)
 
     def empty_trash(
         self, *, organization_id: uuid.UUID, connector_id: uuid.UUID, expected_count: int
@@ -340,6 +342,7 @@ class ExecutionService:
             raise ValidationError("; ".join(failures))
         trashed = adapter.list_trash()
         if not trashed:
+            self._record_trash_state(connector, adapter, trash_is_empty=True)
             return self._summarize_trash(organization_id, trashed)
         if len(trashed) != expected_count:
             raise ConflictError(
@@ -387,8 +390,19 @@ class ExecutionService:
             },
         )
         self._db.commit()
-        self._refresh_quota(connector, adapter)
+        self._record_trash_state(connector, adapter, trash_is_empty=not remaining_ids)
         return replace(summary, still_deleting_count=len(remaining_ids))
+
+    def _record_trash_state(
+        self, connector: StorageConnector, adapter: StorageAdapter, *, trash_is_empty: bool
+    ) -> None:
+        """Re-reads storage use from the provider. When the provider lists
+        nothing in Trash, Trash holds nothing — even while its quota figure
+        still lags behind the background deletion."""
+        self._refresh_quota(connector, adapter)
+        if trash_is_empty and connector.storage_trash_bytes:
+            connector.storage_trash_bytes = 0
+            self._db.commit()
 
     def _connected_adapter(
         self, organization_id: uuid.UUID, connector_id: uuid.UUID
@@ -468,9 +482,76 @@ class ExecutionService:
         if stored.size_bytes is not None and stored.size_bytes != len(data):
             raise ValidationError("The provider stored a different file than was sent.")
 
+        file = self._record_new_file(storage_source_id, parent_folder, stored)
+        self._audits.record(
+            organization_id=organization_id,
+            event_type="file_created",
+            metadata={"file_id": str(file.id), "name": file.name},
+        )
+        self._db.commit()
+        return file
+
+    def make_copy(
+        self, *, organization_id: uuid.UUID, file_id: uuid.UUID, new_name: str | None = None
+    ) -> File:
+        """Makes a copy next to the original in the user's storage, then reads
+        the copy back from the provider and checks it matches the original
+        before recording it."""
+        source_file = self._files.get_by_id(file_id)
+        source = self._sources.get_by_id(source_file.storage_source_id) if source_file else None
+        connector = self._connectors.get_by_id(source.connector_id) if source else None
+        if (
+            source_file is None
+            or source is None
+            or connector is None
+            or connector.organization_id != organization_id
+            or source_file.trashed
+        ):
+            raise NotFoundError("File not found.")
+        failures = self._permission_failures(connector)
+        if failures:
+            raise ValidationError("; ".join(failures))
+
+        adapter = self._storage.adapter_for(connector)
+        adapter.connect()
+        copied = adapter.copy(
+            ProviderFileId(source_file.provider_file_id),
+            new_name=new_name or f"Copy of {source_file.name}",
+            parent_id=(
+                ProviderFileId(source_file.provider_parent_id)
+                if source_file.provider_parent_id
+                else None
+            ),
+        )
+        stored = adapter.get_file(copied.provider_file_id)
+        original = adapter.get_file(ProviderFileId(source_file.provider_file_id))
+        if stored.trashed or (
+            original.size_bytes is not None and stored.size_bytes != original.size_bytes
+        ):
+            raise ValidationError("The provider's copy does not match the original.")
+        if original.checksum and stored.checksum and original.checksum != stored.checksum:
+            raise ValidationError("The provider's copy does not match the original.")
+
+        parent_folder = (
+            self._folders.get_by_id(source_file.parent_folder_id)
+            if source_file.parent_folder_id
+            else None
+        )
+        file = self._record_new_file(source.id, parent_folder, stored)
+        self._audits.record(
+            organization_id=organization_id,
+            event_type="file_copied",
+            metadata={"file_id": str(file.id), "name": file.name, "source_file_id": str(file_id)},
+        )
+        self._db.commit()
+        return file
+
+    def _record_new_file(
+        self, storage_source_id: uuid.UUID, parent_folder: Folder | None, stored: StorageFile
+    ) -> File:
         now = datetime.now(UTC)
         parent_path = parent_folder.path.rstrip("/") if parent_folder else ""
-        file = self._files.upsert(
+        return self._files.upsert(
             storage_source_id=storage_source_id,
             provider_file_id=stored.provider_file_id,
             provider_parent_id=(
@@ -492,13 +573,6 @@ class ExecutionService:
             provider_viewed_at=stored.accessed_at,
             scanned_at=now,
         )
-        self._audits.record(
-            organization_id=organization_id,
-            event_type="file_created",
-            metadata={"file_id": str(file.id), "name": file.name},
-        )
-        self._db.commit()
-        return file
 
     def run(self, execution_job_id: uuid.UUID) -> None:
         job = self._jobs.get_by_id(execution_job_id)
