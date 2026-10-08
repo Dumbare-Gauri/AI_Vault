@@ -18,8 +18,11 @@ from vault_shared.connectors.google_workspace import (
     GoogleAccountInfo,
     GoogleTokenSet,
 )
+from vault_shared.connector_service import ConnectorTokenService
 from vault_shared.db.models import ConnectorStatus
+from vault_shared.db.repositories import ConnectorCredentialsRepository, StorageConnectorRepository
 from vault_shared.db.session import get_session_factory
+from vault_shared.security.encryption import encrypt_token
 
 
 def _reachable(url: str) -> bool:
@@ -281,3 +284,38 @@ def test_disconnect_deletes_credentials_and_revokes_the_token(db: Session) -> No
     assert disconnected.status == ConnectorStatus.DISCONNECTED
     assert oauth_client.revoked_tokens == ["refresh-1"]
     assert service._credentials.get_by_connector_id(connector.id) is None
+
+
+class _RevokedOAuthClient(_FakeGoogleWorkspaceOAuthClient):
+    def refresh_access_token(self, *, refresh_token: str) -> GoogleTokenSet:
+        raise ReauthRequiredError("Google authorization has expired or was revoked.")
+
+
+@requires_infra
+def test_a_refused_token_refresh_marks_the_connection_for_reconnect(db: Session) -> None:
+    user = _provision_user(db)
+    connector = StorageConnectorRepository(db).upsert_connected(
+        organization_id=user.organization_id,
+        provider="google_workspace",
+        connected_by_user_id=user.id,
+        account_email="founder@acme.com",
+        workspace_domain=None,
+    )
+    ConnectorCredentialsRepository(db).upsert(
+        connector_id=connector.id,
+        access_token_encrypted=encrypt_token("stale"),
+        refresh_token_encrypted=encrypt_token("revoked"),
+        granted_scopes="https://www.googleapis.com/auth/drive",
+        expires_at=datetime.now(UTC) - timedelta(minutes=5),
+    )
+    db.commit()
+
+    with pytest.raises(ReauthRequiredError):
+        ConnectorTokenService(db, oauth_client=_RevokedOAuthClient()).get_valid_access_token(
+            connector
+        )
+
+    db.expire_all()
+    assert StorageConnectorRepository(db).get_by_id(connector.id).status == (
+        ConnectorStatus.REAUTH_REQUIRED
+    )

@@ -78,7 +78,29 @@ async function request<T>(path: string, init?: RequestInit, _isRetry = false): P
   return response.json() as Promise<T>;
 }
 
+/** A file's bytes, with the same auth and refresh handling as JSON calls. */
+async function requestBlob(path: string, _isRetry = false): Promise<Blob> {
+  const response = await fetch(`${API_BASE_URL}${path}`, {
+    method: "GET",
+    credentials: "include",
+    headers: buildHeaders(),
+  });
+  if (response.status === 401 && !_isRetry) {
+    const refreshedToken = await tryRefreshAccessToken();
+    if (refreshedToken) {
+      setAccessToken(refreshedToken);
+      return requestBlob(path, true);
+    }
+    setAccessToken(null);
+  }
+  if (!response.ok) {
+    throw await parseErrorResponse(response);
+  }
+  return response.blob();
+}
+
 export const apiClient = {
+  blob: (path: string) => requestBlob(path),
   get: <T>(path: string) => request<T>(path, { method: "GET" }),
   post: <T>(path: string, body?: unknown) =>
     request<T>(path, {

@@ -92,7 +92,11 @@ export interface KnowledgeAttribute {
   source: string;
 }
 
-export type RelationshipType = "sequential_version" | "duplicate_candidate" | "shared_ownership";
+export type RelationshipType =
+  | "sequential_version"
+  | "duplicate_candidate"
+  | "shared_ownership"
+  | "near_duplicate";
 
 export interface RelatedFile {
   file_id: string;
@@ -103,8 +107,40 @@ export interface RelatedFile {
   metadata: Record<string, unknown>;
 }
 
+/** One file's link to a discovered `OrganizationEntity` (Project/Client/
+ * Campaign) — see organization.ts for the entity itself. */
+export interface FileEntityLink {
+  entity_id: string;
+  entity_type: string;
+  entity_name: string;
+  confidence: number;
+  evidence: Array<{ type: string; description: string }>;
+  is_user_confirmed: boolean;
+  source: "ai_inferred" | "user_assigned";
+}
+
+export type FileLifecycleState =
+  | "keep"
+  | "active"
+  | "reference"
+  | "archive_candidate"
+  | "duplicate_candidate"
+  | "obsolete_candidate"
+  | "review_required"
+  | "unknown";
+
+export interface FileLifecycle {
+  state: FileLifecycleState;
+  confidence: number;
+  evidence: string[];
+  analyzed_at: string;
+}
+
 export interface FileDetail {
   id: string;
+  /** The connection the file lives in. */
+  connector_id: string | null;
+  provider: string | null;
   name: string;
   path: string;
   mime_type: string | null;
@@ -119,4 +155,6 @@ export interface FileDetail {
   intelligence: FileIntelligence | null;
   knowledge_attributes: KnowledgeAttribute[];
   related_files: RelatedFile[];
+  entity_links: FileEntityLink[];
+  lifecycle: FileLifecycle | null;
 }

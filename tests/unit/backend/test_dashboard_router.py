@@ -2,7 +2,7 @@ from datetime import UTC, datetime
 from unittest.mock import MagicMock
 
 import pytest
-from app.application.dashboard_service import DashboardOverview
+from app.application.dashboard_service import DashboardOverview, IntelligenceSummary
 from app.infrastructure.cache.redis_client import get_redis
 from app.main import app
 from app.presentation.dependencies.auth import get_current_user
@@ -10,6 +10,13 @@ from app.presentation.dependencies.services import get_dashboard_service
 from fastapi.testclient import TestClient
 
 client = TestClient(app)
+
+_INTELLIGENCE = IntelligenceSummary(
+    files_analyzed=40,
+    entities_by_type={"project": 3},
+    lifecycle_by_state={"archive_candidate": 5},
+    organize_suggestions=2,
+)
 
 
 class _FakeSnapshot:
@@ -59,6 +66,7 @@ def test_get_dashboard_returns_the_overview(as_member, fake_dashboard_service) -
         latest_enrichment_status="completed",
         latest_embedding_status="completed",
         latest_recommendation_status="completed",
+        intelligence=_INTELLIGENCE,
     )
 
     response = client.get("/v1/dashboard")
@@ -67,6 +75,7 @@ def test_get_dashboard_returns_the_overview(as_member, fake_dashboard_service) -
     body = response.json()
     assert body["latest_snapshot"]["total_files"] == 100
     assert body["latest_scan_status"] == "completed"
+    assert body["intelligence"]["entities_by_type"] == {"project": 3}
     fake_dashboard_service.get_overview.assert_called_once_with(as_member.organization_id)
 
 
@@ -88,6 +97,7 @@ def test_get_dashboard_serves_the_second_request_from_cache(
         latest_enrichment_status="completed",
         latest_embedding_status="completed",
         latest_recommendation_status="completed",
+        intelligence=_INTELLIGENCE,
     )
 
     first = client.get("/v1/dashboard")
@@ -112,6 +122,7 @@ def test_get_dashboard_handles_no_snapshot_yet(as_member, fake_dashboard_service
         latest_enrichment_status=None,
         latest_embedding_status=None,
         latest_recommendation_status=None,
+        intelligence=_INTELLIGENCE,
     )
 
     response = client.get("/v1/dashboard")

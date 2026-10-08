@@ -9,6 +9,9 @@ class StorageSourceRepository:
     def __init__(self, session: Session) -> None:
         self._session = session
 
+    def get_by_id(self, storage_source_id: uuid.UUID) -> StorageSource | None:
+        return self._session.get(StorageSource, storage_source_id)
+
     def get_by_connector_and_provider_drive_id(
         self, *, connector_id: uuid.UUID, provider_drive_id: str
     ) -> StorageSource | None:

@@ -35,9 +35,11 @@ class StorageAnalysisSnapshotRepository:
         temporary_candidate_count: int,
         temporary_candidate_bytes: int,
         total_potential_savings_bytes: int,
+        connector_id: uuid.UUID | None = None,
     ) -> StorageAnalysisSnapshot:
         snapshot = StorageAnalysisSnapshot(
             organization_id=organization_id,
+            connector_id=connector_id,
             storage_analysis_job_id=storage_analysis_job_id,
             total_size_bytes=total_size_bytes,
             total_files=total_files,
@@ -63,11 +65,13 @@ class StorageAnalysisSnapshotRepository:
         return snapshot
 
     def get_latest_for_organization(
-        self, organization_id: uuid.UUID
+        self, organization_id: uuid.UUID, *, connector_id: uuid.UUID | None = None
     ) -> StorageAnalysisSnapshot | None:
+        """The whole organization's latest snapshot, or — with `connector_id`
+        — that storage's own."""
         return (
             self._session.query(StorageAnalysisSnapshot)
-            .filter_by(organization_id=organization_id)
+            .filter_by(organization_id=organization_id, connector_id=connector_id)
             .order_by(StorageAnalysisSnapshot.created_at.desc())
             .first()
         )
@@ -77,7 +81,7 @@ class StorageAnalysisSnapshotRepository:
     ) -> list[StorageAnalysisSnapshot]:
         return (
             self._session.query(StorageAnalysisSnapshot)
-            .filter_by(organization_id=organization_id)
+            .filter_by(organization_id=organization_id, connector_id=None)
             .order_by(StorageAnalysisSnapshot.created_at.desc())
             .limit(limit)
             .all()

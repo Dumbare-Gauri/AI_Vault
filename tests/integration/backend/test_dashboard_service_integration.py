@@ -1,5 +1,6 @@
 import socket
 import uuid
+from datetime import UTC, datetime
 from urllib.parse import urlparse
 
 import pytest
@@ -8,8 +9,14 @@ from app.application.dashboard_service import DashboardService
 from app.infrastructure.auth.google_identity import GoogleUserInfo
 from sqlalchemy.orm import Session
 from vault_shared import get_settings
-from vault_shared.db.models import ConnectorProvider
-from vault_shared.db.repositories import StorageConnectorRepository
+from vault_shared.db.models import ConnectorProvider, DriveType
+from vault_shared.db.repositories import (
+    FileLifecycleRepository,
+    FileRepository,
+    OrganizationEntityRepository,
+    StorageConnectorRepository,
+    StorageSourceRepository,
+)
 from vault_shared.db.session import get_session_factory
 
 
@@ -104,3 +111,82 @@ def test_get_overview_never_leaks_another_organizations_connector(db: Session) -
     overview = service.get_overview(user.organization_id)
 
     assert overview.connectors == []
+
+
+def _provision_file(db: Session, *, connector_id: uuid.UUID, name: str, trashed: bool = False):
+    source = StorageSourceRepository(db).upsert(
+        connector_id=connector_id,
+        provider_drive_id="root",
+        name="My Drive",
+        drive_type=DriveType.MY_DRIVE,
+    )
+    now = datetime.now(UTC)
+    file = FileRepository(db).upsert(
+        storage_source_id=source.id,
+        provider_file_id=f"drv-{uuid.uuid4().hex[:12]}",
+        provider_parent_id=None,
+        parent_folder_id=None,
+        name=name,
+        path=f"/{name}",
+        mime_type="text/plain",
+        size_bytes=10,
+        owner_email="founder@acme.com",
+        is_shared=False,
+        permissions_summary=None,
+        version_id=None,
+        checksum=None,
+        web_view_link=None,
+        provider_created_at=now,
+        provider_modified_at=now,
+        provider_viewed_at=None,
+        scanned_at=now,
+    )
+    file.trashed = trashed
+    db.flush()
+    return file
+
+
+def _score(db: Session, file_id: uuid.UUID, state: str) -> None:
+    FileLifecycleRepository(db).upsert(
+        file_id=file_id,
+        state=state,
+        confidence=0.8,
+        evidence=["test"],
+        signals={},
+        scorer_version="test",
+        analyzed_at=datetime.now(UTC),
+    )
+
+
+@requires_infra
+def test_get_overview_counts_lifecycle_states_and_entities(db: Session) -> None:
+    user = _provision_user(db)
+    connector = _provision_connector(db, organization_id=user.organization_id, user_id=user.id)
+    _score(db, _provision_file(db, connector_id=connector.id, name="a.txt").id, "archive_candidate")
+    _score(db, _provision_file(db, connector_id=connector.id, name="b.txt").id, "archive_candidate")
+    _score(db, _provision_file(db, connector_id=connector.id, name="c.txt").id, "review_required")
+    OrganizationEntityRepository(db).upsert(
+        organization_id=user.organization_id,
+        entity_type="project",
+        name="Phoenix",
+        normalized_name="phoenix",
+        confidence=0.9,
+        evidence=[],
+    )
+
+    intelligence = DashboardService(db).get_overview(user.organization_id).intelligence
+
+    assert intelligence.lifecycle_by_state == {"archive_candidate": 2, "review_required": 1}
+    assert intelligence.entities_by_type == {"project": 1}
+
+
+@requires_infra
+def test_get_overview_lifecycle_counts_exclude_trashed_files(db: Session) -> None:
+    user = _provision_user(db)
+    connector = _provision_connector(db, organization_id=user.organization_id, user_id=user.id)
+    trashed = _provision_file(db, connector_id=connector.id, name="gone.txt", trashed=True)
+    _score(db, trashed.id, "archive_candidate")
+
+    intelligence = DashboardService(db).get_overview(user.organization_id).intelligence
+
+    assert intelligence.lifecycle_by_state == {}

@@ -124,12 +124,13 @@ class RecommendationService:
         owned_file_ids = {
             file.id
             for file, _m, _c, _d, account_email in detail_rows
-            if file.owner_email == account_email
+            if account_email is None or file.owner_email == account_email
         }
         owned_rows = [row for row in rows if row.file.id in owned_file_ids]
         context = RuleContext(
             organization_id=organization_id,
             rows=rows,
+            owned_rows=owned_rows,
             relationships=relationships,
             connector_count=len(connectors),
             embedded_file_ids={embedding.file_id for _, embedding in embeddings},
@@ -157,9 +158,7 @@ class RecommendationService:
         )
         for rule, result in fired.values():
             impact_ratio = (
-                (result.impact_value / max_impact)
-                if max_impact and result.impact_value
-                else 0.0
+                (result.impact_value / max_impact) if max_impact and result.impact_value else 0.0
             )
             priority = score_priority(
                 category=rule.category,
@@ -231,7 +230,9 @@ class RecommendationService:
             embedded_files=len(context.embedded_file_ids),
             relationship_count=len(relationships),
             active_recommendations=active_count,
-            knowledge_completeness_score=(classified_count / len(owned_rows)) if owned_rows else 0.0,
+            knowledge_completeness_score=(
+                (classified_count / len(owned_rows)) if owned_rows else 0.0
+            ),
         )
         self._db.commit()
         return active_count

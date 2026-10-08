@@ -53,3 +53,17 @@ class ExecutionAuditRepository:
             .order_by(ExecutionAudit.created_at)
             .all()
         )
+
+    def list_events_for_organization(
+        self, organization_id: uuid.UUID, *, event_types: list[str], limit: int
+    ) -> list[ExecutionAudit]:
+        return (
+            self._session.query(ExecutionAudit)
+            .filter(
+                ExecutionAudit.organization_id == organization_id,
+                ExecutionAudit.event_type.in_(event_types),
+            )
+            .order_by(ExecutionAudit.created_at.desc())
+            .limit(limit)
+            .all()
+        )

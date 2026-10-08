@@ -52,7 +52,7 @@ def download_archive(
     ascii_filename = filename.encode("ascii", "ignore").decode("ascii").strip() or "archive.zip"
     headers = {
         "Content-Disposition": (
-            f'attachment; filename="{ascii_filename}"; filename*=UTF-8\'\'{quote(filename)}'
+            f"attachment; filename=\"{ascii_filename}\"; filename*=UTF-8''{quote(filename)}"
         )
     }
     return StreamingResponse(stream, media_type="application/zip", headers=headers)

@@ -1,9 +1,12 @@
-from vault_shared.db.models import ConnectorCredentials, ConnectorStatus, StorageConnector
+from vault_shared.connectors.google_workspace import DRIVE_WRITE_SCOPE
+from vault_shared.db.models import (
+    OAUTH_SCOPED_PROVIDERS,
+    ConnectorCredentials,
+    ConnectorStatus,
+    StorageConnector,
+)
 
-# The scope the Execution Engine's mutating calls require (ADR-020) — a
-# connector authorized before Phase 8 only has `drive.readonly`, which
-# cannot move/rename/trash/update a file.
-DRIVE_WRITE_SCOPE = "https://www.googleapis.com/auth/drive"
+__all__ = ["DRIVE_WRITE_SCOPE", "validate_execution_permissions"]
 
 
 def validate_execution_permissions(
@@ -28,6 +31,10 @@ def validate_execution_permissions(
     if connector.status != ConnectorStatus.CONNECTED:
         failures.append(f"Connector is not connected (status: {connector.status}).")
 
+    if connector.provider not in OAUTH_SCOPED_PROVIDERS:
+        # OAuth scopes are a Google concept; other providers (the Local Agent)
+        # report their own write problems through their adapter.
+        return failures
     if credentials is None:
         failures.append("Connector has no stored credentials.")
     else:

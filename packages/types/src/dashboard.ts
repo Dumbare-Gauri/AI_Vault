@@ -28,6 +28,15 @@ export interface InsightRecord {
   created_at: string;
 }
 
+export interface IntelligenceSummary {
+  files_analyzed: number;
+  /** Active project / client / campaign counts keyed by entity type. */
+  entities_by_type: Record<string, number>;
+  /** Lifecycle state counts, e.g. archive_candidate, review_required. */
+  lifecycle_by_state: Record<string, number>;
+  organize_suggestions: number;
+}
+
 export interface Dashboard {
   connector_count: number;
   latest_snapshot: DashboardSnapshot | null;
@@ -38,4 +47,5 @@ export interface Dashboard {
   latest_enrichment_status: string | null;
   latest_embedding_status: string | null;
   latest_recommendation_status: string | null;
+  intelligence: IntelligenceSummary;
 }

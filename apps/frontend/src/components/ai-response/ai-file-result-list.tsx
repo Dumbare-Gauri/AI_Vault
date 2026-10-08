@@ -1,15 +1,15 @@
-import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { Link } from "@tanstack/react-router";
+import { useMutation } from "@tanstack/react-query";
 import type { Citation, ExecutionPlan } from "@vault/types";
 import { Archive, ChevronDown, ChevronUp, FolderArchive } from "lucide-react";
 import { useState } from "react";
 
+import { FilePreviewDialog, type PreviewableFile } from "@/components/file-preview/file-preview-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Table, TableBody, TableCell, TableRow } from "@/components/ui/table";
-import { toast } from "@/components/ui/toaster";
 import { ApiError, apiClient } from "@/lib/api-client";
+import { trackAction } from "@/lib/storage-action";
 import { assistantToolLabel } from "@/lib/assistant-tool";
 import { fileTypeIconElement } from "@/lib/file-icon";
 import { formatBytes } from "@/lib/format-bytes";
@@ -18,8 +18,8 @@ import { useAuthStore } from "@/stores/auth-store";
 
 /** Turns a tool answer's cited files into an actionable list — not just a
  * "here's where this came from" link, but somewhere to actually pick files
- * and archive them, the same safe (approval-gated, reversible) path every
- * other cleanup action in the app already uses. Generalizes the previous
+ * and archive them, the same instant, reversible (Trash, not delete) path
+ * every other cleanup action in the app already uses. Generalizes the previous
  * chat-only `CitationFileList` so any tool result with citations (file
  * search, largest/oldest/inactive files, cleanup candidates, duplicate
  * groups) renders the same structured list instead of flattened text. */
@@ -30,13 +30,13 @@ export function AIFileResultList({
   citations: Citation[];
   toolName: string | null;
 }) {
-  const queryClient = useQueryClient();
   const user = useAuthStore((state) => state.user);
   const canManage = user?.role === "owner" || user?.role === "admin";
   const [selected, setSelected] = useState<Set<string>>(new Set());
   // Retrieval-method/confidence is debug-ish provenance info, not the
   // result itself — collapsed by default so the file list reads clean.
   const [showDetails, setShowDetails] = useState(false);
+  const [previewing, setPreviewing] = useState<PreviewableFile | null>(null);
 
   const archiveMutation = useMutation({
     mutationFn: () =>
@@ -45,17 +45,8 @@ export function AIFileResultList({
         action_type: "archive",
       }),
     onSuccess: (plan) => {
-      void queryClient.invalidateQueries({ queryKey: ["execution-plans"] });
       setSelected(new Set());
-      toast.success("Moving to Trash now", {
-        description: "Runs immediately — no approval step required. Recoverable from Google Drive's Trash.",
-        action: {
-          label: "View progress",
-          onClick: () => {
-            window.location.href = `/execution-plans/${plan.id}`;
-          },
-        },
-      });
+      void trackAction(plan.id, "Moving to Trash…");
     },
   });
 
@@ -66,17 +57,8 @@ export function AIFileResultList({
         action_type: "create_archive",
       }),
     onSuccess: (plan) => {
-      void queryClient.invalidateQueries({ queryKey: ["execution-plans"] });
       setSelected(new Set());
-      toast.success("Creating archive now", {
-        description: "Runs immediately — no approval step required.",
-        action: {
-          label: "View progress",
-          onClick: () => {
-            window.location.href = `/execution-plans/${plan.id}`;
-          },
-        },
-      });
+      void trackAction(plan.id, "Creating archive…");
     },
   });
 
@@ -115,7 +97,7 @@ export function AIFileResultList({
               onClick={() => createArchiveMutation.mutate()}
             >
               <FolderArchive className="size-3.5" />
-              {createArchiveMutation.isPending ? "Creating plan…" : "Create Archive"}
+              {createArchiveMutation.isPending ? "Starting…" : "Zip into archive"}
             </Button>
             <Button
               size="sm"
@@ -124,7 +106,7 @@ export function AIFileResultList({
               onClick={() => archiveMutation.mutate()}
             >
               <Archive className="size-3.5" />
-              {archiveMutation.isPending ? "Creating plan…" : `Archive ${selected.size} selected`}
+              {archiveMutation.isPending ? "Starting…" : `Move ${selected.size} to Trash`}
             </Button>
           </div>
         )}
@@ -149,20 +131,30 @@ export function AIFileResultList({
                 </span>
               </TableCell>
               <TableCell>
-                <Link
-                  to="/files/$fileId"
-                  params={{ fileId: citation.file_id }}
-                  className="block min-w-0"
+                <button
+                  type="button"
+                  onClick={() =>
+                    setPreviewing({
+                      id: citation.file_id,
+                      name: citation.file_name ?? "File",
+                      mime_type: citation.file_mime_type,
+                      size_bytes: citation.file_size_bytes,
+                    })
+                  }
+                  className="block min-w-0 text-left"
                 >
                   <span className="block truncate font-medium text-foreground/90">
                     {citation.file_name ?? "View file"}
                   </span>
                   {citation.snippet && (
                     <span className="block truncate text-muted-foreground">
+                      {citation.page_number !== null && (
+                        <span className="font-medium">Page {citation.page_number} · </span>
+                      )}
                       {citation.snippet.slice(0, 80).replaceAll("\n", " ")}
                     </span>
                   )}
-                </Link>
+                </button>
               </TableCell>
               <TableCell className="whitespace-nowrap text-right text-muted-foreground">
                 {citation.file_size_bytes !== null && formatBytes(citation.file_size_bytes)}
@@ -188,13 +180,16 @@ export function AIFileResultList({
         <p className="mt-2 text-xs text-destructive">
           {(archiveMutation.error ?? createArchiveMutation.error) instanceof ApiError
             ? (archiveMutation.error ?? createArchiveMutation.error)?.message
-            : "Couldn't create a plan for these files."}
+            : "Couldn't start that — nothing was changed."}
         </p>
       )}
       {canManage && selected.size === 0 && (
         <p className="mt-2 text-xs text-muted-foreground">
-          Select files above to archive them (runs immediately, reversible).
+          Select files to move them to Trash or zip them — you can undo either.
         </p>
+      )}
+      {previewing && (
+        <FilePreviewDialog file={previewing} onOpenChange={(open) => !open && setPreviewing(null)} />
       )}
     </div>
   );

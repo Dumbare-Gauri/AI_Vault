@@ -3,6 +3,7 @@ from datetime import datetime
 
 from sqlalchemy.orm import Session
 
+from vault_shared.db.like import escape_like
 from vault_shared.db.models import Folder, StorageConnector, StorageSource
 
 
@@ -18,6 +19,60 @@ class FolderRepository:
             .filter_by(storage_source_id=storage_source_id, provider_file_id=provider_file_id)
             .first()
         )
+
+    def get_by_id(self, folder_id: uuid.UUID) -> Folder | None:
+        return self._session.get(Folder, folder_id)
+
+    def search_for_connector(
+        self, connector_id: uuid.UUID, *, query: str, limit: int
+    ) -> list[Folder]:
+        """Backs the "Move to folder" picker. Folders live in this table,
+        never in `files` — the scanner stores them separately."""
+        pattern = f"%{escape_like(query.strip())}%"
+        return (
+            self._session.query(Folder)
+            .join(StorageSource, Folder.storage_source_id == StorageSource.id)
+            .filter(StorageSource.connector_id == connector_id)
+            .filter(Folder.name.ilike(pattern, escape="\\"))
+            .order_by(Folder.path)
+            .limit(limit)
+            .all()
+        )
+
+    def get_by_source_and_provider_parent(
+        self, *, storage_source_id: uuid.UUID, provider_file_id: str | None
+    ) -> Folder | None:
+        if not provider_file_id:
+            return None
+        return self.get_by_source_and_provider_id(
+            storage_source_id=storage_source_id, provider_file_id=provider_file_id
+        )
+
+    def get_by_parent_and_name(
+        self, *, storage_source_id: uuid.UUID, parent_folder_id: uuid.UUID | None, name: str
+    ) -> Folder | None:
+        """Used by `worker.organization.
+        organization_recommendation_apply_service` to walk a suggested
+        destination path component by component, creating only the
+        folders that don't already exist. Matches by name, case-
+        sensitively, same as Drive's own folder names."""
+        return (
+            self._session.query(Folder)
+            .filter_by(
+                storage_source_id=storage_source_id,
+                parent_folder_id=parent_folder_id,
+                name=name,
+            )
+            .first()
+        )
+
+    def list_by_ids(self, folder_ids: list[uuid.UUID]) -> list[Folder]:
+        """Used by `worker.organization.organization_recommendation_generator`
+        to resolve an entity's files' `parent_folder_id`s into human-readable
+        paths for `current_locations` in one query rather than N."""
+        if not folder_ids:
+            return []
+        return self._session.query(Folder).filter(Folder.id.in_(folder_ids)).all()
 
     def upsert(
         self,
@@ -55,6 +110,14 @@ class FolderRepository:
 
     def count_for_source(self, storage_source_id: uuid.UUID) -> int:
         return self._session.query(Folder).filter_by(storage_source_id=storage_source_id).count()
+
+    def count_for_connector(self, connector_id: uuid.UUID) -> int:
+        return (
+            self._session.query(Folder)
+            .join(StorageSource, Folder.storage_source_id == StorageSource.id)
+            .filter(StorageSource.connector_id == connector_id)
+            .count()
+        )
 
     def count_for_organization(self, organization_id: uuid.UUID) -> int:
         return (

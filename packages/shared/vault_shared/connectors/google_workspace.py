@@ -16,6 +16,11 @@ GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
 GOOGLE_USERINFO_URL = "https://openidconnect.googleapis.com/v1/userinfo"
 GOOGLE_REVOKE_URL = "https://oauth2.googleapis.com/revoke"
 
+# The scope the Execution Engine's mutating calls require (ADR-020) — a
+# connector authorized before Phase 8 only has `drive.readonly`, which cannot
+# move/rename/trash/update a file.
+DRIVE_WRITE_SCOPE = "https://www.googleapis.com/auth/drive"
+
 _REQUEST_TIMEOUT_SECONDS = 10
 
 

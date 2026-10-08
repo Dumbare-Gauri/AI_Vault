@@ -1,8 +1,10 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, createFileRoute, redirect } from "@tanstack/react-router";
-import type { Connector, FileDetail } from "@vault/types";
+import type { Connector, CreatedItem, FileDetail } from "@vault/types";
 import {
+  Archive,
   BrainCircuit,
+  Copy,
   ChevronLeft,
   Download,
   ExternalLink,
@@ -11,6 +13,7 @@ import {
   PencilLine,
   Sparkles,
   Tag,
+  Trash2,
   Users,
 } from "lucide-react";
 import { useState } from "react";
@@ -20,6 +23,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { EmptyState } from "@/components/ui/empty-state";
+import { ArchiveDialog } from "@/components/file-explorer/archive-dialog";
 import { MoveDialog } from "@/components/file-explorer/move-dialog";
 import { RenameDialog } from "@/components/file-explorer/rename-dialog";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -29,6 +33,8 @@ import { downloadFile } from "@/lib/download-file";
 import { fileTypeIconElement, fileTypeLabel } from "@/lib/file-icon";
 import { formatBytes } from "@/lib/format-bytes";
 import { formatRelativeTime } from "@/lib/format-relative-time";
+import { runStorageAction } from "@/lib/storage-action";
+import { entityTypeLabel, lifecycleBadgeVariant, lifecycleLabel } from "@/lib/organization-style";
 import { useAuthStore } from "@/stores/auth-store";
 
 export const Route = createFileRoute("/files/$fileId")({
@@ -56,6 +62,7 @@ function FileDetailPage() {
   const canManage = user?.role === "owner" || user?.role === "admin";
   const [renaming, setRenaming] = useState(false);
   const [moving, setMoving] = useState(false);
+  const [archiving, setArchiving] = useState(false);
 
   const fileQuery = useQuery({
     queryKey: ["files", "detail", fileId],
@@ -68,16 +75,34 @@ function FileDetailPage() {
     enabled: canManage,
   });
   const connector = connectorsQuery.data?.find(
-    (candidate) => candidate.provider === "google_workspace" && candidate.status === "connected",
+    (candidate) =>
+      candidate.id === fileQuery.data?.connector_id && candidate.status === "connected",
   );
 
   const file = fileQuery.data;
-  const isOwned = file !== undefined && file.owner_email === connector?.account_email;
+  // A connection with no account (a local disk) has no files owned by others.
+  const isOwned =
+    file !== undefined &&
+    connector !== undefined &&
+    (connector.account_email === null || file.owner_email === connector.account_email);
 
   const downloadMutation = useMutation({
     mutationFn: () => downloadFile(`/v1/files/${fileId}/download`, file?.name ?? "download"),
     onError: (error) => {
       toast.error(error instanceof ApiError ? error.message : "Couldn't download this file.");
+    },
+  });
+
+  const copyMutation = useMutation({
+    mutationFn: () => apiClient.post<CreatedItem>(`/v1/files/${fileId}/copy`, {}),
+    onSuccess: (copied) => {
+      void queryClient.invalidateQueries({ queryKey: ["files"] });
+      toast.success(
+        `"${copied.name}" created in ${connector?.provider_name ?? "your storage"} — confirmed`,
+      );
+    },
+    onError: (error) => {
+      toast.error(error instanceof ApiError ? error.message : "Couldn't copy this file.");
     },
   });
 
@@ -129,6 +154,17 @@ function FileDetailPage() {
                       <Sparkles className="size-3" /> {file.classification.document_type}
                     </Badge>
                   ) : null}
+                  {file.lifecycle ? (
+                    <Badge variant={lifecycleBadgeVariant(file.lifecycle.state)}>
+                      {lifecycleLabel(file.lifecycle.state)}
+                    </Badge>
+                  ) : null}
+                  {file.entity_links.map((link) => (
+                    <Badge key={link.entity_id} variant="outline">
+                      <Tag className="size-3" /> {entityTypeLabel(link.entity_type)}:{" "}
+                      {link.entity_name}
+                    </Badge>
+                  ))}
                 </div>
               </div>
               <div className="flex shrink-0 flex-wrap items-center gap-2">
@@ -149,6 +185,36 @@ function FileDetailPage() {
                 {canManage && isOwned && connector && (
                   <Button variant="outline" size="sm" onClick={() => setMoving(true)}>
                     <FolderInput className="size-4" /> Move
+                  </Button>
+                )}
+                {canManage && isOwned && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={copyMutation.isPending}
+                    onClick={() => copyMutation.mutate()}
+                  >
+                    <Copy className="size-4" />
+                    {copyMutation.isPending ? "Copying…" : "Make a copy"}
+                  </Button>
+                )}
+                {canManage && isOwned && (
+                  <Button variant="outline" size="sm" onClick={() => setArchiving(true)}>
+                    <Archive className="size-4" /> Archive
+                  </Button>
+                )}
+                {canManage && isOwned && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() =>
+                      void runStorageAction(
+                        { file_ids: [file.id], action_type: "archive" },
+                        "Moving to Trash…",
+                      )
+                    }
+                  >
+                    <Trash2 className="size-4" /> Move to Trash
                   </Button>
                 )}
                 {file.web_view_link && (
@@ -421,6 +487,7 @@ function FileDetailPage() {
           onMoved={refreshAfterFileOp}
         />
       )}
+      {file && archiving && <ArchiveDialog onOpenChange={setArchiving} fileIds={[file.id]} />}
     </AppShell>
   );
 }

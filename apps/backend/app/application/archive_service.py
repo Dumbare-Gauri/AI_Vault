@@ -1,4 +1,5 @@
 import uuid
+from collections.abc import Iterator
 
 from sqlalchemy.orm import Session
 
@@ -42,7 +43,9 @@ class ArchiveService:
             raise NotFoundError("Archive not found.")
         return archive_job
 
-    def get_download_stream(self, archive_job_id: uuid.UUID, *, organization_id: uuid.UUID):
+    def get_download_stream(
+        self, archive_job_id: uuid.UUID, *, organization_id: uuid.UUID
+    ) -> tuple[ArchiveJob, Iterator[bytes]]:
         archive_job = self.get_owned(archive_job_id, organization_id=organization_id)
         if archive_job.status != ArchiveJobStatus.COMPLETED or not archive_job.object_storage_key:
             raise NotFoundError("This archive isn't ready to download.")

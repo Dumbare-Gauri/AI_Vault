@@ -1,34 +1,42 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { Link, createFileRoute, redirect } from "@tanstack/react-router";
 import type {
+  ActivityItem,
+  ActivityResponse,
+  Connector,
   Dashboard,
-  ReadinessResponse,
-  Recommendation,
-  RecommendationJob,
-  VersionResponse,
+  OrganizationRecommendationListResponse,
+  RecommendationListResponse,
+  StorageOverview,
 } from "@vault/types";
 import {
+  Archive,
   ArrowUpRight,
   BrainCircuit,
-  Cloud,
-  Database,
+  Copy,
+  FolderKanban,
   FolderTree,
-  HardDrive,
-  RefreshCw,
+  Plus,
+  ScanSearch,
   Sparkles,
+  Trash2,
+  Users,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
+import { useState } from "react";
 
 import { AppShell } from "@/components/app-shell/app-shell";
-import { Badge } from "@/components/ui/badge";
+import { EmptyTrashDialog } from "@/components/file-explorer/empty-trash-dialog";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { apiClient } from "@/lib/api-client";
 import { formatBytes } from "@/lib/format-bytes";
 import { formatRelativeTime } from "@/lib/format-relative-time";
-import { categoryBadgeVariant, categoryLabel, riskBadgeVariant } from "@/lib/recommendation-style";
+import { summarizeStorage } from "@/lib/storage-summary";
+import { cn } from "@/lib/utils";
 import { useAuthStore } from "@/stores/auth-store";
 
 export const Route = createFileRoute("/dashboard")({
@@ -40,290 +48,505 @@ export const Route = createFileRoute("/dashboard")({
   component: DashboardPage,
 });
 
-function statusLabel(ok: boolean | undefined, isError: boolean): string {
-  if (ok) return "Operational";
-  if (isError) return "Unreachable";
-  return "Checking…";
+const DONE_TONE = { dot: "bg-success", label: "Done" };
+const ACTIVITY_TONE: Record<string, { dot: string; label: string }> = {
+  done: DONE_TONE,
+  partial: { dot: "bg-warning", label: "Partly done" },
+  failed: { dot: "bg-destructive", label: "Failed" },
+  undone: { dot: "bg-muted-foreground", label: "Undone" },
+  in_progress: { dot: "bg-primary animate-pulse", label: "In progress" },
+};
+
+function percent(part: number, whole: number): number {
+  if (whole <= 0) return 0;
+  return Math.min(100, Math.max(0, (part / whole) * 100));
 }
 
-function StatCard({
-  icon: Icon,
-  label,
-  value,
-  sub,
-}: {
-  icon: LucideIcon;
-  label: string;
-  value: string;
-  sub?: string;
-}) {
+function Timestamp({ iso }: { iso: string }) {
   return (
-    <Card clay className="flex flex-col gap-3 p-5">
-      <div className="flex size-9 items-center justify-center rounded-lg bg-primary/10 text-primary">
-        <Icon className="size-[18px]" aria-hidden="true" />
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <time dateTime={iso} className="shrink-0 text-xs text-muted-foreground">
+          {formatRelativeTime(iso)}
+        </time>
+      </TooltipTrigger>
+      <TooltipContent>{new Date(iso).toLocaleString()}</TooltipContent>
+    </Tooltip>
+  );
+}
+
+function StorageHero({
+  connectors,
+  dashboard,
+  overview,
+}: {
+  connectors: Connector[];
+  dashboard: Dashboard;
+  overview: StorageOverview | undefined;
+}) {
+  const summary = summarizeStorage(
+    connectors,
+    dashboard.latest_snapshot?.total_storage_bytes ?? 0,
+    overview?.total_potential_savings_bytes ?? null,
+  );
+  const usedPercent = summary.totalBytes ? percent(summary.usedBytes, summary.totalBytes) : 0;
+  const recoverablePercent = summary.totalBytes
+    ? percent(Math.min(summary.recoverableBytes, summary.usedBytes), summary.totalBytes)
+    : 0;
+
+  return (
+    <Card clay className="relative min-w-0 overflow-hidden p-6 lg:col-span-2 lg:p-8">
+      <div
+        aria-hidden="true"
+        className="pointer-events-none absolute -right-24 -top-24 size-72 rounded-full bg-primary/10 blur-3xl"
+      />
+      <p className="text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">
+        Storage
+      </p>
+      <div className="mt-3 flex flex-wrap items-end gap-x-3 gap-y-1">
+        <p className="text-5xl font-semibold leading-none tracking-tight">
+          {formatBytes(summary.usedBytes)}
+        </p>
+        <p className="pb-1 text-sm text-muted-foreground">
+          {summary.totalBytes !== null
+            ? `used of ${formatBytes(summary.totalBytes)}`
+            : "used across connected storage"}
+        </p>
       </div>
-      <div>
-        <p className="text-xs text-muted-foreground">{label}</p>
-        <p className="mt-0.5 text-2xl font-semibold tracking-tight">{value}</p>
-        {sub ? <p className="mt-0.5 text-xs text-muted-foreground">{sub}</p> : null}
-      </div>
+      {summary.accountsWithQuota > 0 && overview?.total_size_bytes != null && (
+        <p className="mt-3 max-w-xl text-sm text-muted-foreground">
+          Account storage as Google reports it — Gmail and Google Photos count too. Your own
+          Drive files take {formatBytes(overview.total_size_bytes)}
+          {overview.total_files != null ? ` (${overview.total_files.toLocaleString()} files)` : ""}.
+        </p>
+      )}
+
+      {summary.totalBytes !== null && (
+        <div
+          className="mt-6 h-2.5 w-full overflow-hidden rounded-full bg-secondary"
+          role="img"
+          aria-label={`${Math.round(usedPercent)}% of capacity used`}
+        >
+          <div className="flex h-full" style={{ width: `${usedPercent}%` }}>
+            <div className="h-full flex-1 bg-primary" />
+            {recoverablePercent > 0 && (
+              <div
+                className="h-full bg-warning"
+                style={{ width: `${(recoverablePercent / usedPercent) * 100}%` }}
+              />
+            )}
+          </div>
+        </div>
+      )}
+
+      <dl className="mt-6 grid grid-cols-3 gap-4 border-t border-border pt-5">
+        <div>
+          <dt className="flex items-center gap-1.5 text-xs text-muted-foreground">
+            <span className="size-2 rounded-full bg-primary" /> Used
+          </dt>
+          <dd className="mt-1 text-lg font-semibold">{formatBytes(summary.usedBytes)}</dd>
+        </div>
+        <div>
+          <dt className="flex items-center gap-1.5 text-xs text-muted-foreground">
+            <span className="size-2 rounded-full bg-secondary ring-1 ring-border" /> Free
+          </dt>
+          <dd className="mt-1 text-lg font-semibold">
+            {summary.freeBytes !== null ? formatBytes(summary.freeBytes) : "—"}
+          </dd>
+        </div>
+        <div>
+          <dt className="flex items-center gap-1.5 text-xs text-muted-foreground">
+            <span className="size-2 rounded-full bg-warning" /> Potential savings
+          </dt>
+          <dd className="mt-1 text-lg font-semibold">
+            {overview?.total_potential_savings_bytes != null
+              ? formatBytes(summary.recoverableBytes)
+              : "—"}
+          </dd>
+        </div>
+      </dl>
+      {overview?.total_potential_savings_bytes == null && (
+        <p className="mt-3 text-xs text-muted-foreground">
+          Potential savings appear after the first storage analysis.
+        </p>
+      )}
     </Card>
   );
 }
 
-function StorageTrendChart({ points }: { points: number[] }) {
-  if (points.length < 2) {
-    return (
-      <p className="flex h-40 items-center justify-center text-sm text-muted-foreground">
-        Not enough scan history yet to show a trend.
-      </p>
-    );
-  }
-  const width = 560;
-  const height = 160;
-  const max = Math.max(...points);
-  const min = Math.min(...points);
-  const range = max - min || 1;
-  const coords = points.map((value, index) => {
-    const x = (index / (points.length - 1)) * width;
-    const y = height - ((value - min) / range) * (height - 12) - 6;
-    return [x, y] as const;
-  });
-  const linePath = coords.map(([x, y], i) => `${i === 0 ? "M" : "L"}${x},${y}`).join(" ");
-  const areaPath = `${linePath} L${width},${height} L0,${height} Z`;
-
+/** Google keeps counting trashed files against the quota until the Trash is
+ * emptied — shown on its own so it isn't mistaken for part of the total. */
+function DriveTrashCard({ connectors, canManage }: { connectors: Connector[]; canManage: boolean }) {
+  const [emptying, setEmptying] = useState(false);
+  const trashConnector = connectors.find(
+    (connector) => connector.status === "connected" && (connector.storage_trash_bytes ?? 0) > 0,
+  );
+  if (!trashConnector) return null;
   return (
-    <svg viewBox={`0 0 ${width} ${height}`} className="h-40 w-full" preserveAspectRatio="none">
-      <defs>
-        <linearGradient id="storage-trend-fill" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor="var(--color-primary)" stopOpacity="0.22" />
-          <stop offset="100%" stopColor="var(--color-primary)" stopOpacity="0" />
-        </linearGradient>
-      </defs>
-      <path d={areaPath} fill="url(#storage-trend-fill)" />
-      <path d={linePath} fill="none" stroke="var(--color-primary)" strokeWidth="2.5" strokeLinecap="round" />
-      {coords.map(([x, y], index) => (
-        <circle key={index} cx={x} cy={y} r={index === coords.length - 1 ? 4 : 0} fill="var(--color-primary)" />
-      ))}
-    </svg>
+    <Card className="flex flex-wrap items-center gap-4 p-5">
+      <span className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-warning-muted">
+        <Trash2 className="size-5 text-warning" aria-hidden="true" />
+      </span>
+      <div className="min-w-0 flex-1">
+        <p className="text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">Google Drive Trash</p>
+        <p className="mt-1 text-2xl font-semibold">{formatBytes(trashConnector.storage_trash_bytes ?? 0)}</p>
+        <p className="text-sm text-muted-foreground">
+          Still counts against your Google storage until the Trash is emptied.
+        </p>
+      </div>
+      {canManage && (
+        <Button variant="destructive" className="shrink-0" onClick={() => setEmptying(true)}>
+          <Trash2 className="size-4" /> Empty Drive Trash
+        </Button>
+      )}
+      {emptying && (
+        <EmptyTrashDialog connectorId={trashConnector.id} onOpenChange={(open) => !open && setEmptying(false)} />
+      )}
+    </Card>
   );
 }
 
-function DashboardSkeleton() {
+function AccountsCard({ connectors }: { connectors: Connector[] }) {
   return (
-    <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-6">
-      {Array.from({ length: 6 }).map((_, i) => (
-        <Skeleton key={i} className="h-28 rounded-xl" />
-      ))}
-    </div>
+    <Card className="flex min-w-0 flex-col">
+      <CardHeader className="flex-row items-center justify-between gap-2 space-y-0">
+        <CardTitle>Connected storage</CardTitle>
+        <Link
+          to="/storage-connections"
+          className="flex items-center gap-1 text-xs font-medium text-primary hover:underline"
+        >
+          <Plus className="size-3.5" /> Add storage
+        </Link>
+      </CardHeader>
+      <CardContent className="flex flex-1 flex-col gap-3">
+        {connectors.length === 0 ? (
+          <p className="text-sm text-muted-foreground">No storage connected yet.</p>
+        ) : (
+          connectors.map((connector) => {
+            const connected = connector.status === "connected";
+            const capacity = connector.storage_total_bytes;
+            const used = connector.storage_used_bytes;
+            return (
+              <div key={connector.id} className="flex flex-col gap-2 rounded-lg bg-secondary/50 p-3">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="min-w-0">
+                    <p className="truncate text-sm font-medium">
+                      {connector.display_name ?? connector.provider_name}
+                    </p>
+                    <p className="truncate text-xs text-muted-foreground">
+                      {connector.account_email ?? "—"}
+                    </p>
+                  </div>
+                  <span className="flex shrink-0 items-center gap-1.5 text-xs">
+                    <span
+                      className={cn(
+                        "size-2 rounded-full",
+                        connected ? "bg-success" : "bg-warning",
+                      )}
+                    />
+                    {connected ? "Connected" : connector.status.replace("_", " ")}
+                  </span>
+                </div>
+                {used !== null && (
+                  <div className="flex flex-col gap-1">
+                    {capacity !== null && (
+                      <div className="h-1.5 w-full overflow-hidden rounded-full bg-card">
+                        <div
+                          className="h-full rounded-full bg-primary"
+                          style={{ width: `${percent(used, capacity)}%` }}
+                        />
+                      </div>
+                    )}
+                    <p className="text-xs text-muted-foreground">
+                      {formatBytes(used)}
+                      {capacity !== null ? ` of ${formatBytes(capacity)}` : " used"}
+                      {connector.last_synced_at && (
+                        <> · synced {formatRelativeTime(connector.last_synced_at)}</>
+                      )}
+                    </p>
+                  </div>
+                )}
+              </div>
+            );
+          })
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function Metric({
+  icon: Icon,
+  label,
+  value,
+  to,
+  detail,
+  tone = "default",
+}: {
+  icon: LucideIcon;
+  label: string;
+  value: number | null;
+  to: string;
+  detail?: string;
+  tone?: "default" | "ai" | "warning";
+}) {
+  return (
+    <Link
+      to={to}
+      className="group flex flex-col gap-3 rounded-xl border border-border bg-card p-4 transition-all hover:-translate-y-0.5 hover:shadow-clay"
+    >
+      <span
+        className={cn(
+          "flex size-8 items-center justify-center rounded-lg",
+          tone === "ai" && "bg-ai-muted text-ai",
+          tone === "warning" && "bg-warning-muted text-warning",
+          tone === "default" && "bg-primary/10 text-primary",
+        )}
+      >
+        <Icon className="size-4" aria-hidden="true" />
+      </span>
+      <div>
+        <p className="text-2xl font-semibold tracking-tight">
+          {value === null ? "—" : value.toLocaleString()}
+        </p>
+        <p className="text-xs text-muted-foreground">{label}</p>
+        {detail && <p className="mt-0.5 text-xs text-muted-foreground/80">{detail}</p>}
+      </div>
+    </Link>
+  );
+}
+
+function ActivityRow({ item }: { item: ActivityItem }) {
+  const tone = ACTIVITY_TONE[item.status] ?? DONE_TONE;
+  return (
+    <li className="flex items-start justify-between gap-3 py-3 text-sm">
+      <div className="flex min-w-0 items-start gap-3">
+        <span className={cn("mt-1.5 size-2 shrink-0 rounded-full", tone.dot)} aria-hidden="true" />
+        <div className="min-w-0">
+          <p className="font-medium">{item.message}</p>
+          <p className="text-xs text-muted-foreground">{tone.label}</p>
+        </div>
+      </div>
+      <Timestamp iso={item.at} />
+    </li>
   );
 }
 
 function DashboardPage() {
   const user = useAuthStore((state) => state.user);
   const canManage = user?.role === "owner" || user?.role === "admin";
-  const queryClient = useQueryClient();
-
-  const versionQuery = useQuery({
-    queryKey: ["version"],
-    queryFn: () => apiClient.get<VersionResponse>("/v1/version"),
-    retry: false,
-  });
-  const readinessQuery = useQuery({
-    queryKey: ["readiness"],
-    queryFn: () => apiClient.get<ReadinessResponse>("/health/ready"),
-    retry: false,
-  });
 
   const dashboardQuery = useQuery({
     queryKey: ["dashboard"],
     queryFn: () => apiClient.get<Dashboard>("/v1/dashboard"),
   });
-
-  const recommendationsQuery = useQuery({
-    queryKey: ["recommendations", "preview"],
-    queryFn: () =>
-      apiClient.get<{ items: Recommendation[] }>("/v1/recommendations?status=active"),
+  const connectorsQuery = useQuery({
+    queryKey: ["connectors"],
+    queryFn: () => apiClient.get<Connector[]>("/v1/connectors"),
   });
-
-  const refreshMutation = useMutation({
-    mutationFn: () => apiClient.post<RecommendationJob>("/v1/recommendations/refresh"),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
-      void queryClient.invalidateQueries({ queryKey: ["recommendations"] });
-    },
+  const overviewQuery = useQuery({
+    queryKey: ["storage-intelligence", "overview"],
+    queryFn: () => apiClient.get<StorageOverview>("/v1/storage/overview"),
+  });
+  const activityQuery = useQuery({
+    queryKey: ["activity"],
+    queryFn: () => apiClient.get<ActivityResponse>("/v1/activity"),
+    refetchInterval: 15_000,
+  });
+  const organizeQuery = useQuery({
+    queryKey: ["organization-recommendations", "active"],
+    queryFn: () =>
+      apiClient.get<OrganizationRecommendationListResponse>(
+        "/v1/organization-recommendations?status=active",
+      ),
+  });
+  const aiStatusQuery = useQuery({
+    queryKey: ["ai-status"],
+    queryFn: () => apiClient.get<{ mode: string }>("/v1/ai/status"),
+  });
+  const cleanupQuery = useQuery({
+    queryKey: ["recommendations", "preview"],
+    queryFn: () => apiClient.get<RecommendationListResponse>("/v1/recommendations?status=active"),
   });
 
   const dashboard = dashboardQuery.data;
-  const snapshot = dashboard?.latest_snapshot;
-  const allRecommendations = recommendationsQuery.data?.items ?? [];
-  const topRecommendations = allRecommendations.slice(0, 5);
+  const connectors = connectorsQuery.data ?? [];
+  const overview = overviewQuery.data;
+  const intelligence = dashboard?.intelligence;
+  const aiReady = aiStatusQuery.data?.mode === "ai";
+  const entities = intelligence?.entities_by_type ?? {};
 
-  const categoryCounts = allRecommendations.reduce<Record<string, number>>((acc, r) => {
-    acc[r.category] = (acc[r.category] ?? 0) + 1;
-    return acc;
-  }, {});
+  const suggestions = [
+    ...(organizeQuery.data?.items ?? []).slice(0, 3).map((item) => ({
+      id: item.id,
+      title: item.title,
+      detail: item.reasoning_summary,
+      to: "/organization-recommendations/$recommendationId" as const,
+      ai: true,
+    })),
+    ...(cleanupQuery.data?.items ?? []).slice(0, 3).map((item) => ({
+      id: item.id,
+      title: item.title,
+      detail: item.estimated_impact,
+      to: "/recommendations/$recommendationId" as const,
+      ai: false,
+    })),
+  ];
+
+  const today = new Date().toLocaleDateString(undefined, {
+    weekday: "long",
+    month: "long",
+    day: "numeric",
+  });
 
   return (
     <AppShell title="Dashboard">
       <div className="mx-auto flex max-w-6xl flex-col gap-6">
-        <div className="flex flex-wrap items-center justify-between gap-3">
+        <header className="flex flex-wrap items-end justify-between gap-3">
           <div>
-            <h1 className="text-xl font-semibold tracking-tight">
+            <p className="text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">
+              {today}
+            </p>
+            <h1 className="mt-1 text-2xl font-semibold tracking-tight">
               Welcome back{user?.name ? `, ${user.name.split(" ")[0]}` : ""}
             </h1>
-            <p className="text-sm text-muted-foreground">
-              Here&rsquo;s what&rsquo;s happening across your organization&rsquo;s storage.
-            </p>
           </div>
-          {canManage ? (
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={refreshMutation.isPending}
-              onClick={() => refreshMutation.mutate()}
-            >
-              <RefreshCw className={`size-4 ${refreshMutation.isPending ? "animate-spin" : ""}`} />
-              {refreshMutation.isPending ? "Refreshing…" : "Refresh recommendations"}
-            </Button>
-          ) : null}
-        </div>
+          <Button asChild variant="outline" size="sm">
+            <Link to="/search">
+              <ScanSearch className="size-4" /> Find a file
+            </Link>
+          </Button>
+        </header>
 
-        {dashboardQuery.isLoading && <DashboardSkeleton />}
+        {dashboardQuery.isLoading && (
+          <div className="grid gap-4 lg:grid-cols-3">
+            <Skeleton className="h-72 rounded-2xl lg:col-span-2" />
+            <Skeleton className="h-72 rounded-2xl" />
+          </div>
+        )}
 
         {dashboardQuery.isError && (
           <EmptyState
             title="Couldn't load the dashboard"
-            description="There was a problem reaching the backend. Try refreshing the page."
+            description="There was a problem reaching AI Vault. Try refreshing the page."
           />
         )}
 
         {dashboard && (
           <>
-            {/* What is happening — top-level metrics (§9) */}
-            <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-6">
-              <StatCard
-                icon={HardDrive}
-                label="Storage used"
-                value={formatBytes(snapshot?.total_storage_bytes ?? 0)}
-              />
-              <StatCard icon={FolderTree} label="Files" value={(snapshot?.total_files ?? 0).toLocaleString()} />
-              <StatCard
-                icon={FolderTree}
-                label="Folders"
-                value={(snapshot?.total_folders ?? 0).toLocaleString()}
-              />
-              <StatCard icon={Cloud} label="Connected drives" value={String(dashboard.connector_count)} />
-              <StatCard
-                icon={BrainCircuit}
-                label="Knowledge complete"
-                value={`${Math.round((snapshot?.knowledge_completeness_score ?? 0) * 100)}%`}
-              />
-              <StatCard
-                icon={Sparkles}
-                label="Active recommendations"
-                value={String(snapshot?.active_recommendations ?? allRecommendations.length)}
-              />
-            </div>
-
             <div className="grid gap-4 lg:grid-cols-3">
-              <Card className="lg:col-span-2">
-                <CardHeader className="flex-row items-center justify-between gap-2 space-y-0">
-                  <div>
-                    <CardTitle>Storage growth</CardTitle>
-                    <p className="mt-0.5 text-xs text-muted-foreground">
-                      Total storage across recent scans
-                    </p>
-                  </div>
-                </CardHeader>
-                <CardContent>
-                  <StorageTrendChart
-                    points={dashboard.snapshot_history.map((s) => s.total_storage_bytes)}
-                  />
-                </CardContent>
-              </Card>
-
-              <Card>
-                <CardHeader>
-                  <CardTitle>What needs attention</CardTitle>
-                </CardHeader>
-                <CardContent className="flex flex-col gap-3">
-                  {Object.keys(categoryCounts).length === 0 ? (
-                    <p className="text-sm text-muted-foreground">
-                      Nothing needs attention right now — no active recommendations.
-                    </p>
-                  ) : (
-                    Object.entries(categoryCounts).map(([category, count]) => (
-                      <div key={category} className="flex items-center justify-between text-sm">
-                        <Badge variant={categoryBadgeVariant(category as Recommendation["category"])}>
-                          {categoryLabel(category as Recommendation["category"])}
-                        </Badge>
-                        <span className="font-medium">{count}</span>
-                      </div>
-                    ))
-                  )}
-                  <div className="mt-1 grid grid-cols-2 gap-3 border-t border-border pt-3 text-sm">
-                    <div>
-                      <p className="text-muted-foreground">Scan</p>
-                      <p className="font-medium capitalize">{dashboard.latest_scan_status ?? "—"}</p>
-                    </div>
-                    <div>
-                      <p className="text-muted-foreground">Knowledge</p>
-                      <p className="font-medium capitalize">{dashboard.latest_enrichment_status ?? "—"}</p>
-                    </div>
-                    <div>
-                      <p className="text-muted-foreground">AI embedding</p>
-                      <p className="font-medium capitalize">{dashboard.latest_embedding_status ?? "—"}</p>
-                    </div>
-                    <div>
-                      <p className="text-muted-foreground">Recommendations</p>
-                      <p className="font-medium capitalize">
-                        {dashboard.latest_recommendation_status ?? "—"}
-                      </p>
-                    </div>
-                  </div>
-                </CardContent>
-              </Card>
+              <StorageHero connectors={connectors} dashboard={dashboard} overview={overview} />
+              <AccountsCard connectors={connectors} />
             </div>
+            <DriveTrashCard connectors={connectors} canManage={canManage} />
 
-            <div className="grid gap-4 lg:grid-cols-2">
-              <Card>
+            <section className="flex flex-col gap-3">
+              <div className="flex items-center justify-between">
+                <h2 className="text-base font-semibold">What AI Vault understands</h2>
+                <Link
+                  to="/storage-intelligence"
+                  className="flex items-center gap-1 text-xs font-medium text-primary hover:underline"
+                >
+                  Storage Intelligence <ArrowUpRight className="size-3.5" />
+                </Link>
+              </div>
+              <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+                <Metric
+                  icon={BrainCircuit}
+                  label="Files read by AI"
+                  value={intelligence?.files_analyzed ?? null}
+                  detail={aiReady ? undefined : "AI not set up yet"}
+                  to={aiReady ? "/files" : "/organization"}
+                  tone="ai"
+                />
+                <Metric
+                  icon={FolderKanban}
+                  label="Projects"
+                  value={entities.project ?? 0}
+                  to="/storage-intelligence"
+                  tone="ai"
+                />
+                <Metric
+                  icon={Users}
+                  label="Clients"
+                  value={entities.client ?? 0}
+                  to="/storage-intelligence"
+                  tone="ai"
+                />
+                <Metric
+                  icon={Copy}
+                  label="Duplicate files"
+                  value={overview?.duplicate_file_count ?? null}
+                  detail={
+                    overview?.duplicate_recoverable_bytes != null
+                      ? `${formatBytes(overview.duplicate_recoverable_bytes)} in ${overview.duplicate_group_count ?? 0} groups`
+                      : undefined
+                  }
+                  to="/storage-intelligence/duplicates"
+                  tone="warning"
+                />
+                <Metric
+                  icon={Archive}
+                  label="Inactive files"
+                  value={overview?.inactive_file_count ?? null}
+                  detail={
+                    overview?.inactive_file_bytes != null
+                      ? formatBytes(overview.inactive_file_bytes)
+                      : undefined
+                  }
+                  to="/storage-intelligence/inactive-files"
+                />
+                <Metric
+                  icon={FolderTree}
+                  label="To organize"
+                  value={intelligence?.organize_suggestions ?? 0}
+                  to="/recommendations"
+                />
+              </div>
+            </section>
+
+            <div className="grid gap-4 lg:grid-cols-5">
+              <Card className="min-w-0 lg:col-span-3">
                 <CardHeader className="flex-row items-center justify-between gap-2 space-y-0">
-                  <CardTitle>Recommendation Center</CardTitle>
+                  <CardTitle>Recommended for you</CardTitle>
                   <Link
                     to="/recommendations"
                     className="flex items-center gap-1 text-xs font-medium text-primary hover:underline"
                   >
-                    View all <ArrowUpRight className="size-3.5" />
+                    All recommendations <ArrowUpRight className="size-3.5" />
                   </Link>
                 </CardHeader>
                 <CardContent>
-                  {topRecommendations.length === 0 ? (
+                  {suggestions.length === 0 ? (
                     <p className="py-6 text-center text-sm text-muted-foreground">
-                      No active recommendations right now.
+                      Nothing to do right now — your storage looks in good shape.
                     </p>
                   ) : (
-                    <ul className="flex flex-col gap-2">
-                      {topRecommendations.map((recommendation) => (
-                        <li key={recommendation.id}>
+                    <ul className="flex flex-col gap-1">
+                      {suggestions.map((suggestion) => (
+                        <li key={suggestion.id}>
                           <Link
-                            to="/recommendations/$recommendationId"
-                            params={{ recommendationId: recommendation.id }}
-                            className="flex items-center justify-between gap-3 rounded-lg border border-transparent p-2.5 text-sm transition-colors hover:border-border hover:bg-secondary/60"
+                            to={suggestion.to}
+                            params={{ recommendationId: suggestion.id }}
+                            className="flex items-start gap-3 rounded-lg p-2.5 text-sm transition-colors hover:bg-secondary/60"
                           >
+                            <span
+                              className={cn(
+                                "mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-md",
+                                suggestion.ai ? "bg-ai-muted text-ai" : "bg-primary/10 text-primary",
+                              )}
+                            >
+                              {suggestion.ai ? (
+                                <Sparkles className="size-3.5" />
+                              ) : (
+                                <Archive className="size-3.5" />
+                              )}
+                            </span>
                             <div className="min-w-0">
-                              <p className="truncate font-medium">{recommendation.title}</p>
-                              <p className="truncate text-xs text-muted-foreground">
-                                {recommendation.estimated_impact}
+                              <p className="truncate font-medium">{suggestion.title}</p>
+                              <p className="line-clamp-2 text-xs text-muted-foreground">
+                                {suggestion.detail}
                               </p>
-                            </div>
-                            <div className="flex shrink-0 items-center gap-1.5">
-                              <Badge variant={categoryBadgeVariant(recommendation.category)}>
-                                {categoryLabel(recommendation.category)}
-                              </Badge>
-                              <Badge variant={riskBadgeVariant(recommendation.risk_level)}>
-                                {recommendation.risk_level}
-                              </Badge>
                             </div>
                           </Link>
                         </li>
@@ -333,91 +556,29 @@ function DashboardPage() {
                 </CardContent>
               </Card>
 
-              <Card>
+              <Card className="min-w-0 lg:col-span-2">
                 <CardHeader>
-                  <CardTitle>AI Insights</CardTitle>
+                  <CardTitle>Recent activity</CardTitle>
                 </CardHeader>
                 <CardContent>
-                  {dashboard.recent_insights.length === 0 ? (
+                  {activityQuery.isLoading && <Skeleton className="h-40 rounded-lg" />}
+                  {activityQuery.data && activityQuery.data.items.length === 0 && (
                     <p className="py-6 text-center text-sm text-muted-foreground">
-                      No insights generated yet.
+                      Changes you make through AI Vault appear here.
                     </p>
-                  ) : (
-                    <ul className="flex flex-col gap-3">
-                      {dashboard.recent_insights.map((insight) => (
-                        <li key={insight.id} className="flex gap-2.5 text-sm">
-                          <Sparkles className="mt-0.5 size-4 shrink-0 text-ai" />
-                          <div className="min-w-0">
-                            <p className="font-medium">{insight.title}</p>
-                            <p className="text-muted-foreground">{insight.description}</p>
-                          </div>
-                        </li>
+                  )}
+                  {activityQuery.data && activityQuery.data.items.length > 0 && (
+                    <ul className="flex flex-col divide-y divide-border">
+                      {activityQuery.data.items.slice(0, 8).map((item) => (
+                        <ActivityRow key={`${item.kind}-${item.id}`} item={item} />
                       ))}
                     </ul>
                   )}
                 </CardContent>
               </Card>
             </div>
-
-            <Card>
-              <CardHeader>
-                <CardTitle>Recent Activity</CardTitle>
-              </CardHeader>
-              <CardContent>
-                {dashboard.recent_activity.length === 0 ? (
-                  <p className="py-6 text-center text-sm text-muted-foreground">No recent activity.</p>
-                ) : (
-                  <ul className="flex flex-col divide-y divide-border">
-                    {dashboard.recent_activity.map((file) => (
-                      <li key={file.id} className="flex items-center justify-between gap-3 py-2 text-sm">
-                        <Link
-                          to="/files/$fileId"
-                          params={{ fileId: file.id }}
-                          className="truncate font-medium hover:underline"
-                        >
-                          {file.name}
-                        </Link>
-                        <span className="shrink-0 text-xs text-muted-foreground">
-                          {file.provider_modified_at ? formatRelativeTime(file.provider_modified_at) : "—"}
-                        </span>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </CardContent>
-            </Card>
           </>
         )}
-
-        <Card className="border-dashed">
-          <CardHeader className="flex-row items-center justify-between gap-2 space-y-0">
-            <CardTitle className="flex items-center gap-2 text-muted-foreground">
-              <Database className="size-4" /> System status
-            </CardTitle>
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => {
-                void versionQuery.refetch();
-                void readinessQuery.refetch();
-              }}
-            >
-              Recheck
-            </Button>
-          </CardHeader>
-          <CardContent>
-            <dl className="grid grid-cols-2 gap-y-2 text-sm sm:grid-cols-4">
-              <dt className="text-muted-foreground">API version</dt>
-              <dd>{versionQuery.data?.api_version ?? (versionQuery.isError ? "unreachable" : "loading…")}</dd>
-              <dt className="text-muted-foreground">Service version</dt>
-              <dd>{versionQuery.data?.service_version ?? "—"}</dd>
-              <dt className="text-muted-foreground">Database</dt>
-              <dd>{statusLabel(readinessQuery.data?.checks.database, readinessQuery.isError)}</dd>
-              <dt className="text-muted-foreground">Redis</dt>
-              <dd>{statusLabel(readinessQuery.data?.checks.redis, readinessQuery.isError)}</dd>
-            </dl>
-          </CardContent>
-        </Card>
       </div>
     </AppShell>
   );

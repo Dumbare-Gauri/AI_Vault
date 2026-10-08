@@ -36,6 +36,12 @@ class _FakeArchiveJob:
         self.created_by_user_id = uuid.uuid4()
         self.created_at = datetime.now(UTC)
         self.completed_at = datetime.now(UTC)
+        self.destination_path = "AI Vault Archive/2026/archive.zip"
+        self.destination_web_view_link = None
+        self.archive_sha256 = "def456"
+        self.verified_at = datetime.now(UTC)
+        self.remove_originals = False
+        self.originals_removed_count = 0
 
 
 @pytest.fixture

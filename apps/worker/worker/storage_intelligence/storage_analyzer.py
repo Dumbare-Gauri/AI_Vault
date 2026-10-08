@@ -25,7 +25,7 @@ class StorageBreakdown:
 
 
 class StorageAnalyzer:
-    """"Where is the user's storage going?" (Phase 1 spec §7) — a single
+    """ "Where is the user's storage going?" (Phase 1 spec §7) — a single
     O(n) pass over an already-fetched file list (see
     `FileRepository.list_all_for_organization`), aggregated in Python via
     `Counter`. Runs only inside the background `StorageAnalysisJob`, never
@@ -41,7 +41,13 @@ class StorageAnalyzer:
         self._connectors = StorageConnectorRepository(session)
         self._sources = StorageSourceRepository(session)
 
-    def analyze(self, organization_id: uuid.UUID, files: list[File]) -> StorageBreakdown:
+    def analyze(
+        self,
+        organization_id: uuid.UUID,
+        files: list[File],
+        *,
+        connector_id: uuid.UUID | None = None,
+    ) -> StorageBreakdown:
         by_type: Counter[str] = Counter()
         by_bucket: Counter[str] = Counter()
         by_source_bytes: Counter[uuid.UUID] = Counter()
@@ -66,15 +72,17 @@ class StorageAnalyzer:
         return StorageBreakdown(
             total_size_bytes=total_size,
             total_files=len(files),
-            total_folders=self._folders.count_for_organization(organization_id),
+            total_folders=(
+                self._folders.count_for_connector(connector_id)
+                if connector_id is not None
+                else self._folders.count_for_organization(organization_id)
+            ),
             breakdown_by_type_bytes=dict(by_type),
             breakdown_by_size_bucket_bytes=dict(by_bucket),
             breakdown_by_source_bytes=breakdown_by_source,
         )
 
-    def _source_names_for_organization(
-        self, organization_id: uuid.UUID
-    ) -> dict[uuid.UUID, str]:
+    def _source_names_for_organization(self, organization_id: uuid.UUID) -> dict[uuid.UUID, str]:
         names: dict[uuid.UUID, str] = {}
         for connector in self._connectors.list_for_organization(organization_id):
             for source in self._sources.list_for_connector(connector.id):

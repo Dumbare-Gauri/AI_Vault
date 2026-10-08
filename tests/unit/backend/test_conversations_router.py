@@ -30,6 +30,7 @@ class _FakeMessage:
         self.provider = "extractive_fallback" if role == "assistant" else None
         self.token_usage = None
         self.tool_name = None
+        self.blocks = []
         self.created_at = datetime.now(UTC)
 
 
@@ -40,6 +41,8 @@ class _FakeCitation:
         self.snippet = "Relevant excerpt…"
         self.confidence = 0.72
         self.retrieval_method = "semantic"
+        self.page_number = 3
+        self.passage_index = 7
 
 
 class _FakeFile:

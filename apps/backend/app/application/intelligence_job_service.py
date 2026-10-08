@@ -56,7 +56,10 @@ class IntelligenceJobService:
         job = self._jobs.get_by_id(intelligence_job_id)
         if job is None:
             raise NotFoundError("Intelligence job not found.")
-        self._get_owned_connector(job.connector_id, organization_id=organization_id)
+        try:
+            self._get_owned_connector(job.connector_id, organization_id=organization_id)
+        except NotFoundError:
+            raise NotFoundError("Intelligence job not found.") from None
         return job
 
     def get_progress(self, intelligence_job_id: uuid.UUID) -> IntelligenceProgress | None:

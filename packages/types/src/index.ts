@@ -3,7 +3,17 @@ export type {
   AIProviderConfigTestRequest,
   AIProviderConfigTestResponse,
   AIProviderConfigUpdateRequest,
+  AIProviderOption,
 } from "./ai-provider";
+export type {
+  Action,
+  ActionArchive,
+  ActionProblem,
+  ActionStatus,
+  ActivityItem,
+  ActivityResponse,
+  CreatedItem,
+} from "./actions";
 export type {
   ArchiveJob,
   ArchiveJobDetail,
@@ -17,17 +27,47 @@ export type {
   OrganizationUpdateRequest,
   UserProfile,
 } from "./auth";
-export type { Connector, CompleteConnectRequest, InitiateConnectResponse } from "./connectors";
+export type {
+  AgentBrowseFolder,
+  AgentBrowseResult,
+  AgentVolume,
+  CompleteConnectRequest,
+  Connector,
+  EmptyTrashRequest,
+  InitiateConnectResponse,
+  LocalAgent,
+  LocalAgentKey,
+  TrashItem,
+  TrashSummary,
+} from "./connectors";
 export type {
   AskRequest,
+  ActionProposalBlock,
+  ActionResultBlock,
+  ActionResultStep,
+  AnswerBlock,
+  AnswerFile,
   AskResponse,
+  AnswerDuplicateGroup,
+  DuplicateGroupsBlock,
+  FileListBlock,
+  NoticeBlock,
+  OrganizationPreview,
+  ResultPage,
+  StorageSummaryBlock,
+  StorageSummaryEntry,
   Citation,
   Conversation,
   ConversationDetail,
   ConversationMessage,
   ConversationRetrievalMethod,
 } from "./conversations";
-export type { Dashboard, DashboardSnapshot, InsightRecord } from "./dashboard";
+export type {
+  Dashboard,
+  DashboardSnapshot,
+  InsightRecord,
+  IntelligenceSummary,
+} from "./dashboard";
 export type {
   EmbeddingJob,
   EmbeddingJobStatus,
@@ -65,11 +105,14 @@ export type {
 export type {
   FileClassification,
   FileDetail,
+  FileEntityLink,
   FileExtractionInfo,
   FileExtractionStatus,
   FileIntelligence,
   FileIntelligenceEntity,
   FileIntelligenceStatus,
+  FileLifecycle,
+  FileLifecycleState,
   FileListResponse,
   FileMetadata,
   FileSummary,
@@ -86,6 +129,21 @@ export type {
   IntelligenceTrigger,
 } from "./intelligence";
 export type {
+  EntityStatus,
+  EntityType,
+  OrganizationAnalysisJob,
+  OrganizationAnalysisJobStatus,
+  OrganizationCurrentLocation,
+  OrganizationEntity,
+  OrganizationEntityDetail,
+  OrganizationEntityFile,
+  OrganizationEntityListResponse,
+  OrganizationRecommendation,
+  OrganizationRecommendationKind,
+  OrganizationRecommendationListResponse,
+  OrganizationRecommendationStatus,
+} from "./organization";
+export type {
   Recommendation,
   RecommendationCategory,
   RecommendationJob,
@@ -96,7 +154,14 @@ export type {
   RecommendationStatus,
 } from "./recommendations";
 export type { ScanJob, ScanProgress, ScanStatus, ScanType, StartScanRequest } from "./scans";
-export type { RetrievalMethod, SearchRequest, SearchResponse, SearchResult } from "./search";
+export type {
+  RetrievalMethod,
+  SearchFilters,
+  SearchRequest,
+  SearchResponse,
+  SearchResult,
+  SearchSort,
+} from "./search";
 export type {
   DuplicateGroup,
   DuplicateGroupDetail,

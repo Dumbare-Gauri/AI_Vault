@@ -1,7 +1,7 @@
 from app.core.error_handlers import register_error_handlers
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from vault_shared import NotFoundError
+from vault_shared import AIUnavailableError, NotFoundError
 
 
 def _build_test_app() -> FastAPI:
@@ -42,6 +42,21 @@ def test_unexpected_exception_is_hidden_behind_a_generic_500() -> None:
     body = response.json()
     assert body["error"]["code"] == "internal_error"
     assert "something exploded" not in body["error"]["message"]
+
+
+def test_an_ai_outage_is_a_503_with_a_reason_never_a_401() -> None:
+    app = FastAPI()
+    register_error_handlers(app)
+
+    @app.get("/boom/ai")
+    def raise_ai_error() -> None:
+        raise AIUnavailableError("AI key rejected", reason=AIUnavailableError.AUTH_FAILED)
+
+    response = TestClient(app, raise_server_exceptions=False).get("/boom/ai")
+
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "ai_unavailable"
+    assert response.json()["error"]["details"]["reason"] == "auth_failed"
 
 
 def test_unknown_route_returns_standardized_error_shape() -> None:

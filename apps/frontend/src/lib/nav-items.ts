@@ -2,8 +2,6 @@ import {
   Archive,
   BrainCircuit,
   Building2,
-  ClipboardCheck,
-  ClipboardList,
   Cloud,
   FolderOpen,
   HardDrive,
@@ -11,7 +9,6 @@ import {
   LayoutDashboard,
   Lightbulb,
   MessageCircle,
-  PlayCircle,
   ScanLine,
   Search,
   Trash2,
@@ -41,14 +38,6 @@ export const NAV_SECTIONS: NavSection[] = [
       { label: "Search", to: "/search", icon: Search },
       { label: "Ask Vault", to: "/chat", icon: MessageCircle },
       { label: "Recommendations", to: "/recommendations", icon: Lightbulb },
-      { label: "Approvals", to: "/approvals", icon: ClipboardCheck },
-    ],
-  },
-  {
-    label: "Execution",
-    items: [
-      { label: "Execution Plans", to: "/execution-plans", icon: ClipboardList },
-      { label: "Execution Jobs", to: "/execution-jobs", icon: PlayCircle },
     ],
   },
   {

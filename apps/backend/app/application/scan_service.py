@@ -52,7 +52,12 @@ class ScanService:
         job = self._jobs.get_by_id(scan_job_id)
         if job is None:
             raise NotFoundError("Scan job not found.")
-        self._get_owned_connector(job.connector_id, organization_id=organization_id)
+        try:
+            self._get_owned_connector(job.connector_id, organization_id=organization_id)
+        except NotFoundError:
+            # Same answer as a missing job, so another organization's job id
+            # is indistinguishable from one that does not exist.
+            raise NotFoundError("Scan job not found.") from None
         return job
 
     def get_progress(self, scan_job_id: uuid.UUID) -> ScanProgress | None:

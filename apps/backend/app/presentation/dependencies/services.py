@@ -1,6 +1,7 @@
 from fastapi import Depends
 from sqlalchemy.orm import Session
 
+from app.application.action_service import ActionService
 from app.application.ai_provider_config_service import AIProviderConfigService
 from app.application.approval_service import ApprovalService
 from app.application.archive_service import ArchiveService
@@ -17,11 +18,16 @@ from app.application.execution_plan_service import ExecutionPlanService
 from app.application.file_service import FileService
 from app.application.intelligence_job_service import IntelligenceJobService
 from app.application.notification_service import NotificationService
+from app.application.organization_entity_service import OrganizationEntityService
+from app.application.organization_recommendation_service import OrganizationRecommendationService
 from app.application.organization_service import OrganizationService
 from app.application.recommendation_service import RecommendationService
 from app.application.scan_service import ScanService
 from app.application.search_service import SearchService
+from app.application.storage_context_service import StorageContextService
 from app.application.storage_intelligence_service import StorageIntelligenceService
+from app.application.storage_operation_service import StorageOperationService
+from app.application.vault_action_service import VaultActionService
 from app.application.workflow_execution_service import WorkflowExecutionService
 from app.application.workflow_policy_service import WorkflowPolicyService
 from app.application.workflow_service import WorkflowService
@@ -32,6 +38,8 @@ from vault_shared.connectors.google_workspace import (
     get_google_workspace_oauth_client,
 )
 from vault_shared.db.session import get_db
+from vault_shared.storage import StorageAdapterRegistry
+from vault_shared.storage.default_registry import build_storage_registry
 
 
 def get_auth_service(db: Session = Depends(get_db)) -> AuthService:
@@ -65,11 +73,20 @@ def get_intelligence_job_service(db: Session = Depends(get_db)) -> IntelligenceJ
     return IntelligenceJobService(db)
 
 
-def get_file_service(
+def get_storage_registry(
     db: Session = Depends(get_db),
     oauth_client: GoogleWorkspaceOAuthClient = Depends(get_google_workspace_oauth_client),
+) -> StorageAdapterRegistry:
+    """Per-request, bound to the request's session — deliberately not a
+    singleton, so a test overrides this one dependency with a fake."""
+    return build_storage_registry(db, oauth_client=oauth_client)
+
+
+def get_file_service(
+    db: Session = Depends(get_db),
+    storage: StorageAdapterRegistry = Depends(get_storage_registry),
 ) -> FileService:
-    return FileService(db, oauth_client=oauth_client)
+    return FileService(db, storage=storage)
 
 
 def get_embedding_job_service(db: Session = Depends(get_db)) -> EmbeddingJobService:
@@ -87,9 +104,17 @@ def get_context_builder_service(db: Session = Depends(get_db)) -> ContextBuilder
 
 
 def get_conversation_service(
-    db: Session = Depends(get_db), ai_gateway: AIGateway = Depends(get_ai_gateway)
+    db: Session = Depends(get_db),
+    ai_gateway: AIGateway = Depends(get_ai_gateway),
+    registry: StorageAdapterRegistry = Depends(get_storage_registry),
 ) -> ConversationService:
-    return ConversationService(db, ai_gateway=ai_gateway)
+    return ConversationService(
+        db, ai_gateway=ai_gateway, storage_context=StorageContextService(db, registry=registry)
+    )
+
+
+def get_vault_action_service(db: Session = Depends(get_db)) -> VaultActionService:
+    return VaultActionService(db)
 
 
 def get_dashboard_service(db: Session = Depends(get_db)) -> DashboardService:
@@ -98,6 +123,22 @@ def get_dashboard_service(db: Session = Depends(get_db)) -> DashboardService:
 
 def get_recommendation_service(db: Session = Depends(get_db)) -> RecommendationService:
     return RecommendationService(db)
+
+
+def get_storage_operation_service(db: Session = Depends(get_db)) -> StorageOperationService:
+    return StorageOperationService(db)
+
+
+def get_organization_entity_service(
+    db: Session = Depends(get_db),
+) -> OrganizationEntityService:
+    return OrganizationEntityService(db)
+
+
+def get_organization_recommendation_service(
+    db: Session = Depends(get_db),
+) -> OrganizationRecommendationService:
+    return OrganizationRecommendationService(db)
 
 
 def get_storage_intelligence_service(
@@ -122,6 +163,13 @@ def get_execution_job_service(db: Session = Depends(get_db)) -> ExecutionJobServ
     return ExecutionJobService(db)
 
 
+def get_action_service(
+    db: Session = Depends(get_db),
+    job_service: ExecutionJobService = Depends(get_execution_job_service),
+) -> ActionService:
+    return ActionService(db, job_service=job_service)
+
+
 def get_workflow_service(db: Session = Depends(get_db)) -> WorkflowService:
     return WorkflowService(db)
 
@@ -144,4 +192,3 @@ def get_notification_service(db: Session = Depends(get_db)) -> NotificationServi
 
 def get_automation_template_service(db: Session = Depends(get_db)) -> AutomationTemplateService:
     return AutomationTemplateService(db)
-

@@ -8,7 +8,8 @@ export type ExecutionActionType =
   | "remove_duplicate"
   | "update_metadata"
   | "create_archive"
-  | "permanent_delete";
+  | "permanent_delete"
+  | "restore";
 
 export type ExecutionStepStatus = "pending" | "completed" | "failed" | "skipped" | "rolled_back";
 
@@ -69,6 +70,8 @@ export interface CreateExecutionPlanRequest {
   action_type?: ExecutionActionType;
   new_name?: string;
   new_parent_id?: string;
+  /** create_archive only: trash originals once the archive is verified. */
+  remove_originals?: boolean;
 }
 
 export type ApprovalStatus = "pending" | "approved" | "rejected" | "changes_requested" | "expired";
