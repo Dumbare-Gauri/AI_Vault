@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import func, select
+from sqlalchemy import Select, func, select
 from sqlalchemy.orm import Session
 
 from vault_shared.db.models import (
@@ -13,7 +13,7 @@ from vault_shared.db.models import (
 )
 
 
-def _organization_files(organization_id: uuid.UUID):
+def _organization_files(organization_id: uuid.UUID) -> Select[uuid.UUID]:
     return (
         select(File.id)
         .join(StorageSource, StorageSource.id == File.storage_source_id)

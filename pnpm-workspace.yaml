@@ -4,9 +4,12 @@ packages:
   - "packages/ui"
   - "packages/config"
 
-# Phase 10 (ADR-022) — forces a patched transitive version regardless of
-# what eslint's own dependency tree requests (pnpm audit found
-# GHSA-rgw5-rvv9-x895 via eslint > minimatch > brace-expansion, a dev-only
-# dependency chain, not anything the shipped frontend bundle includes).
+# Phase 10 (ADR-022) — forces patched transitive versions regardless of what
+# the direct dependencies' own trees request, so `pnpm audit --audit-level=high`
+# in CI stays green.
 overrides:
-  brace-expansion@>=4.0.0 <5.0.9: ">=5.0.9"
+  brace-expansion@>=4.0.0 <5.0.11: "^5.0.11"
+  nanoid@<3.3.18: "^3.3.18"
+  seroval@<1.6.3: "^1.6.3"
+  source-map-js@<1.2.2: "^1.2.2"
+  undici@>=8.0.0 <8.10.2: "^8.10.2"

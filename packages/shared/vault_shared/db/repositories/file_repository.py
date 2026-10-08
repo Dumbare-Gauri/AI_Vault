@@ -518,7 +518,7 @@ class FileRepository:
                 )
             )
 
-        type_conditions = []
+        type_conditions: list[ColumnElement[bool]] = []
         for category in query.categories:
             extensions, mime_prefixes = FILE_CATEGORIES.get(category, (frozenset(), ()))
             type_conditions += [File.name.ilike(f"%.{ext}") for ext in sorted(extensions)]
@@ -713,7 +713,11 @@ class FileRepository:
             .having(func.count(File.id) > 1)
             .all()
         )
-        return [(checksum, count, int(total or 0)) for checksum, count, total in rows]
+        return [
+            (checksum, count, int(total or 0))
+            for checksum, count, total in rows
+            if checksum is not None
+        ]
 
     def list_for_checksum_in_organization(
         self, organization_id: uuid.UUID, checksum: str

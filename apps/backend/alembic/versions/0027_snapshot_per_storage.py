@@ -10,8 +10,9 @@ Create Date: 2026-10-06
 from collections.abc import Sequence
 
 import sqlalchemy as sa
-from alembic import op
 from sqlalchemy.dialects.postgresql import UUID
+
+from alembic import op
 
 revision: str = "0027"
 down_revision: str | None = "0026"

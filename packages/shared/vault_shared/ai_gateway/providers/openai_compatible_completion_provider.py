@@ -57,7 +57,7 @@ class OpenAICompatibleCompletionProvider:
         if correlation_id:
             headers["X-Request-Id"] = correlation_id
 
-        payload = {
+        payload: dict[str, Any] = {
             "model": self.model_name,
             "messages": [{"role": m.role, "content": m.content} for m in outgoing],
             "max_tokens": max_tokens,
