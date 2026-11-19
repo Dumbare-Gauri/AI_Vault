@@ -1,141 +1,82 @@
-# AI Vault on one EC2 server (staging + production)
+# AI Vault on EC2 (staging + production)
 
-The low-cost deployment: one EC2 instance in `ap-south-1` runs two
-complete, separate copies of AI Vault — staging and production — with
-Docker Compose. No RDS, ElastiCache, load balancer or NAT gateway. (The
-larger ECS/RDS/ALB design in `infrastructure/terraform/` is kept for later;
-it is not used here.)
+The low-cost deployment, built for a public launch: each environment runs
+on **its own EC2 instance** in `ap-south-1` with Docker Compose, behind HTTPS
+that ends on the instance itself. No RDS, ElastiCache, load balancer, NAT
+gateway or CloudFront. (The larger ECS/RDS/ALB design in
+`infrastructure/terraform/` is the scale-out path; it is not used yet.)
 
 ```
-                      ┌──────────── one EC2 instance ────────────┐
-CloudFront (staging) ─┤ :8081  aivault-staging   web→api, worker,  │
-                      │        scheduler, postgres, redis          │
-CloudFront (prod)    ─┤ :8080  aivault-production (same, separate) │
-                      └──────────────────────────────────────────┘
-Each environment: own containers, network, volumes, database, Redis,
-S3 buckets, secrets and Google OAuth client. Only `web` has a port.
+                         ┌──────── production instance (t3.medium, always on) ────────┐
+app.<domain>     ──443──▶│ edge (Caddy, Let's Encrypt) → web (nginx) → api, worker,    │
+                         │ scheduler, postgres, redis                                   │
+                         └──────────────────────────────────────────────────────────────┘
+                         ┌──────── staging instance (t3.small, stops at night) ─────────┐
+staging.<domain> ──443──▶│ the same stack, its own data, secrets and Google project     │
+                         └──────────────────────────────────────────────────────────────┘
+Each environment: own instance, containers, database, Redis, S3 buckets,
+secrets, Google OAuth client and GitHub deploy role. Only `edge` is
+reachable from outside; nothing is shared but the AWS account.
 ```
 
 | File | Purpose |
 |---|---|
-| `compose.yml` | One environment's services (run once per environment) |
+| `compose.yml` | One environment's services |
 | `env.example` | That environment's settings and secrets (`/opt/aivault/<env>/.env`, chmod 600) |
-| `nginx/default.conf.template` | Serves the app, proxies `/v1`, refuses requests not from CloudFront |
-| `deploy.sh` | Deploys one commit to one environment, rolls back if unhealthy |
+| `caddy/Caddyfile` | HTTPS for `PUBLIC_HOST`: certificate, HTTP→HTTPS redirect, HSTS |
+| `nginx/default.conf.template` | Serves the app and proxies `/v1` |
+| `bootstrap.sh` | Prepares a fresh Ubuntu 24.04 instance for one environment |
+| `deploy.sh` | Deploys one commit, rolls back if unhealthy |
 | `backup.sh`, `restore.sh` | Database backup to the environment's own S3 bucket; restore |
-| `systemd/` | Daily backup timer per environment |
-| `ssm/` | The only commands GitHub may run on the server, one per environment |
+| `systemd/` | Daily backup timer; nightly stop of the staging instance |
+| `ssm/` | The only command GitHub may run on each server |
 | `iam/` | GitHub OIDC deploy roles (trust + permissions), one per environment |
 | `../../.github/workflows/` | PR Validation; `main` → staging; `production` → production after approval; Release |
 
-## The HTTPS limitation
+## HTTPS
 
-AI Vault does not run on plain `http://<EC2-IP>`. This is by design, and
-must not be worked around by loosening settings:
+AI Vault runs only on HTTPS, on a hostname — by design:
 
-1. **The app refuses to start without HTTPS.** In production mode the API,
-   worker and scheduler stop at start-up unless `FRONTEND_URL` is
-   `https://`, `COOKIE_SECURE=true` and CORS allows no localhost
-   (`vault_shared/settings.py`). Database migrations do run.
-2. **Browsers drop secure cookies over HTTP**, so a session could not be
-   kept even if the app started.
-3. **Google OAuth rejects it.** Redirect URIs and JavaScript origins must
-   use HTTPS (only `localhost` is exempt) and **may not be raw IP
-   addresses** — so Google sign-in and connecting Drive are impossible on an
-   IP, even one with a valid certificate.
-4. **The Local Agent refuses** any server address that isn't HTTPS, except
-   localhost (`aivault_agent/cloud.py`).
+1. **The app refuses to start without it.** In production mode the API,
+   worker and scheduler stop unless `FRONTEND_URL` is `https://`,
+   `COOKIE_SECURE=true` and CORS allows no localhost
+   (`vault_shared/settings.py`).
+2. **Browsers drop secure cookies over HTTP.**
+3. **Google OAuth** requires HTTPS redirect URIs on a hostname, not an IP.
+4. **The Local Agent** refuses any non-HTTPS server except localhost.
 
-| Feature | `http://<EC2-IP>:port` | HTTPS hostname (CloudFront or own domain) |
-|---|---|---|
-| Server, Docker, volumes, firewall, SSM access | ✅ | ✅ |
-| Image builds, database migrations | ✅ | ✅ |
-| PostgreSQL, Redis, backups and restore drills | ✅ | ✅ |
-| API, worker, scheduler running | ❌ refuse to start | ✅ |
-| Web app, Google sign-in, connecting Drive | ❌ | ✅ (test users until Google verifies the app) |
-| Local Agent (My Computer) | ❌ | ✅ |
+So each environment needs a DNS name (`app.<domain>`, `staging.<domain>`)
+pointing at its instance's Elastic IP. Caddy obtains and renews a Let's
+Encrypt certificate for it automatically; port 80 must stay open for that
+and for the redirect. Browser → server is encrypted end to end; there is
+no unencrypted hop.
 
-## HTTPS without a domain: CloudFront (restricted staging trial only)
-
-A CloudFront distribution gives a stable `https://dxxxx.cloudfront.net`
-address with a valid AWS certificate, at no charge within CloudFront's
-always-free allowance (1 TB out and 10 million requests a month). One
-distribution per environment.
-
-### Exact settings
-
-| Setting | Value |
-|---|---|
-| Origin domain | The instance's **public IPv4 DNS** (`ec2-…ap-south-1.compute.amazonaws.com`) — CloudFront needs a name, not an IP. Use an Elastic IP so it never changes. |
-| Origin protocol / port | HTTP only, port `8081` (staging) or `8080` (production) |
-| Origin custom header | `X-Origin-Verify` = that environment's `ORIGIN_VERIFY_SECRET` |
-| Origin response timeout / keep-alive | 60 s / 60 s |
-| Viewer protocol policy | Redirect HTTP to HTTPS |
-| Allowed methods | GET, HEAD, OPTIONS, PUT, POST, PATCH, DELETE |
-| Default behaviour (`*`) | **Custom cache policy** `aivault-no-store`: min TTL 0, default TTL 0, max TTL 1; cache key: header `Authorization`, all cookies, all query strings. Origin request policy `AllViewerExceptHostHeader`. Compression on. |
-| `/assets/*` behaviour | Managed cache policy `CachingOptimized`, GET/HEAD only |
-
-Why the custom policy rather than `CachingDisabled`: it puts `Authorization`
-in the cache key, which guarantees CloudFront forwards it to the origin;
-the origin's own `Cache-Control: no-store` (below) then keeps CloudFront
-from storing anything, and even a misconfigured TTL could only ever
-return a response to the same token that produced it.
-
-### Verified locally (through nginx, as CloudFront reaches it)
+### Verified locally (full stack, Caddy with its local CA)
 
 | Check | Result |
 |---|---|
-| Request without `X-Origin-Verify` (`/`, `/v1/…`, `/assets/…`, `/health/live`) | 403, plain nginx page, nothing revealed |
-| `/v1/*` responses | `Cache-Control: no-store` |
-| `/`, `/files`, other app routes | `Cache-Control: no-cache` (a release reaches everyone at once) |
-| `/assets/*` | `max-age=31536000`, `immutable` (content-hashed names) |
-| `Authorization` reaches the API | missing → "Missing or malformed Authorization header"; bogus → "Invalid or expired access token" |
-| Cookies reach the API | none → "No active session"; bogus → "Invalid session" |
-| 10 MB request body | accepted (limit 50 MB) |
-| Client IP behind CloudFront | the address CloudFront appends is used; a faked first entry is ignored |
-| Client IP in direct mode | `X-Forwarded-For` from the client is ignored |
-| Origin secret in built frontend files / API, worker, nginx logs | absent |
-| Origin secret in app containers' environment | absent (only `web` has it) |
+| `http://` request | 308 to the same path on `https://` |
+| HTTPS responses | `Strict-Transport-Security: max-age=31536000`; no `Server` header |
+| Certificate | issued for exactly `PUBLIC_HOST` |
+| Client sends a fake `X-Forwarded-For` | ignored — nginx sees only the address Caddy saw |
+| `/v1/*` | `Cache-Control: no-store`, never compressed; bogus token → "Invalid or expired access token" |
+| `/assets/*` | compressed, `immutable` |
+| 10 MB request body | reaches the API (limit 50 MB) |
+| deploy.sh health check on loopback `WEB_PORT` | 200 |
 
-### Not provable locally — check on the first staging deploy
+**Check on the first real deploy:** a Let's Encrypt certificate is issued
+(needs DNS and port 80); `curl http://<EIP>:8080/` from outside times out
+(nginx is loopback-only); the API logs real client addresses (Docker on
+Windows, used for the local test, shows its gateway address instead).
 
-- CloudFront actually sends `X-Origin-Verify`, forwards `Authorization`
-  and cookies with the policies above, and never caches `/v1`:
-  `curl -sI https://dxxxx.cloudfront.net/v1/users/me` must show
-  `Cache-Control: no-store` and no `X-Cache: Hit from cloudfront`, and a
-  bogus token must give "Invalid or expired access token".
-- The security group admits ports 8080/8081 **only** from the managed prefix
-  list `com.amazonaws.global.cloudfront.origin-facing`:
-  `curl http://<EIP>:8081/` from your own machine must time out.
-- Sign-in, Drive connect and the Local Agent work end to end.
+### CloudFront (optional, later)
 
-### Remaining limits of this setup
+For edge caching or AWS WAF, a CloudFront distribution can go in front of
+`app.<domain>` with an **HTTPS** origin (Caddy's certificate) — never an
+HTTP one. nginx still supports `ORIGIN_VERIFY_SECRET`; client-IP handling
+would need `TRUSTED_PROXY_CIDR` revisited. Not needed to launch.
 
-- **CloudFront → EC2 is unencrypted HTTP.** Browser → CloudFront is
-  HTTPS; the hop to the origin is not, so session tokens and file data
-  cross it in clear text. The prefix-list rule and secret header stop
-  anyone else from *reaching* the origin; they do not encrypt that hop.
-  **Use it for a restricted staging trial with test accounts and test
-  data only — not for production or real people's Drive contents.** End-to-
-  end HTTPS needs an origin certificate, which needs a domain you own.
-- **The secret header is a second lock, not the main one.** It is never in
-  frontend code or responses, but anyone with CloudFront console access can
-  read it; the security group is the primary control. Rotate it by updating
-  CloudFront and the `.env` together.
-- **Google production verification may need a domain you own.** Testing
-  mode (named test users) works with a `cloudfront.net` address; whether
-  Google accepts it for publishing is **not verified**.
-- **Requests longer than 60 s fail at CloudFront** (504) even though the job
-  carries on — extracting or listing a very large archive can take longer.
-
-### Later, your own domain
-
-No code changes: point `staging.example.com` / `app.example.com` at
-CloudFront or at the instance (with Caddy/Certbot on the instance for
-end-to-end TLS), change `PUBLIC_URL` in that environment's `.env`, update
-its Google OAuth client's origins and redirect URI, and redeploy.
-
-## Capacity (measured)
+## Sizing (measured)
 
 Measured on the production images with Docker resource limits (local
 Linux VM, 16 cores — so CPU numbers are *not* t3 numbers):
@@ -154,41 +95,54 @@ Linux VM, 16 cores — so CPU numbers are *not* t3 numbers):
 kills or restarts. Each API process and each busy worker process holds its
 own ~210 MB copy of the embedding model — that, not traffic, sets the size.
 
-| Profile | Peak |
-|---|---|
-| Production (`API_WORKERS=2`, `WORKER_CONCURRENCY=2`) | ≈ 2.1 GB |
-| Staging (`API_WORKERS=1`, `WORKER_CONCURRENCY=1`) | ≈ 1.2 GB |
-| Both | ≈ 3.3 GB |
+| Environment | Profile | Peak | Instance |
+|---|---|---|---|
+| Production | `API_WORKERS=2`, `WORKER_CONCURRENCY=2` | ≈ 2.1 GB | **`t3.medium`** (4 GiB) — the minimum; ~1.4 GB left for PostgreSQL growth and Caddy, plus 2 GB swap |
+| Staging | `API_WORKERS=1`, `WORKER_CONCURRENCY=1` | ≈ 1.2 GB | `t3.small` (2 GiB) + 2 GB swap |
 
-**Recommendation:** `t3.medium` (4 GiB, ~3.5 usable after OS, Docker and
-SSM) leaves about 200 MB of headroom with both environments busy, before
-PostgreSQL holds real data — too tight to rely on. Either
+`t3.small` cannot hold production. `bootstrap.sh` adds the swap file.
+Not measured: building the images on a `t3.small` (deploys build on the
+server), real Drive / Local Agent data, a large PostgreSQL index, and t3
+CPU-credit behaviour. Embedding and archiving are CPU-bound; a t3's
+baseline is 20–30 % of its vCPUs, so long jobs spend CPU credits — run
+production in "unlimited" mode with a `CPUCreditBalance` alarm, staging in
+"standard".
 
-- **`t3.large` (8 GiB)** for both environments always on, or
-- `t3.medium` with production at `API_WORKERS=1`, `WORKER_CONCURRENCY=1`
-  (≈ 1.2 GB) and staging stopped when not in use.
-
-Add a 2 GB swap file either way. CPU: embedding and archiving are
-CPU-bound (≈ 7 cores busy locally); a t3's baseline is 20–30 % of its
-vCPUs, so long jobs spend CPU credits — watch `CPUCreditBalance` and note
-that "unlimited" mode bills for surplus CPU.
-
-Not measured here: real scans with real Drive or Local Agent data,
-PostgreSQL with a large index, EBS and network throughput, and t3 CPU
-credit behaviour. Repeat `docker stats` on staging with real data.
+**Scaling without redesign:** stop → change instance type → start (about
+five minutes, the Elastic IP stays) → raise `API_WORKERS` /
+`WORKER_CONCURRENCY`. Beyond one instance: managed PostgreSQL/Redis (point
+`DATABASE_URL`/`REDIS_URL` at them), then the ECS/ALB design in
+`infrastructure/terraform/`.
 
 Archive temp space: the archive temp volume grows by up to the archive's
 compressed size; the worker refuses a job that would leave less than
 `ARCHIVE_FREE_SPACE_RESERVE_BYTES` free. Put `/var/lib/docker/volumes` on a
 separate EBS volume before allowing very large archives in production.
 
+## Monthly cost (ap-south-1, on-demand, approximate USD)
+
+| | Staging, ~40 h/week | Staging, always on | Production |
+|---|---|---|---|
+| EC2 | ~$4 (t3.small) | ~$16 | ~$33 (t3.medium) |
+| EBS gp3 (30 / 30 / 40 GB) | ~$3 | ~$3 | ~$4 |
+| Public IPv4 (charged even when stopped) | ~$3.65 | ~$3.65 | ~$3.65 |
+| S3 backups + archive cache | <$1 | <$1 | ~$1–3, grows with use |
+| Domain + DNS (shared) | — | — | ~$1.50 |
+| Certificates, Budgets, basic alarms | $0 | $0 | $0 |
+| **Total** | **~$11** | **~$23** | **~$43–46** |
+
+Both: **~$55** (staging part-time) or ~$67. Not included: 18 % GST if
+billed by AWS India, t3 surplus CPU, data out beyond 100 GB/month, the AI
+model provider, and Google's CASA assessment (below). A 1-year Compute
+Savings Plan cuts EC2 by about 30 % once the size is settled.
+
 ## Backups and recovery
 
 | Data | Where it's kept | Recovery |
 |---|---|---|
 | Database (accounts, connections, encrypted tokens, indexes, conversations, archive records, schedules) | Daily `pg_dump`: 7 on the server, plus the environment's own S3 bucket | `restore.sh` |
-| `.env`, above all `CONNECTOR_ENCRYPTION_KEY` | AWS Secrets Manager or SSM Parameter Store (SecureString), one entry per environment — never next to the dumps | Copy back to `/opt/aivault/<env>/.env` |
-| Redis, archive cache bucket, embedding model, archive temp files | Not backed up — nothing is lost without them | Recreated automatically |
+| `.env`, above all `CONNECTOR_ENCRYPTION_KEY` | SSM Parameter Store (SecureString), one entry per environment — never next to the dumps | Copy back to `/opt/aivault/<env>/.env` |
+| Redis, archive cache bucket, embedding model, archive temp files, certificates | Not backed up — nothing is lost without them | Recreated automatically |
 
 - **Separate destinations:** `aivault-staging-backups` and
   `aivault-production-backups`, both private, versioned, encrypted (SSE-S3),
@@ -196,13 +150,13 @@ separate EBS volume before allowing very large archives in production.
 - **Protected credentials:** each environment's `BACKUP_AWS_*` keys may only
   `s3:PutObject` into `<bucket>/<env>/` — not read, not delete, not the
   other environment. Versioning means even an overwrite keeps the old copy.
-- **Schedule:** `systemctl enable --now aivault-backup@staging.timer
-  aivault-backup@production.timer` (daily, 03:00 IST). `deploy.sh` also
-  backs up before every migration.
+- **Schedule:** daily at 03:00 IST (`bootstrap.sh` enables the timer);
+  `deploy.sh` also backs up before every migration. Staging is usually
+  stopped at 03:00, so its backups are mostly the pre-deploy ones.
 - **Restore drill (done locally):** backup → deleted all accounts → `restore.sh`
   → the account was back, schema at the current migration, all services
-  healthy, app answering through nginx. Repeat monthly on staging using a
-  production dump, and before the first production release.
+  healthy, app answering through nginx. Repeat on staging using a
+  production dump before the first public release, then monthly.
 
 ```bash
 sudo CONFIRM=replace-staging /opt/aivault/staging/src/infrastructure/single-server/restore.sh \
@@ -227,7 +181,7 @@ feature/* fix/*  --PR (squash)-->  main  --PR "release: vX.Y.Z" (merge commit)--
 | Workflow | Runs on | Does |
 |---|---|---|
 | PR Validation | PRs into `main` / `production` | CI + PR title format; PRs into `production` must come from `main` or `hotfix/*` and be titled `release: vX.Y.Z`. Required check: `PR validation passed` |
-| Deploy — Staging | push to `main` | CI → staging (if `STAGING_DEPLOY_ENABLED`) |
+| Deploy — Staging | push to `main` | CI → start the staging instance if stopped → deploy (if `STAGING_DEPLOY_ENABLED`) |
 | Deploy — Production | push to `production` | CI → approval → production (if `PRODUCTION_DEPLOY_ENABLED`) |
 | Release | after a successful production deploy | tags `vX.Y.Z` and publishes a GitHub Release with the changes |
 
@@ -245,6 +199,18 @@ pieces those call; neither runs on its own, so nothing runs twice.
   (titled `release: vX.Y.Z`), then merge `production` back into `main`.
 - Nobody pushes to `main` or `production` directly.
 
+**Isolation.** Each environment's AWS role can run only its own SSM
+document, on its own instance; staging's may also start (never stop or
+change) the staging instance. A staging deploy runs `main`'s code as root —
+on the staging instance only, so it cannot reach production data.
+`bootstrap.sh` refuses to set up both environments on one instance. Both
+roles can read SSM command output account-wide
+(`ssm:GetCommandInvocation` on `*`); that output contains no secrets.
+
+**Staging stops itself at 22:00 IST** (`aivault-autostop.timer`, skipped
+while a deploy runs). The next merge to `main` starts it; to use it
+without deploying, start it in the EC2 console.
+
 ### One-time GitHub setup (repository admin only)
 
 Run `bash .github/scripts/setup-github.sh` as the repository owner. It:
@@ -259,48 +225,69 @@ Run `bash .github/scripts/setup-github.sh` as the repository owner. It:
    approval to run.
 5. `STAGING_DEPLOY_ENABLED` / `PRODUCTION_DEPLOY_ENABLED` set to `false`.
 
-Then, once that environment's AWS side exists, add its environment
-variables `AWS_DEPLOY_ROLE_ARN` and `AIVAULT_INSTANCE_ID` (not secrets —
-nothing in them is secret) and set its `*_DEPLOY_ENABLED` to `true`. No
-GitHub secrets are needed.
+Then, once that environment's AWS side exists, set its environment
+variables `AWS_DEPLOY_ROLE_ARN`, `AIVAULT_INSTANCE_ID` and `PUBLIC_URL`
+(not secrets) and its `*_DEPLOY_ENABLED` to `true`. No GitHub secrets are
+needed.
 
-**What isolates staging from production — and what doesn't.** Each AWS
-role can run only its own SSM document. But both environments share one
-server, and a staging deploy runs `main`'s own `deploy.sh` and
-`compose.yml` as root there, so any commit merged into `main` could reach
-production's files on its next staging deploy. Review on `main` is
-therefore a production control, not just a staging one. Full isolation
-needs a separate staging instance. Also, both policies grant
-`ssm:GetCommandInvocation` on `*`, so either role can read the other's
-deploy output (which contains no secrets).
+### One-time AWS setup, per environment (staging first)
 
-### One-time AWS setup (not done — needs your approval)
+1. **AWS Budget** with email alerts — before anything else.
+2. IAM OIDC provider `token.actions.githubusercontent.com`, audience
+   `sts.amazonaws.com` (once per account).
+3. **Instance:** Ubuntu 24.04, `t3.small` (staging) / `t3.medium`
+   (production), 30 / 40 GB gp3 **encrypted**, IMDSv2 required, shutdown
+   behaviour *stop*, instance role with `AmazonSSMManagedInstanceCore`
+   only, no key pair. Production: termination protection, credit mode
+   unlimited, a `StatusCheckFailed_System` alarm with the *recover* action,
+   and a `CPUCreditBalance` alarm.
+4. **Elastic IP** on the instance; DNS A record `staging.` / `app.` → it.
+5. **Security group:** inbound TCP 443 and 80 from anywhere; nothing else
+   (no SSH — use Session Manager).
+6. **S3:** `aivault-<env>-archives` and `aivault-<env>-backups` (private,
+   versioned, SSE-S3, lifecycle), each with its own scoped IAM user as
+   described in `env.example`.
+7. SSM document `AIVault-Deploy-<env>` from `ssm/`; role
+   `aivault-github-deploy-<env>` from `iam/` (replace `<ACCOUNT_ID>` and the
+   instance ID).
+8. On the instance (Session Manager, as root):
 
-1. IAM OIDC provider `token.actions.githubusercontent.com`, audience
-   `sts.amazonaws.com`.
-2. Roles `aivault-github-deploy-staging` / `-production` from `iam/`
-   (replace `<ACCOUNT_ID>`, `<INSTANCE_ID>`). Each role may run **only** its
-   own SSM document on the server (see the isolation note above).
-3. SSM documents `AIVault-Deploy-staging` / `-production` from `ssm/`.
-4. Instance role: `AmazonSSMManagedInstanceCore` only.
-5. Security group: 8080/8081 from the CloudFront prefix list; no SSH.
-6. AWS Budget with email alerts before anything else.
+   ```bash
+   git clone https://github.com/Dumbare-Gauri/AI_Vault.git /opt/aivault/<env>/src
+   /opt/aivault/<env>/src/infrastructure/single-server/bootstrap.sh <env>
+   ```
 
-### First install on the server
+   It installs Docker, automatic security updates, 2 GB swap, the `.env`
+   (chmod 600, to fill in — then copy it to Parameter Store) and the timers.
+9. GitHub environment variables, then `*_DEPLOY_ENABLED=true`.
 
-```bash
-sudo apt-get install -y docker.io docker-compose-v2 awscli git
-for env in staging production; do
-  sudo mkdir -p /opt/aivault/$env
-  sudo git clone https://github.com/Dumbare-Gauri/AI_Vault.git /opt/aivault/$env/src
-  sudo cp /opt/aivault/$env/src/infrastructure/single-server/env.example /opt/aivault/$env/.env
-  sudo chmod 600 /opt/aivault/$env/.env   # fill in every value
-done
-sudo cp /opt/aivault/production/src/infrastructure/single-server/systemd/* /etc/systemd/system/
-```
+Each release is then `deploy.sh <env> <commit>` — run by the workflow, or
+by hand. It takes a lock, backs up the database, checks out that commit,
+builds, starts, health-checks, and rolls the code back to the last healthy
+commit if anything fails. A migration that already ran is not undone
+automatically: restore the pre-deploy backup if needed.
 
-Then each release is `deploy.sh <env> <commit>` — run by the workflow, or by
-hand. It takes a lock, backs up the database, checks out that commit, builds,
-starts, health-checks through nginx, and rolls the code back to the last
-healthy commit if anything fails. A migration that already ran is not
-undone automatically: restore the pre-deploy backup if needed.
+## Before a public launch
+
+Infrastructure alone is not enough to let the public in:
+
+- **Domain** with `app.` and `staging.` records, and a support mailbox on it.
+- **Google OAuth** (separate Google Cloud projects; staging can stay in
+  *Testing*). The app asks for the restricted scope
+  `https://www.googleapis.com/auth/drive`. Until Google verifies the app,
+  only up to 100 listed test users can sign in. Verification needs: domain
+  ownership in Search Console, a public homepage and privacy policy on that
+  domain, a demo video, a justification for each scope, a Limited Use
+  statement, and an **annual CASA Tier 2 security assessment** by a
+  third-party assessor (paid; get quotes). Allow weeks. Using `drive.file`
+  with the Google Picker instead avoids CASA, but only shows files people
+  pick — a product decision.
+- **Privacy policy and terms** — not yet in the app. Cover how Drive data is
+  used, any AI provider that receives content, account deletion (exists),
+  and that **backups keep a deleted account's data for up to 90 days**.
+  India's DPDP Act 2023 applies (consent, grievance contact, breach
+  notice); GDPR too if you accept EU users.
+- **Security:** `setup-github.sh` run (branch protection and the production
+  approval don't exist until then); `.env` copies in Parameter Store;
+  restore drill on staging; real sign-in, Drive connect and the Local Agent
+  tested end to end on staging.

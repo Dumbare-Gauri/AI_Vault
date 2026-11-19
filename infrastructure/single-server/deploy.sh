@@ -31,8 +31,13 @@ flock -n 9 || { echo "Another $ENV_NAME deployment is running" >&2; exit 1; }
 
 previous="$(cat "$STATE" 2>/dev/null || true)"
 
-web_port="$(grep -E '^WEB_PORT=' "$ENV_FILE" | cut -d= -f2)"
-origin_secret="$(grep -E '^ORIGIN_VERIFY_SECRET=' "$ENV_FILE" | cut -d= -f2-)"
+# A value as Compose reads it: without a trailing " # comment" or spaces.
+setting() { { grep -E "^$1=" "$ENV_FILE" || true; } | tail -1 | cut -d= -f2- | sed -E 's/[[:space:]]+#.*$//; s/[[:space:]]+$//'; }
+
+web_port="$(setting WEB_PORT)"
+origin_secret="$(setting ORIGIN_VERIFY_SECRET)"
+[ "$(setting PUBLIC_URL)" = "https://$(setting PUBLIC_HOST)" ] \
+  || { echo "PUBLIC_URL must be https://<PUBLIC_HOST> in $ENV_FILE" >&2; exit 1; }
 
 release() {
   local sha="$1"
@@ -43,7 +48,7 @@ release() {
 }
 
 healthy() {
-  # Through nginx, exactly as CloudFront reaches it.
+  # Through nginx on loopback: the app, its API and the database behind it.
   for _ in $(seq 1 30); do
     if curl -fsS -o /dev/null -H "X-Origin-Verify: $origin_secret" \
         "http://127.0.0.1:$web_port/health/live"; then

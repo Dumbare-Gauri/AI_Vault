@@ -2,12 +2,12 @@
   "Version": "2012-10-17",
   "Statement": [
     {
-      "Sid": "RunOnlyTheProductionDeployDocumentOnTheAIVaultServer",
+      "Sid": "RunOnlyTheProductionDeployDocumentOnTheProductionServer",
       "Effect": "Allow",
       "Action": "ssm:SendCommand",
       "Resource": [
         "arn:aws:ssm:ap-south-1:<ACCOUNT_ID>:document/AIVault-Deploy-production",
-        "arn:aws:ec2:ap-south-1:<ACCOUNT_ID>:instance/<INSTANCE_ID>"
+        "arn:aws:ec2:ap-south-1:<ACCOUNT_ID>:instance/<PRODUCTION_INSTANCE_ID>"
       ]
     },
     {
