@@ -1,8 +1,11 @@
 import { useQuery } from "@tanstack/react-query";
 import { createFileRoute, redirect } from "@tanstack/react-router";
 import type { UserProfile } from "@vault/types";
+import { useState } from "react";
 
+import { DeleteAccountDialog } from "@/components/account/delete-account-dialog";
 import { AppShell } from "@/components/app-shell/app-shell";
+import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
@@ -36,6 +39,7 @@ function Field({ label, value }: { label: string; value: React.ReactNode }) {
 }
 
 function ProfilePage() {
+  const [deleting, setDeleting] = useState(false);
   const profileQuery = useQuery({
     queryKey: ["me"],
     queryFn: () => apiClient.get<UserProfile>("/v1/users/me"),
@@ -76,6 +80,23 @@ function ProfilePage() {
               />
             </CardContent>
           </Card>
+        )}
+
+        {profileQuery.data && (
+          <Card className="flex flex-col gap-3 border-destructive/30 p-6">
+            <div>
+              <p className="font-semibold">Delete account</p>
+              <p className="text-sm text-muted-foreground">
+                Removes your account and everything AI Vault holds about you. Files in your own storage stay.
+              </p>
+            </div>
+            <Button variant="destructive" className="self-start" onClick={() => setDeleting(true)}>
+              Delete my account…
+            </Button>
+          </Card>
+        )}
+        {deleting && profileQuery.data && (
+          <DeleteAccountDialog email={profileQuery.data.email} onOpenChange={setDeleting} />
         )}
       </div>
     </AppShell>

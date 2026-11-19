@@ -11,7 +11,8 @@ from app.presentation.api.v1.schemas import (
 from app.presentation.dependencies.auth import get_current_user, require_role
 from app.presentation.dependencies.rate_limit import rate_limiter
 from app.presentation.dependencies.services import get_recommendation_service
-from vault_shared.db.models import RoleName, User
+from app.presentation.dependencies.workspace import get_workspace
+from vault_shared.db.models import RoleName, StorageConnector, User
 
 recommendations_router = APIRouter(tags=["recommendations"])
 
@@ -24,6 +25,7 @@ def list_recommendations(
     category: str | None = Query(default=None),
     status: str | None = Query(default="active"),
     search: str | None = Query(default=None),
+    workspace: StorageConnector = Depends(get_workspace),
     user: User = Depends(get_current_user),
     service: RecommendationService = Depends(get_recommendation_service),
 ) -> RecommendationListResponse:
@@ -33,6 +35,7 @@ def list_recommendations(
         category=category,
         status=status,
         search=search,
+        connector_id=workspace.id,
     )
     return RecommendationListResponse(
         items=[RecommendationResponse.from_model(r) for r in recommendations]
@@ -58,6 +61,7 @@ def refresh_recommendations(
 )
 def get_recommendation(
     recommendation_id: uuid.UUID,
+    workspace: StorageConnector = Depends(get_workspace),
     user: User = Depends(get_current_user),
     service: RecommendationService = Depends(get_recommendation_service),
 ) -> RecommendationResponse:
@@ -66,5 +70,6 @@ def get_recommendation(
         organization_id=user.organization_id,
         user_id=user.id,
         role=user.role.name,
+        connector_id=workspace.id,
     )
     return RecommendationResponse.from_model(recommendation)

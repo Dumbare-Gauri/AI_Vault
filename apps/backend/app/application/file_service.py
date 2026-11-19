@@ -4,6 +4,7 @@ from dataclasses import dataclass
 
 from sqlalchemy.orm import Session
 
+from app.application.storage_context_service import storage_label
 from vault_shared import NotFoundError
 from vault_shared.db.models import (
     File,
@@ -17,6 +18,7 @@ from vault_shared.db.models import (
     Folder,
     KnowledgeAttribute,
     OrganizationEntity,
+    StorageSource,
 )
 from vault_shared.db.repositories import (
     FileClassificationRepository,
@@ -31,8 +33,33 @@ from vault_shared.db.repositories import (
     KnowledgeAttributeRepository,
     OrganizationEntityRepository,
     StorageConnectorRepository,
+    StorageSourceRepository,
 )
 from vault_shared.storage import ExportPurpose, ProviderFileId, StorageAdapterProvider
+
+
+@dataclass(frozen=True)
+class Crumb:
+    label: str
+    source_id: uuid.UUID | None
+    folder_id: uuid.UUID | None
+
+
+@dataclass(frozen=True)
+class FolderListing:
+    """One folder of a storage, as its provider arranges it: the way back
+    up (`breadcrumbs`), the folders directly inside it, and one page of the
+    files directly inside it."""
+
+    breadcrumbs: list[Crumb]
+    # Top-level storage folders (an authorized folder on this computer, My
+    # Drive) appear as folders with `source_id` set and no `folder_id`.
+    sources: list[StorageSource]
+    folders: list[Folder]
+    files: list[File]
+    total_files: int
+    source_id: uuid.UUID | None
+    folder_id: uuid.UUID | None
 
 
 @dataclass(frozen=True)
@@ -81,6 +108,7 @@ class FileService:
         self._connectors = StorageConnectorRepository(db)
         self._files = FileRepository(db)
         self._folders = FolderRepository(db)
+        self._sources = StorageSourceRepository(db)
         self._file_metadata = FileMetadataRepository(db)
         self._classifications = FileClassificationRepository(db)
         self._extractions = FileExtractionRepository(db)
@@ -108,6 +136,70 @@ class FileService:
         )
         total = self._files.count_for_connector(connector_id, ownership=ownership)
         return files, total
+
+    def browse(
+        self,
+        connector_id: uuid.UUID,
+        *,
+        organization_id: uuid.UUID,
+        source_id: uuid.UUID | None,
+        folder_id: uuid.UUID | None,
+        limit: int,
+        offset: int,
+    ) -> FolderListing:
+        """A folder of one connected storage, in its real hierarchy. With
+        neither `source_id` nor `folder_id`, the top: the storage's own
+        top-level folders when it has several (the folders authorized on
+        this computer), or the inside of the only one (My Drive)."""
+        connector = self._connectors.get_by_id(connector_id)
+        if connector is None or connector.organization_id != organization_id:
+            raise NotFoundError("Connector not found.")
+        sources = sorted(self._sources.list_for_connector(connector_id), key=lambda s: s.name)
+        by_id = {source.id: source for source in sources}
+        top = Crumb(label=storage_label(connector), source_id=None, folder_id=None)
+
+        folder = None
+        if folder_id is not None:
+            folder = self._folders.get_by_id(folder_id)
+            if folder is None or folder.storage_source_id not in by_id:
+                raise NotFoundError("Folder not found in this storage.")
+            source_id = folder.storage_source_id
+        elif source_id is not None and source_id not in by_id:
+            raise NotFoundError("Folder not found in this storage.")
+        elif source_id is None and len(sources) == 1:
+            source_id = sources[0].id
+        if source_id is None:
+            return FolderListing(
+                breadcrumbs=[top], sources=sources, folders=[], files=[], total_files=0,
+                source_id=None, folder_id=None,
+            )  # fmt: skip
+
+        crumbs = [top]
+        if len(sources) > 1:
+            crumbs.append(Crumb(label=by_id[source_id].name, source_id=source_id, folder_id=None))
+        chain: list[Folder] = []
+        cursor = folder
+        while cursor is not None:
+            chain.append(cursor)
+            cursor = (
+                self._folders.get_by_id(cursor.parent_folder_id)
+                if cursor.parent_folder_id
+                else None
+            )
+        crumbs += [
+            Crumb(label=item.name, source_id=source_id, folder_id=item.id)
+            for item in reversed(chain)
+        ]
+        files, total = self._files.list_children(source_id, folder_id, limit=limit, offset=offset)
+        return FolderListing(
+            breadcrumbs=crumbs,
+            sources=[],
+            folders=self._folders.list_children(source_id, folder_id) if offset == 0 else [],
+            files=files,
+            total_files=total,
+            source_id=source_id,
+            folder_id=folder_id,
+        )
 
     def search_folders(
         self, connector_id: uuid.UUID, *, organization_id: uuid.UUID, query: str, limit: int

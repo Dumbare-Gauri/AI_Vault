@@ -19,7 +19,9 @@ from vault_shared.db.repositories import (
     FolderRepository,
     OrganizationEntityRepository,
     OrganizationRecommendationRepository,
+    StorageSourceRepository,
 )
+from vault_shared.protection import AssetProtection
 from worker.organization.rename_proposal import is_uninformative_name, propose_name
 
 logger = get_logger("worker.organization.organization_recommendation_generator")
@@ -62,6 +64,9 @@ class OrganizationRecommendationGenerator:
         self._folders = FolderRepository(db)
         self._recommendations = OrganizationRecommendationRepository(db)
         self._intelligence = FileIntelligenceRepository(db)
+        self._protection = AssetProtection(db)
+        self._sources = StorageSourceRepository(db)
+        self._connector_by_source: dict[uuid.UUID, uuid.UUID | None] = {}
 
     def generate_for_organization(self, organization_id: uuid.UUID) -> int:
         generated = 0
@@ -77,19 +82,48 @@ class OrganizationRecommendationGenerator:
         return generated
 
     def _generate_for_entity(self, organization_id: uuid.UUID, entity: OrganizationEntity) -> bool:
+        """One suggestion per storage the entity is scattered in — its Drive
+        files and its local files are consolidated separately, within their
+        own storage, never into each other."""
         links = self._entity_links.list_for_entity(entity.id)
-        if not links:
-            return False
+        # Source code and project files are never scattered "by mistake" —
+        # a project is only ever moved as a whole, so they are left out of
+        # any consolidation suggestion.
+        files, _protected = self._protection.split(
+            self._files.list_by_ids([link.file_id for link in links]) if links else []
+        )
+        by_storage: dict[uuid.UUID, list[File]] = {}
+        for file in files:
+            connector_id = self._connector_of(file)
+            if connector_id is not None:
+                by_storage.setdefault(connector_id, []).append(file)
+        generated = {
+            connector_id
+            for connector_id, storage_files in by_storage.items()
+            if self._generate_for_storage(organization_id, entity, connector_id, storage_files)
+        }
+        for existing in self._recommendations.list_active_for_entity(entity.id):
+            if existing.connector_id not in generated:
+                self._recommendations.mark_stale(existing)
+        return bool(generated)
 
-        files = self._files.list_by_ids([link.file_id for link in links])
-        if not files:
-            return False
+    def _connector_of(self, file: File) -> uuid.UUID | None:
+        if file.storage_source_id not in self._connector_by_source:
+            source = self._sources.get_by_id(file.storage_source_id)
+            self._connector_by_source[file.storage_source_id] = (
+                source.connector_id if source else None
+            )
+        return self._connector_by_source[file.storage_source_id]
 
+    def _generate_for_storage(
+        self,
+        organization_id: uuid.UUID,
+        entity: OrganizationEntity,
+        connector_id: uuid.UUID,
+        files: list[File],
+    ) -> bool:
         folder_ids = {file.parent_folder_id for file in files if file.parent_folder_id}
         if len(folder_ids) <= 1:
-            existing = self._recommendations.get_active_for_entity(entity.id)
-            if existing is not None:
-                self._recommendations.mark_stale(existing)
             return False
 
         folders_by_id = {
@@ -107,6 +141,10 @@ class OrganizationRecommendationGenerator:
 
         bucket = _DESTINATION_BUCKET_BY_TYPE.get(entity.entity_type, "Other")
         suggested_destination = [bucket, entity.name]
+        if self._recommendations.was_rejected(
+            entity.id, suggested_destination, connector_id=connector_id
+        ):
+            return False
         evidence = [
             {
                 "type": "scattered_locations",
@@ -114,11 +152,9 @@ class OrganizationRecommendationGenerator:
             },
             *entity.evidence[:_MAX_EVIDENCE_SAMPLE],
         ]
-        affected_file_ids = [str(file.id) for file in files]
-        estimated_storage_impact_bytes = sum(file.size_bytes or 0 for file in files)
-
         self._recommendations.upsert_for_entity(
             organization_id=organization_id,
+            connector_id=connector_id,
             entity_id=entity.id,
             kind=_RECOMMENDATION_KIND_BY_TYPE.get(
                 entity.entity_type, OrganizationRecommendationKind.GROUP_PROJECT
@@ -131,10 +167,10 @@ class OrganizationRecommendationGenerator:
             ),
             evidence=evidence,
             confidence=entity.confidence,
-            affected_file_ids=affected_file_ids,
+            affected_file_ids=[str(file.id) for file in files],
             current_locations=current_locations,
             suggested_destination=suggested_destination,
-            estimated_storage_impact_bytes=estimated_storage_impact_bytes,
+            estimated_storage_impact_bytes=sum(file.size_bytes or 0 for file in files),
         )
         return True
 
@@ -168,13 +204,19 @@ class OrganizationRecommendationGenerator:
             organization_id, OrganizationRecommendationKind.RENAME_FILE
         ):
             file_entry = intelligence_by_file.get(uuid.UUID(stale.affected_file_ids[0]))
-            if file_entry is None or not is_uninformative_name(file_entry[0].name):
+            if (
+                file_entry is None
+                or not is_uninformative_name(file_entry[0].name)
+                or self._protection.reasons(file_entry[0])
+            ):
                 self._recommendations.mark_stale(stale)
 
         generated = 0
         for file_id, (file, intelligence) in intelligence_by_file.items():
             if file.trashed or not is_uninformative_name(file.name):
                 continue
+            if self._protection.reasons(file):
+                continue  # `test.py` or `main.go` is named for its project, not for a person
             entity_match = best_entity.get(file_id)
             document_type = intelligence.document_type if intelligence else None
             proposed = propose_name(
@@ -216,8 +258,12 @@ class OrganizationRecommendationGenerator:
             folder = (
                 self._folders.get_by_id(file.parent_folder_id) if file.parent_folder_id else None
             )
+            connector_id = self._connector_of(file)
+            if connector_id is None:
+                continue
             self._recommendations.upsert_for_file(
                 organization_id=organization_id,
+                connector_id=connector_id,
                 file_id=file.id,
                 kind=OrganizationRecommendationKind.RENAME_FILE,
                 title=f"Rename '{file.name}' to '{proposed}'",

@@ -25,10 +25,15 @@ class ArchiveService:
         self._object_storage = ObjectStorageClient()
 
     def list_for_organization(
-        self, organization_id: uuid.UUID, *, limit: int = 100, offset: int = 0
+        self,
+        organization_id: uuid.UUID,
+        *,
+        limit: int = 100,
+        offset: int = 0,
+        provider: str | None = None,
     ) -> tuple[list[ArchiveJob], int]:
         return self._archive_jobs.list_for_organization(
-            organization_id, limit=limit, offset=offset
+            organization_id, limit=limit, offset=offset, provider=provider
         )
 
     def list_archived_file_ids(self, organization_id: uuid.UUID) -> set[uuid.UUID]:

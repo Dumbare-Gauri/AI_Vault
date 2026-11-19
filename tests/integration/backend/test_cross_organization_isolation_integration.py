@@ -24,6 +24,7 @@ from datetime import UTC, datetime, timedelta
 from urllib.parse import urlparse
 
 import pytest
+from workspace_testing import workspace_of
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
@@ -132,7 +133,7 @@ class Tenant:
 
     @property
     def headers(self) -> dict[str, str]:
-        return {"Authorization": f"Bearer {self.token}"}
+        return {"Authorization": f"Bearer {self.token}", _WORKSPACE_HEADER: self.ids["connector_id"]}
 
 
 def _token(user) -> str:
@@ -313,7 +314,7 @@ def _seed_tenant(db: Session, label: str, *, total_files: int) -> Tenant:
         organization_id=org_id, triggered_by="manual", triggered_by_user_id=None
     )
     recommendation = RecommendationRepository(db).upsert(
-        organization_id=org_id,
+        organization_id=org_id, connector_id=workspace_of(db, org_id).id,
         recommendation_job_id=recommendation_job.id,
         rule_name="duplicate_files",
         category="storage_optimization",
@@ -394,6 +395,7 @@ def _seed_tenant(db: Session, label: str, *, total_files: int) -> Tenant:
     StorageAnalysisJobRepository(db).mark_completed(analysis_job)
     group = DuplicateGroupRepository(db).upsert_group(
         organization_id=org_id,
+        connector_id=workspace_of(db, org_id).id,
         storage_analysis_job_id=analysis_job.id,
         checksum=f"{label}-dup-checksum",
         file_count=2,
@@ -407,6 +409,7 @@ def _seed_tenant(db: Session, label: str, *, total_files: int) -> Tenant:
     ids["duplicate_group_id"] = str(group.id)
     StorageAnalysisSnapshotRepository(db).create(
         organization_id=org_id,
+        connector_id=connector.id,
         storage_analysis_job_id=analysis_job.id,
         total_size_bytes=10_240,
         total_files=total_files,
@@ -429,7 +432,10 @@ def _seed_tenant(db: Session, label: str, *, total_files: int) -> Tenant:
     )
 
     conversation = ConversationRepository(db).create(
-        organization_id=org_id, user_id=user.id, title=f"{label}-Private-Conversation"
+        organization_id=org_id,
+        user_id=user.id,
+        title=f"{label}-Private-Conversation",
+        connector_id=connector.id,
     )
     ConversationMessageRepository(db).create(
         conversation_id=conversation.id, role="user", content=f"{label} private question"
@@ -515,6 +521,35 @@ def tenants():
         session.close()
 
 
+_WORKSPACE_HEADER = "X-Test-Workspace"
+# The APIs served per storage workspace (see the frontend's API client).
+_WORKSPACE_SCOPED = (
+    "/v1/storage/",
+    "/v1/search",
+    "/v1/conversations",
+    "/v1/dashboard",
+    "/v1/recommendations",
+    "/v1/organization-recommendations",
+    "/v1/archives",
+    "/v1/activity",
+    "/v1/execution-plans",
+)
+
+
+class _WorkspaceClient(TestClient):
+    """Sends a tenant's request in that tenant's own storage workspace, the
+    way the app's client does — so every check below runs with a valid
+    workspace and still has to stop the other tenant's data on its own."""
+
+    def request(self, method, url, *args, headers=None, params=None, **kwargs):  # noqa: ANN001, ANN002, ANN003, ANN201
+        headers = dict(headers or {})
+        workspace = headers.pop(_WORKSPACE_HEADER, None)
+        path = str(url)
+        if workspace and path.startswith(_WORKSPACE_SCOPED) and "connector_id=" not in path:
+            params = {**dict(params or {}), "connector_id": workspace}
+        return super().request(method, url, *args, headers=headers, params=params, **kwargs)
+
+
 @pytest.fixture(scope="module")
 def client():
     gateway = AIGateway(
@@ -523,7 +558,7 @@ def client():
     )
     app.dependency_overrides[get_ai_gateway] = lambda: gateway
     try:
-        yield TestClient(app, raise_server_exceptions=False)
+        yield _WorkspaceClient(app, raise_server_exceptions=False)
     finally:
         app.dependency_overrides.pop(get_ai_gateway, None)
 
@@ -1043,6 +1078,26 @@ class TestListingsAndFiltersNeverReturnAnotherTenantsData:
 
         assert overview["total_files"] == attacker.total_files
         assert overview["total_files"] != victim.total_files
+
+
+class TestAnotherTenantsStorageIsNeverAWorkspace:
+    @requires_infra
+    @pytest.mark.parametrize(
+        "path",
+        ["/v1/storage/overview", "/v1/storage/duplicates", "/v1/dashboard", "/v1/conversations"],
+    )
+    def test_naming_the_victims_storage_reads_like_a_missing_one(
+        self, client: TestClient, tenants, path: str
+    ) -> None:
+        attacker, victim = tenants
+        auth = {"Authorization": f"Bearer {attacker.token}"}
+
+        foreign = client.get(f"{path}?connector_id={victim.ids['connector_id']}", headers=auth)
+        missing = client.get(f"{path}?connector_id={uuid.uuid4()}", headers=auth)
+
+        assert foreign.status_code == missing.status_code == 404
+        assert foreign.json() == missing.json()
+        assert [m for m in victim.markers if m in foreign.text] == []
 
 
 class TestSearchAndAIDoNotCrossTenants:

@@ -27,6 +27,13 @@ class Conversation(Base):
     organization_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True
     )
+    # The workspace (one connected storage) this conversation works in. Every
+    # message and confirmation is checked against it; files from another
+    # storage are never read or acted on here. NULL = from before workspaces,
+    # read-only.
+    connector_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("storage_connectors.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     user_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
     )

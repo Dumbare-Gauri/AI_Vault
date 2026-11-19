@@ -258,7 +258,9 @@ def test_a_second_run_resolves_a_recommendation_whose_condition_no_longer_holds(
     RecommendationService(db).run(first_job.id)
 
     recommendations = RecommendationRepository(db)
-    active = recommendations.get_by_rule(organization_id=user.organization_id, rule_name="duplicate_files")
+    active = recommendations.get_by_rule(
+        organization_id=user.organization_id, rule_name="duplicate_files", connector_id=connector.id
+    )
     assert active is not None
     assert active.status == RecommendationStatus.ACTIVE
 
@@ -272,7 +274,9 @@ def test_a_second_run_resolves_a_recommendation_whose_condition_no_longer_holds(
     second_job = _create_job(db, organization_id=user.organization_id)
     RecommendationService(db).run(second_job.id)
 
-    resolved = recommendations.get_by_rule(organization_id=user.organization_id, rule_name="duplicate_files")
+    resolved = recommendations.get_by_rule(
+        organization_id=user.organization_id, rule_name="duplicate_files", connector_id=connector.id
+    )
     assert resolved is not None
     assert resolved.status == RecommendationStatus.RESOLVED
     assert resolved.resolved_at is not None

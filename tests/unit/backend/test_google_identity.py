@@ -51,7 +51,7 @@ def test_verify_raises_unauthorized_on_incomplete_claims() -> None:
 
 
 def test_verify_defaults_optional_fields_when_omitted() -> None:
-    claims = {"sub": "999", "email": "person@example.com"}
+    claims = {"sub": "999", "email": "person@example.com", "email_verified": True}
 
     with patch(
         "app.infrastructure.auth.google_identity.google_id_token.verify_oauth2_token",
@@ -60,6 +60,32 @@ def test_verify_defaults_optional_fields_when_omitted() -> None:
         verifier = GoogleIdentityVerifier(client_id="test-client-id")
         result = verifier.verify("some-id-token")
 
-    assert result.email_verified is False
     assert result.name == "person@example.com"
     assert result.picture is None
+
+
+@pytest.mark.parametrize("verified", [False, "false", None, "yes", 1])
+def test_verify_rejects_an_email_google_has_not_verified(verified: object) -> None:
+    claims = {"sub": "999", "email": "person@example.com"}
+    if verified is not None:
+        claims["email_verified"] = verified
+
+    with patch(
+        "app.infrastructure.auth.google_identity.google_id_token.verify_oauth2_token",
+        return_value=claims,
+    ):
+        verifier = GoogleIdentityVerifier(client_id="test-client-id")
+        with pytest.raises(UnauthorizedError, match="verify"):
+            verifier.verify("some-id-token")
+
+
+def test_verify_accepts_googles_string_form_of_a_verified_email() -> None:
+    claims = {"sub": "999", "email": "person@example.com", "email_verified": "true"}
+
+    with patch(
+        "app.infrastructure.auth.google_identity.google_id_token.verify_oauth2_token",
+        return_value=claims,
+    ):
+        result = GoogleIdentityVerifier(client_id="test-client-id").verify("some-id-token")
+
+    assert result.email_verified is True

@@ -8,6 +8,7 @@ from datetime import UTC, datetime, timedelta
 from urllib.parse import urlparse
 
 import pytest
+from workspace_testing import workspace_of
 from sqlalchemy.orm import Session
 
 from vault_shared import ConflictError, NotFoundError, get_settings
@@ -384,7 +385,7 @@ def _provision_plan(db: Session, *, organization_id: uuid.UUID, user_id: uuid.UU
         organization_id=organization_id, triggered_by="manual", triggered_by_user_id=None
     )
     recommendation = RecommendationRepository(db).upsert(
-        organization_id=organization_id,
+        organization_id=organization_id, connector_id=workspace_of(db, organization_id).id,
         recommendation_job_id=job.id,
         rule_name="duplicate_files",
         category="storage_optimization",
@@ -1281,16 +1282,16 @@ def _run_single_archive(db: Session, *, name: str, size_bytes: int | None = None
 
 
 @requires_infra
-def test_a_file_over_the_archive_limit_says_so_and_stays_untouched(
+def test_a_file_the_temporary_disk_cannot_hold_says_so_and_stays_untouched(
     db: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(get_settings(), "archive_max_file_size_bytes", 1024)
+    monkeypatch.setattr(get_settings(), "archive_free_space_reserve_bytes", 10**18)
     plan, step, job, drive = _run_single_archive(db, name="Movie.mp4", size_bytes=4096)
 
     result = ExecutionResultRepository(db).get_by_job_and_step(
         execution_job_id=job.id, execution_step_id=step.id
     )
-    assert "too large" in result.error
+    assert "Not enough free disk space" in result.error
     assert drive.get_file(access_token="x", file_id="f-big").trashed is False
 
 

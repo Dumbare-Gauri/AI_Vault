@@ -4,6 +4,7 @@ from datetime import UTC, datetime, timedelta
 from urllib.parse import urlparse
 
 import pytest
+from workspace_testing import workspace_of
 from sqlalchemy.orm import Session
 
 from app.application import organization_recommendation_service as service_module
@@ -129,6 +130,7 @@ def _provision(db: Session, *, with_write_credentials: bool):
     )
     recommendation = OrganizationRecommendationRepository(db).upsert_for_entity(
         organization_id=organization.id,
+        connector_id=workspace_of(db, organization.id).id,
         entity_id=entity.id,
         kind="group_project",
         title="Consolidate",
@@ -152,7 +154,10 @@ def test_apply_is_refused_immediately_when_the_connection_cannot_write(
 
     with pytest.raises(ValidationError, match="no stored credentials"):
         OrganizationRecommendationService(db).trigger_apply(
-            recommendation.id, organization_id=user.organization_id, user_id=user.id
+            recommendation.id,
+            organization_id=user.organization_id,
+            user_id=user.id,
+            connector_id=recommendation.connector_id,
         )
 
     assert enqueued == []
@@ -165,7 +170,10 @@ def test_apply_is_dispatched_when_the_connection_can_write(
     user, recommendation = _provision(db, with_write_credentials=True)
 
     OrganizationRecommendationService(db).trigger_apply(
-        recommendation.id, organization_id=user.organization_id, user_id=user.id
+        recommendation.id,
+            organization_id=user.organization_id,
+            user_id=user.id,
+            connector_id=recommendation.connector_id,
     )
 
     assert enqueued == [recommendation.id]
@@ -181,7 +189,10 @@ def test_an_already_applied_recommendation_cannot_be_applied_again(
 
     with pytest.raises(ConflictError):
         OrganizationRecommendationService(db).trigger_apply(
-            recommendation.id, organization_id=user.organization_id, user_id=user.id
+            recommendation.id,
+            organization_id=user.organization_id,
+            user_id=user.id,
+            connector_id=recommendation.connector_id,
         )
 
     assert enqueued == []
@@ -196,7 +207,10 @@ def test_another_organization_cannot_apply_the_recommendation(
 
     with pytest.raises(NotFoundError):
         OrganizationRecommendationService(db).trigger_apply(
-            recommendation.id, organization_id=intruder.organization_id, user_id=intruder.id
+            recommendation.id,
+            organization_id=intruder.organization_id,
+            user_id=intruder.id,
+            connector_id=recommendation.connector_id,
         )
 
     assert enqueued == []

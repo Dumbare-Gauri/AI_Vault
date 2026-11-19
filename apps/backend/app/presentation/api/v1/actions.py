@@ -12,7 +12,8 @@ from app.presentation.api.v1.schemas import (
 )
 from app.presentation.dependencies.auth import get_current_user, require_role
 from app.presentation.dependencies.services import get_action_service
-from vault_shared.db.models import RoleName, User
+from app.presentation.dependencies.workspace import get_workspace
+from vault_shared.db.models import RoleName, StorageConnector, User
 
 actions_router = APIRouter(tags=["actions"])
 
@@ -63,6 +64,7 @@ def undo_action(
 
 @actions_router.get("/activity", response_model=ActivityResponse)
 def recent_activity(
+    workspace: StorageConnector = Depends(get_workspace),
     user: User = Depends(get_current_user),
     service: ActionService = Depends(get_action_service),
 ) -> ActivityResponse:
@@ -71,6 +73,6 @@ def recent_activity(
             ActivityItemResponse(
                 id=item.id, kind=item.kind, status=item.status, message=item.message, at=item.at
             )
-            for item in service.recent_activity(user.organization_id)
+            for item in service.recent_activity(user.organization_id, workspace=workspace)
         ]
     )

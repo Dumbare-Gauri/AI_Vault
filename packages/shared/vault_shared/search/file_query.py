@@ -203,6 +203,10 @@ class FileQuery:
 
     @property
     def has_filters(self) -> bool:
+        """Whether the request narrows *what kind* of file is wanted. The
+        storage workspace (`connector_id`) is not such a filter — every
+        search runs inside one — so it never turns off the content and
+        similarity fallbacks."""
         return any(
             (
                 self.categories,
@@ -212,7 +216,6 @@ class FileQuery:
                 self.modified_after is not None,
                 self.modified_before is not None,
                 self.folder,
-                self.connector_id,
                 self.ownership,
             )
         )

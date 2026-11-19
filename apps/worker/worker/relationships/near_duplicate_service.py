@@ -1,4 +1,5 @@
 import uuid
+from collections import defaultdict
 from datetime import UTC, datetime
 
 from sqlalchemy.orm import Session
@@ -40,11 +41,16 @@ class NearDuplicateService:
         self._relationships = FileRelationshipRepository(db)
 
     def discover_for_connector(self, connector_id: uuid.UUID) -> int:
-        pairs = self._embeddings.list_for_connector(connector_id)
+        # Vectors are only comparable within one embedding model; after a
+        # model change, old and new vectors coexist until re-embedding ends.
+        by_model: dict[tuple[str, str], list[tuple[File, Embedding]]] = defaultdict(list)
+        for file, embedding in self._embeddings.list_for_connector(connector_id):
+            by_model[(embedding.model_name, embedding.model_version)].append((file, embedding))
         discovered = 0
-        for batch_start in range(0, len(pairs), _MAX_POOL_PER_BATCH):
-            batch = pairs[batch_start : batch_start + _MAX_POOL_PER_BATCH]
-            discovered += self._discover_in_batch(connector_id, batch)
+        for pairs in by_model.values():
+            for batch_start in range(0, len(pairs), _MAX_POOL_PER_BATCH):
+                batch = pairs[batch_start : batch_start + _MAX_POOL_PER_BATCH]
+                discovered += self._discover_in_batch(connector_id, batch)
         return discovered
 
     def _discover_in_batch(

@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { ExecutionPlan, FolderSummary } from "@vault/types";
+import type { FolderSummary } from "@vault/types";
 import { Folder } from "lucide-react";
 import { useEffect, useState } from "react";
 
@@ -13,7 +13,7 @@ import {
 } from "@/components/ui/command";
 import { toast } from "@/components/ui/toaster";
 import { ApiError, apiClient } from "@/lib/api-client";
-import { pluralFiles, trackAction } from "@/lib/storage-action";
+import { createUserPickedPlan, pluralFiles, trackAction } from "@/lib/storage-action";
 
 interface MoveDialogProps {
   onOpenChange: (open: boolean) => void;
@@ -52,7 +52,7 @@ export function MoveDialog({ onOpenChange, connectorId, fileIds, onMoved }: Move
 
   const moveMutation = useMutation({
     mutationFn: (folder: FolderSummary) =>
-      apiClient.post<ExecutionPlan>("/v1/execution-plans", {
+      createUserPickedPlan({
         file_ids: fileIds,
         action_type: "move_file",
         new_parent_id: folder.provider_file_id,

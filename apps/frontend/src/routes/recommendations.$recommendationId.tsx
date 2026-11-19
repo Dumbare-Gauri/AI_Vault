@@ -1,7 +1,7 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Link, createFileRoute, redirect } from "@tanstack/react-router";
 import type { ExecutionPlan, Recommendation } from "@vault/types";
-import { ChevronLeft, ShieldCheck, Sparkles } from "lucide-react";
+import { ShieldCheck, Sparkles } from "lucide-react";
 
 import { AppShell } from "@/components/app-shell/app-shell";
 import { toast } from "@/components/ui/toaster";
@@ -14,6 +14,8 @@ import { trackAction } from "@/lib/storage-action";
 import { formatRelativeTime } from "@/lib/format-relative-time";
 import { categoryBadgeVariant, categoryLabel, riskBadgeVariant } from "@/lib/recommendation-style";
 import { useAuthStore } from "@/stores/auth-store";
+import { useCopilotPage } from "@/stores/copilot-store";
+import { BackLink } from "@/components/ui/back-link";
 
 export const Route = createFileRoute("/recommendations/$recommendationId")({
   beforeLoad: () => {
@@ -63,6 +65,11 @@ function RecommendationDetailPage() {
   });
 
   const recommendation = recommendationQuery.data;
+  useCopilotPage({
+    page: "recommendation",
+    label: recommendation?.title ?? "Recommendation",
+    fileIds: recommendation?.affected_file_ids ?? [],
+  });
   const shownFiles = recommendation?.affected_file_ids.slice(0, MAX_FILES_SHOWN) ?? [];
   const remainingCount = recommendation
     ? recommendation.affected_file_ids.length - shownFiles.length
@@ -71,12 +78,7 @@ function RecommendationDetailPage() {
   return (
     <AppShell title="Recommendation">
       <div className="mx-auto flex max-w-3xl flex-col gap-4">
-        <Link
-          to="/recommendations"
-          className="flex w-fit items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
-        >
-          <ChevronLeft className="size-4" /> Back to recommendations
-        </Link>
+        <BackLink to="/recommendations">Back to recommendations</BackLink>
 
         {recommendationQuery.isLoading && <Skeleton className="h-64 rounded-2xl" />}
         {recommendationQuery.isError && (

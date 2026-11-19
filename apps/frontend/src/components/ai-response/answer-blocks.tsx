@@ -36,6 +36,7 @@ import { useState } from "react";
 import { FilePreviewDialog } from "@/components/file-preview/file-preview-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { toast } from "@/components/ui/toaster";
 import { ApiError, apiClient } from "@/lib/api-client";
 import { fileTypeIconElement } from "@/lib/file-icon";
@@ -284,13 +285,54 @@ function StorageSummaryView({ block }: { block: StorageSummaryBlock }) {
 }
 
 const RISK_LABEL = { low: "Low risk", medium: "Review first", high: "High impact" } as const;
+// Proposals that take files away; their list starts open, and a large one
+// needs an explicit "I've checked these" before it can be confirmed.
+const REMOVING_KINDS = new Set(["trash"]);
+const REVIEW_REQUIRED_OVER = 20;
+
+function ProtectedFiles({ block, onPreview }: { block: ActionProposalBlock; onPreview: (file: AnswerFile) => void }) {
+  const count = block.protected_count ?? 0;
+  const items = block.protected_items ?? [];
+  const [open, setOpen] = useState(false);
+  if (count === 0) return null;
+  return (
+    <div className="mt-2 rounded-lg bg-warning-muted p-2">
+      <Button variant="ghost" size="sm" onClick={() => setOpen((value) => !value)}>
+        {open ? <ChevronDown /> : <ChevronRight />}
+        <ShieldCheck className="text-warning" />
+        {count.toLocaleString()} protected file{count === 1 ? "" : "s"} left untouched
+      </Button>
+      {open && (
+        <ul className="flex flex-col">
+          {items.map((file) => (
+            <li key={file.id}>
+              <ul>
+                <FileRow file={file} onPreview={onPreview} />
+              </ul>
+              <p className="-mt-1 mb-1 pl-12 text-xs text-muted-foreground">{file.reasons.join(" · ")}</p>
+            </li>
+          ))}
+          {count > items.length && (
+            <p className="px-2 text-xs text-muted-foreground">
+              …and {(count - items.length).toLocaleString()} more, for the same kinds of reasons
+            </p>
+          )}
+        </ul>
+      )}
+    </div>
+  );
+}
 
 function ActionProposalView({ block, ctx }: { block: ActionProposalBlock; ctx: BlockContext }) {
   const queryClient = useQueryClient();
   const user = useAuthStore((state) => state.user);
   const canManage = user?.role === "owner" || user?.role === "admin";
   const preview = usePreview();
-  const [showFiles, setShowFiles] = useState(false);
+  const removing = REMOVING_KINDS.has(block.kind);
+  const [showFiles, setShowFiles] = useState(removing);
+  const needsReview = removing && block.affected_count > REVIEW_REQUIRED_OVER;
+  const [reviewed, setReviewed] = useState(false);
+  const pages = useMorePages<AnswerFile>(ctx, "items", block.items, block.affected_count);
   const decide = useMutation({
     mutationFn: (decision: "confirm" | "cancel") =>
       apiClient.post(`/v1/conversations/${ctx.conversationId}/actions/${block.action_id}/${decision}`),
@@ -329,6 +371,12 @@ function ActionProposalView({ block, ctx }: { block: ActionProposalBlock; ctx: B
                   </span>
                 </span>
                 {folder.reason && <span className="ml-5 block text-xs text-muted-foreground">{folder.reason}</span>}
+                {folder.items.length > 0 && (
+                  <span className="ml-5 block truncate text-xs text-muted-foreground">
+                    {folder.items.map((item) => item.name).join(", ")}
+                    {folder.count > folder.items.length ? `, +${folder.count - folder.items.length} more` : ""}
+                  </span>
+                )}
               </li>
             ))}
           </ul>
@@ -337,6 +385,12 @@ function ActionProposalView({ block, ctx }: { block: ActionProposalBlock; ctx: B
             {plan.files_deleted} deleted
             {plan.unsure_count > 0 ? ` · ${plan.unsure_count} left where they are (not sure)` : ""}
           </p>
+          {plan.unsure.length > 0 && (
+            <p className="mt-1 truncate text-xs text-muted-foreground">
+              Not sure about: {plan.unsure.map((item) => item.name).join(", ")}
+              {plan.unsure_count > plan.unsure.length ? `, +${plan.unsure_count - plan.unsure.length} more` : ""}
+            </p>
+          )}
         </div>
       )}
 
@@ -347,16 +401,29 @@ function ActionProposalView({ block, ctx }: { block: ActionProposalBlock; ctx: B
             {block.affected_count.toLocaleString()} file{block.affected_count === 1 ? "" : "s"} affected
           </Button>
           {showFiles && (
-            <ul className="flex flex-col">
-              {block.items.map((file) => (
-                <FileRow key={file.id} file={file} onPreview={preview.open} />
-              ))}
-              {block.affected_count > block.items.length && (
-                <p className="px-2 text-xs text-muted-foreground">…and {(block.affected_count - block.items.length).toLocaleString()} more</p>
-              )}
-            </ul>
+            <>
+              <ul className="flex flex-col">
+                {pages.all.map((file) => (
+                  <FileRow key={file.id} file={file} onPreview={preview.open} />
+                ))}
+              </ul>
+              <MoreButton remaining={pages.remaining} pending={pages.more.isPending} onClick={() => pages.more.mutate()} />
+            </>
           )}
         </div>
+      )}
+
+      <ProtectedFiles block={block} onPreview={preview.open} />
+
+      {block.status === "pending" && canManage && needsReview && (
+        <label className="mt-3 flex cursor-pointer items-start gap-2 px-1 text-sm">
+          <Checkbox
+            className="mt-0.5"
+            checked={reviewed}
+            onCheckedChange={(checked) => setReviewed(checked === true)}
+          />
+          <span>I&rsquo;ve checked the {block.affected_count.toLocaleString()} files listed above.</span>
+        </label>
       )}
 
       <div className="mt-3 flex items-center justify-end gap-2">
@@ -368,7 +435,7 @@ function ActionProposalView({ block, ctx }: { block: ActionProposalBlock; ctx: B
             <Button
               variant={block.risk === "high" ? "destructive" : "ai"}
               size="sm"
-              disabled={decide.isPending}
+              disabled={decide.isPending || (needsReview && !reviewed)}
               onClick={() => decide.mutate("confirm")}
             >
               {decide.isPending && <Loader2 className="animate-spin" />}
@@ -379,7 +446,7 @@ function ActionProposalView({ block, ctx }: { block: ActionProposalBlock; ctx: B
         {block.status === "pending" && !canManage && (
           <p className="text-xs text-muted-foreground">Only an owner or admin can confirm changes.</p>
         )}
-        {block.status === "confirmed" && <Badge variant="success">Confirmed</Badge>}
+        {block.status === "confirmed" && <Badge variant="outline">Approved — progress below</Badge>}
         {block.status === "cancelled" && <Badge variant="outline">Cancelled</Badge>}
       </div>
       {preview.dialog}

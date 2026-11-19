@@ -1,9 +1,9 @@
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { Connector } from "@vault/types";
-import { Cloud, HardDrive, Layers, Laptop } from "lucide-react";
+import { Cloud, HardDrive, Laptop } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 
-import { apiClient } from "@/lib/api-client";
+import { fetchConnectors } from "@/lib/connectors";
 import { formatBytes } from "@/lib/format-bytes";
 import { cn } from "@/lib/utils";
 import { useStorageScopeStore } from "@/stores/storage-scope-store";
@@ -18,15 +18,12 @@ function storageIcon(connector: Connector): LucideIcon {
 }
 
 export function useConnectedStorage() {
-  const query = useQuery({
-    queryKey: ["connectors"],
-    queryFn: () => apiClient.get<Connector[]>("/v1/connectors"),
-  });
+  const query = useQuery({ queryKey: ["connectors"], queryFn: fetchConnectors });
   return (query.data ?? []).filter((connector) => connector.status === "connected");
 }
 
-/** The storage Storage Intelligence is scoped to — falls back to "all" if
- * the remembered one is no longer connected. */
+/** The storage workspace the app is working in — always one connected
+ * storage (or none, when nothing is connected). */
 export function useStorageScope(): { connectorId: string | null; connector: Connector | undefined } {
   const connected = useConnectedStorage();
   const chosen = useStorageScopeStore((state) => state.connectorId);
@@ -34,41 +31,44 @@ export function useStorageScope(): { connectorId: string | null; connector: Conn
   return { connectorId: connector?.id ?? null, connector };
 }
 
-/** Switches Storage Intelligence between all storage and one connected storage. */
-export function StorageScopeSwitcher() {
+/** Switches the whole app between Google Drive and this computer. Each is
+ * its own workspace: switching clears everything loaded for the other one. */
+export function WorkspaceSwitcher() {
   const connected = useConnectedStorage();
+  const queryClient = useQueryClient();
   const setConnectorId = useStorageScopeStore((state) => state.setConnectorId);
   const { connectorId } = useStorageScope();
-  if (connected.length < 2) return null;
+  if (connected.length === 0) return null;
 
-  const options: { id: string | null; label: string; icon: LucideIcon }[] = [
-    { id: null, label: "All storage", icon: Layers },
-    ...connected.map((connector) => ({
-      id: connector.id,
-      label: storageLabel(connector),
-      icon: storageIcon(connector),
-    })),
-  ];
+  function choose(id: string) {
+    if (id === connectorId) return;
+    setConnectorId(id);
+    queryClient.removeQueries({ predicate: (query) => query.queryKey[0] !== "connectors" });
+  }
+
   return (
-    <div role="tablist" aria-label="Storage" className="flex w-fit flex-wrap gap-1 rounded-xl bg-secondary p-1">
-      {options.map((option) => (
-        <button
-          key={option.id ?? "all"}
-          type="button"
-          role="tab"
-          aria-selected={connectorId === option.id}
-          onClick={() => setConnectorId(option.id)}
-          className={cn(
-            "flex items-center gap-2 rounded-lg px-3 py-1.5 text-sm font-medium transition-colors",
-            connectorId === option.id
-              ? "bg-card text-foreground shadow-sm"
-              : "text-muted-foreground hover:text-foreground",
-          )}
-        >
-          <option.icon className="size-4" aria-hidden="true" />
-          {option.label}
-        </button>
-      ))}
+    <div role="tablist" aria-label="Storage workspace" className="flex w-fit gap-1 rounded-xl bg-secondary p-1">
+      {connected.map((connector) => {
+        const Icon = storageIcon(connector);
+        return (
+          <button
+            key={connector.id}
+            type="button"
+            role="tab"
+            aria-selected={connectorId === connector.id}
+            onClick={() => choose(connector.id)}
+            className={cn(
+              "flex items-center gap-2 rounded-lg px-2.5 py-1 text-sm font-medium transition-colors",
+              connectorId === connector.id
+                ? "bg-card text-foreground shadow-sm"
+                : "text-muted-foreground hover:text-foreground",
+            )}
+          >
+            <Icon className="size-4" aria-hidden="true" />
+            <span className="hidden sm:inline">{storageLabel(connector)}</span>
+          </button>
+        );
+      })}
     </div>
   );
 }
@@ -79,7 +79,7 @@ export function StorageScopeNote({ connector }: { connector: Connector | undefin
   if (!connector) {
     return (
       <p className="text-sm text-muted-foreground">
-        Files AI Vault has indexed across all your connected storage.
+        Connect Google Drive or this computer on Storage Connections to see its files here.
       </p>
     );
   }

@@ -74,6 +74,10 @@ class OrganizationRecommendationApplyService:
         if not recommendation.suggested_destination:
             raise ValidationError("This recommendation has no suggested destination.")
 
+        if recommendation.connector_id is None:
+            raise ValidationError(
+                "This suggestion is from before storage workspaces — re-analyze to get a fresh one."
+            )
         file_ids = [uuid.UUID(file_id) for file_id in recommendation.affected_file_ids]
         files = self._files.list_owned_by_organization(file_ids, organization_id=organization_id)
         if not files:
@@ -90,6 +94,7 @@ class OrganizationRecommendationApplyService:
                 user_id=user_id,
                 new_name=recommendation.suggested_destination[-1],
                 require_approval=False,
+                connector_id=recommendation.connector_id,
             )
             self._recommendations.mark_applied(recommendation, execution_plan_id=plan.id)
             self._db.commit()
@@ -108,6 +113,7 @@ class OrganizationRecommendationApplyService:
             user_id=user_id,
             new_parent_id=destination_folder.provider_file_id,
             require_approval=False,
+            connector_id=recommendation.connector_id,
         )
         self._recommendations.mark_applied(recommendation, execution_plan_id=plan.id)
         self._db.commit()

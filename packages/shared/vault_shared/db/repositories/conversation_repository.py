@@ -11,9 +11,16 @@ class ConversationRepository:
         self._session = session
 
     def create(
-        self, *, organization_id: uuid.UUID, user_id: uuid.UUID, title: str | None
+        self,
+        *,
+        organization_id: uuid.UUID,
+        user_id: uuid.UUID,
+        title: str | None,
+        connector_id: uuid.UUID | None = None,
     ) -> Conversation:
-        conversation = Conversation(organization_id=organization_id, user_id=user_id, title=title)
+        conversation = Conversation(
+            organization_id=organization_id, user_id=user_id, title=title, connector_id=connector_id
+        )
         self._session.add(conversation)
         self._session.flush()
         return conversation
@@ -34,14 +41,18 @@ class ConversationRepository:
         )
 
     def list_for_user(
-        self, *, organization_id: uuid.UUID, user_id: uuid.UUID
+        self,
+        *,
+        organization_id: uuid.UUID,
+        user_id: uuid.UUID,
+        connector_id: uuid.UUID | None = None,
     ) -> list[Conversation]:
-        return (
-            self._session.query(Conversation)
-            .filter_by(organization_id=organization_id, user_id=user_id)
-            .order_by(Conversation.updated_at.desc())
-            .all()
+        query = self._session.query(Conversation).filter_by(
+            organization_id=organization_id, user_id=user_id
         )
+        if connector_id is not None:
+            query = query.filter(Conversation.connector_id == connector_id)
+        return query.order_by(Conversation.updated_at.desc()).all()
 
     def touch(self, conversation: Conversation) -> None:
         """Bumps `updated_at` so the conversation list can sort by most

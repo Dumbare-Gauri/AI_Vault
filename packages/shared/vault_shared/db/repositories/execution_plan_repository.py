@@ -58,8 +58,13 @@ class ExecutionPlanRepository:
         status: str | None = None,
         limit: int = 100,
         offset: int = 0,
+        provider: str | None = None,
     ) -> list[ExecutionPlan]:
+        """With `provider`, only actions on that storage — an organization
+        has at most one connection per provider."""
         query = self._session.query(ExecutionPlan).filter_by(organization_id=organization_id)
+        if provider is not None:
+            query = query.filter(ExecutionPlan.target_provider == provider)
         if status is not None:
             query = query.filter(ExecutionPlan.status == status)
         return (

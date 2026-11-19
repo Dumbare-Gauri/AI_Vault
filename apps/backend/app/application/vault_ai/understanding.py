@@ -61,6 +61,12 @@ class Request:
     destination_is_last_folder: bool = False
     keep: str | None = None  # "newest" | "oldest" — which duplicate copy to keep
     permanent: bool = False
+    # "the selected files", "these files" — the user's selection on screen.
+    refers_to_selection: bool = False
+    # "all the files", "this folder", "here" — everything where the user is.
+    whole_place: bool = False
+    # "everywhere", "in all my storage" — wider than the folder on screen.
+    everywhere: bool = False
 
 
 _FLAGS = re.IGNORECASE
@@ -90,6 +96,21 @@ _FILE_TYPES: list[tuple[str, re.Pattern[str]]] = [
 
 _REFERENCE = re.compile(
     r"\b(them|these|those|it|this\s+one|that\s+one|the\s+results?|the\s+ones|those\s+ones)\b",
+    _FLAGS,
+)
+_SELECTION = re.compile(
+    r"\b(selected|selection|these|those|them|the\s+ones\s+i\s+(picked|chose|ticked)|"
+    r"this\s+file|these\s+files)\b",
+    _FLAGS,
+)
+_WHOLE_PLACE = re.compile(
+    r"\b(all\s+(the\s+|my\s+|of\s+the\s+)?(files|documents|items)|everything|"
+    r"this\s+folder|current\s+folder|in\s+here|here|the\s+whole\s+folder|every\s+file)\b",
+    _FLAGS,
+)
+_EVERYWHERE = re.compile(
+    r"\b(everywhere|across\s+(all|my|the)|all\s+(of\s+)?my\s+storage|whole\s+"
+    r"(drive|computer|storage|disk)|entire\s+(drive|computer|storage|disk)|all\s+folders)\b",
     _FLAGS,
 )
 _THERE = re.compile(r"\b(there|into\s+it|in\s+it|that\s+folder|this\s+folder)\b", _FLAGS)
@@ -281,6 +302,9 @@ def understand(question: str) -> Request:
         and bool(_THERE.search(question)),
         keep=_keep(question) if kind == "clean_duplicates" else None,
         permanent=bool(re.search(r"\bpermanent(ly)?\b|for\s+good|forever", question, _FLAGS)),
+        refers_to_selection=bool(_SELECTION.search(question)),
+        whole_place=bool(_WHOLE_PLACE.search(question)),
+        everywhere=bool(_EVERYWHERE.search(question)),
     )
     if kind == "move" and name:
         # The destination name isn't part of what to move.

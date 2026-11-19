@@ -32,6 +32,7 @@ import { recommendationKindLabel } from "@/lib/organization-style";
 import { categoryBadgeVariant, categoryLabel, riskBadgeVariant } from "@/lib/recommendation-style";
 import { pluralFiles, runStorageAction, trackRecommendationApply } from "@/lib/storage-action";
 import { useAuthStore } from "@/stores/auth-store";
+import { useCopilotPage } from "@/stores/copilot-store";
 
 export const Route = createFileRoute("/recommendations/")({
   beforeLoad: () => {
@@ -59,6 +60,7 @@ function useCanManage(): boolean {
 }
 
 function RecommendationsPage() {
+  useCopilotPage({ page: "recommendations", label: "Recommendations" });
   return (
     <AppShell title="Recommendations">
       <div className="mx-auto flex max-w-4xl flex-col gap-4">

@@ -1,7 +1,7 @@
 import uuid
 from datetime import UTC, datetime
 
-from sqlalchemy import ColumnElement, case, func, or_
+from sqlalchemy import ColumnElement, and_, case, func, or_
 from sqlalchemy.orm import Query, Session
 
 from vault_shared.db.like import escape_like
@@ -14,6 +14,7 @@ from vault_shared.db.models import (
     FileExtraction,
     FileIntelligence,
     FileMetadata,
+    IntelligenceStatus,
     OrganizationEntity,
     StorageConnector,
     StorageSource,
@@ -250,6 +251,55 @@ class FileRepository:
         self._session.flush()
         return True
 
+    def _children(
+        self, storage_source_id: uuid.UUID, parent_folder_id: uuid.UUID | None
+    ) -> Query[File]:
+        return self._session.query(File).filter(
+            File.storage_source_id == storage_source_id,
+            File.parent_folder_id == parent_folder_id
+            if parent_folder_id
+            else File.parent_folder_id.is_(None),
+            File.trashed.is_(False),
+            File.permanently_deleted_at.is_(None),
+        )
+
+    def list_children(
+        self,
+        storage_source_id: uuid.UUID,
+        parent_folder_id: uuid.UUID | None,
+        *,
+        limit: int,
+        offset: int,
+    ) -> tuple[list[File], int]:
+        """The files directly inside one folder (or at the top of a storage
+        source), by name — never anything from a subfolder, so two files
+        with the same name in different folders stay where they are."""
+        query = self._children(storage_source_id, parent_folder_id)
+        total = query.count()
+        files = query.order_by(func.lower(File.name), File.id).limit(limit).offset(offset).all()
+        return files, total
+
+    def names_in_folder(
+        self, storage_source_id: uuid.UUID, parent_folder_id: uuid.UUID | None
+    ) -> set[str]:
+        query = self._children(storage_source_id, parent_folder_id).with_entities(File.name)
+        return {name for (name,) in query.all()}
+
+    def list_under_folder(self, storage_source_id: uuid.UUID, folder_path: str) -> list[File]:
+        """Every current file anywhere below a folder, by path."""
+        prefix = f"{escape_like(folder_path.rstrip('/'))}/%"
+        return (
+            self._session.query(File)
+            .filter(
+                File.storage_source_id == storage_source_id,
+                File.path.like(prefix, escape="\\"),
+                File.trashed.is_(False),
+                File.permanently_deleted_at.is_(None),
+            )
+            .order_by(File.path)
+            .all()
+        )
+
     def list_for_source(self, storage_source_id: uuid.UUID) -> list[File]:
         """Used only by the scanner's post-ingest hierarchy-resolution pass
         (`ScannerService._resolve_hierarchy`) to fix up file paths once all
@@ -405,11 +455,14 @@ class FileRepository:
         successfully extracted text (nothing else is analyzable) and any
         of: it has no `FileIntelligence` row yet; it was re-extracted
         (`FileExtraction.extracted_at` advanced) since its last analysis;
-        or its stored analysis was produced by a different completion
-        provider/model than the one currently configured (mirrors
-        `list_pending_embedding_for_connector`'s reasoning exactly — a
-        provider/model swap, e.g. Kimi to GLM, must auto-requeue every
-        file rather than silently leaving stale results in place)."""
+        or its last analysis did not succeed and a different
+        provider/model is now configured (worth another try).
+
+        A successful analysis is kept when the model changes: what AI Vault
+        learned about a file belongs to AI Vault, not to the model that
+        produced it, and switching from one provider to another must not
+        throw it away or pay to recompute the whole storage. The producing
+        provider/model stays recorded on each row."""
         return (
             self._for_connector(connector_id)
             .join(FileExtraction, FileExtraction.file_id == File.id)
@@ -419,15 +472,25 @@ class FileRepository:
                 or_(
                     FileIntelligence.file_id.is_(None),
                     FileExtraction.extracted_at > FileIntelligence.processed_at,
-                    FileIntelligence.provider != provider,
-                    FileIntelligence.model_name != model_name,
+                    and_(
+                        FileIntelligence.status != IntelligenceStatus.SUCCESS,
+                        or_(
+                            FileIntelligence.provider != provider,
+                            FileIntelligence.model_name != model_name,
+                        ),
+                    ),
                 ),
             )
             .all()
         )
 
     def rank_by_terms(
-        self, organization_id: uuid.UUID, terms: list[str], *, limit: int
+        self,
+        organization_id: uuid.UUID,
+        terms: list[str],
+        *,
+        limit: int,
+        connector_id: uuid.UUID | None = None,
     ) -> list[tuple[File, StorageConnector, float]]:
         """Files ranked by how many of `terms` they match — in the name (3),
         inside the extracted text (2), in a linked project/client/campaign
@@ -474,6 +537,7 @@ class FileRepository:
                 File.trashed.is_(False),
                 File.permanently_deleted_at.is_(None),
                 score > 0,
+                *([StorageConnector.id == connector_id] if connector_id else []),
             )
             .order_by(score.desc(), File.provider_modified_at.desc().nulls_last())
             .limit(limit)
@@ -563,7 +627,7 @@ class FileRepository:
         return [(file, connector) for file, connector in rows], total
 
     def list_recently_modified_for_organization(
-        self, organization_id: uuid.UUID, *, limit: int = 10
+        self, organization_id: uuid.UUID, *, limit: int = 10, connector_id: uuid.UUID | None = None
     ) -> list[File]:
         """The Founder Command Center's "Recent Activity Feed" (Phase 7
         spec) — a plain, efficient ORDER BY/LIMIT query, not a stored
@@ -572,7 +636,10 @@ class FileRepository:
             self._session.query(File)
             .join(StorageSource, File.storage_source_id == StorageSource.id)
             .join(StorageConnector, StorageSource.connector_id == StorageConnector.id)
-            .filter(StorageConnector.organization_id == organization_id)
+            .filter(
+                StorageConnector.organization_id == organization_id,
+                *([StorageConnector.id == connector_id] if connector_id else []),
+            )
             .order_by(File.provider_modified_at.desc().nulls_last())
             .limit(limit)
             .all()
@@ -691,38 +758,77 @@ class FileRepository:
 
     def list_duplicate_checksum_groups_for_organization(
         self, organization_id: uuid.UUID
-    ) -> list[tuple[str, int, int]]:
+    ) -> list[tuple[uuid.UUID, str, int, int]]:
         """DB-side `GROUP BY` — the O(n²)-avoiding "candidate optimization"
         the spec asks for. Checksum equality already implies size equality
         (identical content ⇒ identical size), so grouping directly by
         checksum is both correct and sufficient on its own; a separate
         size-prefilter stage would only add a redundant pass. Returns
-        `(checksum, file_count, total_size_bytes)` for every checksum
-        shared by 2+ files — the exact-duplicate groups."""
+        `(connector_id, checksum, file_count, total_size_bytes)` for every
+        checksum shared by 2+ files within one storage — the exact-duplicate
+        groups. A copy on Google Drive and one on this computer are separate
+        files in separate workspaces, never one group.
+
+        Empty files are never grouped: every empty file has the same
+        checksum, so "identical content" says nothing about whether one is
+        redundant — an empty `__init__.py` is what makes its folder a Python
+        package. Grouping them is how dozens of package markers across
+        unrelated projects were once proposed for removal as "copies"."""
         rows = (
-            self._session.query(File.checksum, func.count(File.id), func.sum(File.size_bytes))
+            self._session.query(
+                StorageConnector.id, File.checksum, func.count(File.id), func.sum(File.size_bytes)
+            )
             .join(StorageSource, File.storage_source_id == StorageSource.id)
             .join(StorageConnector, StorageSource.connector_id == StorageConnector.id)
             .filter(
                 StorageConnector.organization_id == organization_id,
                 File.checksum.isnot(None),
+                File.size_bytes > 0,
                 File.trashed.is_(False),
                 _owned_by_connection(),
             )
-            .group_by(File.checksum)
+            .group_by(StorageConnector.id, File.checksum)
             .having(func.count(File.id) > 1)
             .all()
         )
         return [
-            (checksum, count, int(total or 0))
-            for checksum, count, total in rows
+            (connector_id, checksum, count, int(total or 0))
+            for connector_id, checksum, count, total in rows
             if checksum is not None
         ]
 
     def list_for_checksum_in_organization(
-        self, organization_id: uuid.UUID, checksum: str
+        self, organization_id: uuid.UUID, checksum: str, *, connector_id: uuid.UUID
     ) -> list[File]:
-        return self._for_organization(organization_id).filter(File.checksum == checksum).all()
+        return (
+            self._for_organization(organization_id, connector_id)
+            .filter(File.checksum == checksum, File.size_bytes > 0)
+            .all()
+        )
+
+    def list_paths_marking_projects(
+        self,
+        storage_source_ids: list[uuid.UUID],
+        *,
+        names: frozenset[str],
+        suffixes: tuple[str, ...],
+    ) -> list[tuple[uuid.UUID, str]]:
+        """`(storage_source_id, path)` of every file whose name says its
+        folder is the root of a software project (a manifest, a build file).
+        Trashed rows still count: a project doesn't stop being one because
+        its manifest was trashed by mistake."""
+        if not storage_source_ids:
+            return []
+        lowered = func.lower(File.name)
+        rows = (
+            self._session.query(File.storage_source_id, File.path)
+            .filter(
+                File.storage_source_id.in_(storage_source_ids),
+                or_(lowered.in_(names), *(lowered.like(f"%{suffix}") for suffix in suffixes)),
+            )
+            .all()
+        )
+        return [(source_id, path) for source_id, path in rows]
 
     def list_large_for_organization(
         self,

@@ -467,7 +467,9 @@ def test_cancellation_stops_the_job_cleanly(db: Session) -> None:
 
 
 @requires_infra
-def test_a_provider_or_model_change_makes_every_file_pending_again(db: Session) -> None:
+def test_a_model_change_keeps_what_was_already_learned(db: Session) -> None:
+    """Switching AI provider or model must not throw away the analysis
+    AI Vault already holds, nor pay to recompute the whole storage."""
     user = _provision_user(db)
     connector = _provision_connector(db, organization_id=user.organization_id, user_id=user.id)
     _provision_extracted_file(
@@ -485,10 +487,8 @@ def test_a_provider_or_model_change_makes_every_file_pending_again(db: Session) 
     service_v1.run(second_job.id)
     assert provider_v1.call_count == 1
 
-    # A model swap (e.g. Kimi to a different model) must treat every
-    # already-analyzed file as pending again.
     provider_v2 = _FakeCompletionProvider(model_name="model-v2")
     service_v2 = IntelligenceService(db, ai_gateway=_gateway_with_completion(provider_v2))
     third_job = _create_job(db, connector_id=connector.id)
     service_v2.run(third_job.id)
-    assert provider_v2.call_count == 1
+    assert provider_v2.call_count == 0

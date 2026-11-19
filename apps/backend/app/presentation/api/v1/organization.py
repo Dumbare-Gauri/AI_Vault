@@ -17,7 +17,8 @@ from app.presentation.dependencies.services import (
     get_organization_entity_service,
     get_organization_recommendation_service,
 )
-from vault_shared.db.models import RoleName, User
+from app.presentation.dependencies.workspace import get_workspace
+from vault_shared.db.models import RoleName, StorageConnector, User
 
 organization_router = APIRouter(tags=["organization"])
 
@@ -68,10 +69,13 @@ def analyze_organization(
 def list_organization_recommendations(
     status: str | None = Query(default="active"),
     kind: str | None = Query(default=None),
+    workspace: StorageConnector = Depends(get_workspace),
     user: User = Depends(get_current_user),
     service: OrganizationRecommendationService = Depends(get_organization_recommendation_service),
 ) -> OrganizationRecommendationListResponse:
-    recommendations = service.list_for_organization(user.organization_id, status=status, kind=kind)
+    recommendations = service.list_for_organization(
+        user.organization_id, status=status, kind=kind, connector_id=workspace.id
+    )
     return OrganizationRecommendationListResponse(
         items=[OrganizationRecommendationResponse.from_model(r) for r in recommendations]
     )
@@ -83,10 +87,13 @@ def list_organization_recommendations(
 )
 def get_organization_recommendation(
     recommendation_id: uuid.UUID,
+    workspace: StorageConnector = Depends(get_workspace),
     user: User = Depends(get_current_user),
     service: OrganizationRecommendationService = Depends(get_organization_recommendation_service),
 ) -> OrganizationRecommendationResponse:
-    recommendation = service.get_owned(recommendation_id, organization_id=user.organization_id)
+    recommendation = service.get_owned(
+        recommendation_id, organization_id=user.organization_id, connector_id=workspace.id
+    )
     return OrganizationRecommendationResponse.from_model(recommendation)
 
 
@@ -96,10 +103,14 @@ def get_organization_recommendation(
 )
 def apply_organization_recommendation(
     recommendation_id: uuid.UUID,
+    workspace: StorageConnector = Depends(get_workspace),
     user: User = Depends(_require_owner_or_admin),
     service: OrganizationRecommendationService = Depends(get_organization_recommendation_service),
 ) -> OrganizationRecommendationResponse:
     recommendation = service.trigger_apply(
-        recommendation_id, organization_id=user.organization_id, user_id=user.id
+        recommendation_id,
+        organization_id=user.organization_id,
+        user_id=user.id,
+        connector_id=workspace.id,
     )
     return OrganizationRecommendationResponse.from_model(recommendation)

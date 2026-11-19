@@ -1,6 +1,7 @@
 import uuid
 from datetime import datetime
 
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from vault_shared.db.like import escape_like
@@ -22,6 +23,41 @@ class FolderRepository:
 
     def get_by_id(self, folder_id: uuid.UUID) -> Folder | None:
         return self._session.get(Folder, folder_id)
+
+    def list_children(
+        self, storage_source_id: uuid.UUID, parent_folder_id: uuid.UUID | None
+    ) -> list[Folder]:
+        """The folders directly inside one folder (or at the top of a storage
+        source when `parent_folder_id` is None), by name."""
+        return (
+            self._session.query(Folder)
+            .filter(
+                Folder.storage_source_id == storage_source_id,
+                Folder.parent_folder_id == parent_folder_id
+                if parent_folder_id
+                else Folder.parent_folder_id.is_(None),
+            )
+            .order_by(func.lower(Folder.name))
+            .all()
+        )
+
+    def list_paths_named(
+        self, storage_source_ids: list[uuid.UUID], *, names: frozenset[str]
+    ) -> list[tuple[uuid.UUID, str]]:
+        """`(storage_source_id, path)` of every folder with one of these
+        names (compared case-insensitively) — e.g. version-control folders
+        that mark the root of a repository."""
+        if not storage_source_ids:
+            return []
+        rows = (
+            self._session.query(Folder.storage_source_id, Folder.path)
+            .filter(
+                Folder.storage_source_id.in_(storage_source_ids),
+                func.lower(Folder.name).in_(names),
+            )
+            .all()
+        )
+        return [(source_id, path) for source_id, path in rows]
 
     def search_for_connector(
         self, connector_id: uuid.UUID, *, query: str, limit: int

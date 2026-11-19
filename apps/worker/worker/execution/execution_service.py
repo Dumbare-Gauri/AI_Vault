@@ -1,13 +1,15 @@
 import enum
+import errno
 import hashlib
 import json
+import shutil
 import tempfile
 import time
 import uuid
 import zipfile
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from typing import IO
 
@@ -15,8 +17,10 @@ from sqlalchemy import Connection, text
 from sqlalchemy.orm import Session
 
 from vault_shared import ConflictError, NotFoundError, ValidationError, get_logger, get_settings
+from vault_shared.archive_naming import numbered_archive_name
 from vault_shared.db.models import (
     ArchiveJobStatus,
+    ConnectorProvider,
     ConnectorStatus,
     ExecutionActionType,
     ExecutionJob,
@@ -32,6 +36,7 @@ from vault_shared.db.models import (
     RollbackRecord,
     StorageAnalysisTrigger,
     StorageConnector,
+    StorageSource,
     VerificationStatus,
 )
 from vault_shared.db.repositories import (
@@ -51,6 +56,7 @@ from vault_shared.db.repositories import (
 )
 from vault_shared.formatting import human_bytes
 from vault_shared.object_storage import ObjectStorageClient
+from vault_shared.protection import AssetProtection, guards
 from vault_shared.storage import (
     ExportPurpose,
     ProviderFileId,
@@ -61,6 +67,7 @@ from vault_shared.storage import (
     StorageStaleRevisionError,
     StorageUnsupportedError,
 )
+from vault_shared.storage.native_archive import NativeArchiver, NativeExtraction
 from worker.tasks.recommendation import run_recommendation
 from worker.tasks.storage_intelligence import run_storage_intelligence
 
@@ -76,7 +83,11 @@ _RUNNABLE_JOB_STATUSES = (ExecutionJobStatus.PENDING, ExecutionJobStatus.RUNNING
 
 _ARCHIVE_CHUNK_BYTES = 1024 * 1024
 # ~60s in total — Google usually finishes emptying a large Trash within it.
-_EMPTY_TRASH_RECHECK_SECONDS = (2, 3, 5, 8, 12, 15, 15)
+# The first check is immediate: storage that deletes synchronously (this
+# computer) is confirmed at once.
+_EMPTY_TRASH_RECHECK_SECONDS = (0, 2, 3, 5, 8, 12, 15, 15)
+_NOT_DELETED_REPORT_LIMIT = 50
+_MAX_LISTED_ENTRIES = 5000
 _TRASH_PREVIEW_LIMIT = 15
 
 
@@ -96,6 +107,8 @@ class TrashSummary:
     # Files the provider accepted for deletion but had not finished removing
     # when AI Vault last checked.
     still_deleting_count: int = 0
+    # Those files by name, so the user sees exactly which ones remain.
+    not_deleted: list[TrashItem] = field(default_factory=list)
 
 
 _CREATABLE_MIME_TYPES = frozenset({"text/plain", "text/markdown"})
@@ -127,16 +140,33 @@ def _is_already_compressed(name: str) -> bool:
     )
 
 
+def _archive_temp_dir() -> str:
+    return get_settings().archive_temp_dir or tempfile.gettempdir()
+
+
+def _require_free_space(needed: int, *, what: str) -> None:
+    """Refuses up front — with the numbers — when the temporary disk can't
+    hold `needed` more bytes and still keep its reserve free."""
+    free = shutil.disk_usage(_archive_temp_dir()).free
+    available = max(free - get_settings().archive_free_space_reserve_bytes, 0)
+    if needed > available:
+        raise ValidationError(
+            f"Not enough free disk space to {what}: it needs about {human_bytes(needed)} "
+            f"and {human_bytes(available)} is available. Free up space or archive fewer "
+            "files at a time."
+        )
+
+
 def _write_zip_entry(
     zip_file: zipfile.ZipFile,
     name: str,
     stream: Iterable[bytes],
     *,
-    max_bytes: int,
     store_only: bool,
 ) -> tuple[int, str]:
-    """Streams one file into the archive chunk by chunk, so a file is never
-    held in memory whole. Returns `(bytes_written, sha256)`."""
+    """Streams one file into the archive chunk by chunk (ZIP64, so no 2 or
+    4 GB ceiling), never holding it in memory whole. Returns
+    `(bytes_written, sha256)`."""
     info = zipfile.ZipInfo(name, date_time=datetime.now(UTC).timetuple()[:6])
     info.compress_type = zipfile.ZIP_STORED if store_only else zipfile.ZIP_DEFLATED
     sha256 = hashlib.sha256()
@@ -145,18 +175,39 @@ def _write_zip_entry(
         with zip_file.open(info, "w", force_zip64=True) as entry:
             for chunk in stream:
                 total += len(chunk)
-                if total > max_bytes:
-                    raise ValidationError(
-                        f"'{name}' turned out larger than the {human_bytes(max_bytes)} "
-                        "per-file archive limit."
-                    )
                 sha256.update(chunk)
                 entry.write(chunk)
+    except OSError as exc:
+        if exc.errno == errno.ENOSPC:
+            raise ValidationError(
+                "The temporary disk ran out of space while building the archive — "
+                "originals were left untouched. Free up space or archive fewer files."
+            ) from exc
+        raise
     finally:
         close = getattr(stream, "close", None)
         if callable(close):
             close()
     return total, sha256.hexdigest()
+
+
+def _verify_zip(buffer: IO[bytes], expected_entries: int) -> None:
+    """Reads the finished archive back — central directory and every
+    entry's CRC — before anything is uploaded or reported."""
+    buffer.seek(0)
+    try:
+        with zipfile.ZipFile(buffer) as check:
+            broken = check.testzip()
+            count = len(check.infolist())
+    except zipfile.BadZipFile as exc:
+        raise ValidationError(
+            "The archive could not be read back — originals were left untouched."
+        ) from exc
+    if broken is not None or count != expected_entries:
+        raise ValidationError(
+            f"The archive failed its integrity check ({broken or 'missing entries'}) — "
+            "originals were left untouched."
+        )
 
 
 def _digests(stream: IO[bytes]) -> tuple[str, str]:
@@ -169,6 +220,61 @@ def _digests(stream: IO[bytes]) -> tuple[str, str]:
         md5.update(chunk)
         sha256.update(chunk)
     return md5.hexdigest(), sha256.hexdigest()
+
+
+@dataclass(frozen=True)
+class _BuiltArchive:
+    """A verified archive in the user's storage and what went into it."""
+
+    included: list[tuple[ExecutionStep, File]]
+    manifest: list[dict]
+    stored: StorageFile
+    original_size: int
+    compressed_size: int
+    md5: str | None
+    sha256: str | None
+    # Whether the bytes passed through this worker (and can be cached for
+    # in-app download); an archive built on the user's own disk never does.
+    cacheable: bool
+
+
+@dataclass(frozen=True)
+class ExtractionSummary:
+    """The new folder an archive was unpacked into, how many files are now
+    in it, and the entries left out (`{name, reason}`)."""
+
+    folder: Folder
+    file_count: int
+    skipped: list[dict]
+
+
+def _safe_entry_name(name: str) -> str | None:
+    """An archive entry's name, if it stays inside the folder it is
+    unpacked into: relative, no `.`/`..` parts, no drive letters."""
+    if not name or name.startswith(("/", "\\")):
+        return None
+    parts = [part for part in name.replace("\\", "/").split("/") if part not in ("", ".")]
+    if not parts or ":" in parts[0] or ".." in parts:
+        return None
+    if any(any(ord(ch) < 32 for ch in part) for part in parts):
+        return None
+    return "/".join(parts)
+
+
+def _archive_name_for(step: ExecutionStep, file: File) -> str:
+    """Where a file goes inside the archive: its path below the folder the
+    user archived (`archive_path`, set when a folder was chosen), so nested
+    folders and identically named files keep their places; else its name."""
+    return str(step.planned_change.get("archive_path") or file.name)
+
+
+def _discard_unverified(adapter: StorageAdapter, stored: StorageFile) -> None:
+    """An archive that failed its check is moved to Trash, never kept as if
+    it were sound. Best effort: the failure itself is what gets reported."""
+    try:
+        adapter.trash(stored.provider_file_id)
+    except Exception:  # noqa: BLE001 - cleanup must not mask the real failure
+        logger.exception("archive_cleanup_failed")
 
 
 def plan_lock_key(plan_id: uuid.UUID) -> int:
@@ -234,6 +340,7 @@ class ExecutionService:
         self._archive_jobs = ArchiveJobRepository(db)
         self._storage_analysis_jobs = StorageAnalysisJobRepository(db)
         self._recommendation_jobs = RecommendationJobRepository(db)
+        self._protection = AssetProtection(db)
 
     def create_folder(
         self,
@@ -282,6 +389,8 @@ class ExecutionService:
         failures = self._permission_failures(connector)
         if failures:
             raise ValidationError("; ".join(failures))
+        if parent_provider_id is None:
+            parent_provider_id = self._top_parent_id(connector, source)
 
         # The one mutating call in this method — kept here, in
         # `ExecutionService`, so it is covered by the same static guard
@@ -319,6 +428,15 @@ class ExecutionService:
         )
         self._db.commit()
         return folder
+
+    @staticmethod
+    def _top_parent_id(connector: StorageConnector, source: StorageSource) -> str | None:
+        """Where a top-level item of a storage source goes. On this computer a
+        source *is* an authorized folder, and the agent needs to be told
+        which one; Google Drive takes "no parent" as the top of My Drive."""
+        if connector.provider == ConnectorProvider.LOCAL_AGENT:
+            return source.provider_drive_id
+        return None
 
     def preview_trash(self, *, organization_id: uuid.UUID, connector_id: uuid.UUID) -> TrashSummary:
         """What emptying the provider's Trash would permanently delete — read
@@ -380,6 +498,7 @@ class ExecutionService:
             event_type="trash_emptied",
             message=f"{deleted_count} files permanently deleted from the provider's Trash.",
             metadata={
+                "connector_id": str(connector.id),
                 "deleted_count": deleted_count,
                 "deleted_bytes": sum(
                     item.size_bytes or 0
@@ -391,7 +510,14 @@ class ExecutionService:
         )
         self._db.commit()
         self._record_trash_state(connector, adapter, trash_is_empty=not remaining_ids)
-        return replace(summary, still_deleting_count=len(remaining_ids))
+        return replace(
+            summary,
+            still_deleting_count=len(remaining_ids),
+            not_deleted=[
+                TrashItem(name=item.name, size_bytes=item.size_bytes or 0, backed_up=False)
+                for item in remaining[:_NOT_DELETED_REPORT_LIMIT]
+            ],
+        )
 
     def _record_trash_state(
         self, connector: StorageConnector, adapter: StorageAdapter, *, trash_is_empty: bool
@@ -472,11 +598,16 @@ class ExecutionService:
 
         adapter = self._storage.adapter_for(connector)
         adapter.connect()
+        parent_id = (
+            parent_folder.provider_file_id
+            if parent_folder
+            else self._top_parent_id(connector, source)
+        )
         created = adapter.upload(
             name,
             iter([data]),
             mime_type=mime_type,
-            parent_id=ProviderFileId(parent_folder.provider_file_id) if parent_folder else None,
+            parent_id=ProviderFileId(parent_id) if parent_id else None,
         )
         stored = adapter.get_file(created.provider_file_id)
         if stored.size_bytes is not None and stored.size_bytes != len(data):
@@ -573,6 +704,220 @@ class ExecutionService:
             provider_viewed_at=stored.accessed_at,
             scanned_at=now,
         )
+
+    def extract_archive(
+        self,
+        *,
+        organization_id: uuid.UUID,
+        file_id: uuid.UUID,
+        destination_folder_id: uuid.UUID | None = None,
+    ) -> "ExtractionSummary":
+        """Unpacks a zip from the user's storage into a new folder (named
+        after the archive) in the same storage — the archive's own folder
+        unless the user picked another. Nothing is overwritten and no entry
+        can land outside the new folder. Everything created is read back
+        from the storage and added to the index, so Files shows it at
+        once."""
+        owned = self._files.get_owned_with_connector(file_id, organization_id=organization_id)
+        if owned is None:
+            raise NotFoundError("File not found.")
+        archive, connector = owned
+        if not archive.name.lower().endswith(".zip") or archive.trashed:
+            raise ValidationError("Only a .zip archive that isn't in Trash can be extracted.")
+        source = self._sources.get_by_id(archive.storage_source_id)
+        assert source is not None
+        destination = self._extraction_destination(archive, destination_folder_id)
+        failures = self._permission_failures(connector)
+        if failures:
+            raise ValidationError("; ".join(failures))
+
+        adapter = self._storage.adapter_for(connector)
+        adapter.connect()
+        parent_id = (
+            destination.provider_file_id if destination else self._top_parent_id(connector, source)
+        )
+        if isinstance(adapter, NativeArchiver):
+            if parent_id is None:
+                raise ValidationError("Choose a folder to extract into.")
+            extracted = adapter.extract_archive(
+                ProviderFileId(archive.provider_file_id),
+                parent_id=ProviderFileId(parent_id),
+                expected_bytes=archive.size_bytes or 0,
+            )
+            summary = self._record_extraction(source.id, destination, extracted)
+        else:
+            summary = self._extract_by_upload(
+                adapter, archive, source_id=source.id, destination=destination, parent_id=parent_id
+            )
+        self._audits.record(
+            organization_id=organization_id,
+            event_type="archive_extracted",
+            metadata={
+                "connector_id": str(connector.id),
+                "file_id": str(archive.id),
+                "folder_id": str(summary.folder.id),
+                "name": summary.folder.name,
+                "file_count": summary.file_count,
+                "skipped": summary.skipped[:50],
+            },
+        )
+        self._db.commit()
+        return summary
+
+    def inspect_archive(self, *, organization_id: uuid.UUID, file_id: uuid.UUID) -> dict:
+        """What a zip in the user's storage holds — read only, nothing is
+        unpacked or changed. Entries that would escape their folder on
+        extraction are flagged, so the user sees them before extracting."""
+        owned = self._files.get_owned_with_connector(file_id, organization_id=organization_id)
+        if owned is None:
+            raise NotFoundError("File not found.")
+        archive, connector = owned
+        if not archive.name.lower().endswith(".zip") or archive.trashed:
+            raise ValidationError("Only a .zip archive that isn't in Trash can be inspected.")
+        adapter = self._storage.adapter_for(connector)
+        adapter.connect()
+        if isinstance(adapter, NativeArchiver):
+            return adapter.archive_contents(
+                ProviderFileId(archive.provider_file_id), expected_bytes=archive.size_bytes or 0
+            )
+        _require_free_space(archive.size_bytes or 0, what="read this archive")
+        with tempfile.TemporaryFile(dir=_archive_temp_dir()) as spool:
+            for chunk in adapter.open_read(ProviderFileId(archive.provider_file_id)):
+                spool.write(chunk)
+            spool.seek(0)
+            try:
+                with zipfile.ZipFile(spool) as bundle:
+                    members = bundle.infolist()
+            except zipfile.BadZipFile as exc:
+                raise ValidationError("That file isn't a readable zip archive.") from exc
+        entries = [
+            {
+                "name": member.filename,
+                "size_bytes": member.file_size,
+                "compressed_bytes": member.compress_size,
+                "is_folder": member.is_dir(),
+                "safe": _safe_entry_name(member.filename.rstrip("/")) is not None,
+            }
+            for member in members
+        ]
+        return {
+            "entries": entries[:_MAX_LISTED_ENTRIES],
+            "entry_count": len(entries),
+            "file_count": sum(1 for entry in entries if not entry["is_folder"]),
+            "total_bytes": sum(entry["size_bytes"] for entry in entries),
+            "unsafe_count": sum(1 for entry in entries if not entry["safe"]),
+        }
+
+    def _extraction_destination(
+        self, archive: File, destination_folder_id: uuid.UUID | None
+    ) -> Folder | None:
+        folder_id = destination_folder_id or archive.parent_folder_id
+        if folder_id is None:
+            return None
+        folder = self._folders.get_by_id(folder_id)
+        if folder is None or folder.storage_source_id != archive.storage_source_id:
+            raise NotFoundError("Choose a folder in the same storage as the archive.")
+        return folder
+
+    def _record_extraction(
+        self, source_id: uuid.UUID, destination: Folder | None, extracted: "NativeExtraction"
+    ) -> "ExtractionSummary":
+        """Adds what the storage reported creating to the index, parents
+        before children, so the new folder tree appears in Files as is."""
+        root = self._record_folder(source_id, destination, extracted.folder)
+        folders: dict[str, Folder] = {root.provider_file_id: root}
+        file_count = 0
+        for item in extracted.created:
+            parent = folders.get(item.parent_id or "", root)
+            if item.is_folder:
+                folders[item.provider_file_id] = self._record_folder(source_id, parent, item)
+            else:
+                self._record_new_file(source_id, parent, item)
+                file_count += 1
+        return ExtractionSummary(folder=root, file_count=file_count, skipped=extracted.skipped)
+
+    def _record_folder(
+        self, source_id: uuid.UUID, parent: Folder | None, stored: StorageFile
+    ) -> Folder:
+        parent_path = parent.path.rstrip("/") if parent else ""
+        return self._folders.upsert(
+            storage_source_id=source_id,
+            provider_file_id=stored.provider_file_id,
+            provider_parent_id=parent.provider_file_id if parent else stored.parent_id,
+            parent_folder_id=parent.id if parent else None,
+            name=stored.name,
+            path=f"{parent_path}/{stored.name}",
+            owner_email=stored.owner_email,
+            is_shared=stored.shared,
+            provider_created_at=stored.created_at,
+            provider_modified_at=stored.modified_at,
+            scanned_at=datetime.now(UTC),
+        )
+
+    def _extract_by_upload(
+        self,
+        adapter: StorageAdapter,
+        archive: File,
+        *,
+        source_id: uuid.UUID,
+        destination: Folder | None,
+        parent_id: str | None,
+    ) -> "ExtractionSummary":
+        """For storage that can't unpack an archive itself (Google Drive):
+        the zip is read into a temporary file here, every entry name is
+        checked, and each folder and file is created in the storage and read
+        back before it is recorded. Never overwrites: everything goes into a
+        new folder."""
+        _require_free_space(archive.size_bytes or 0, what="extract this archive")
+        stem = archive.name[:-4] if archive.name.lower().endswith(".zip") else archive.name
+        skipped: list[dict] = []
+        file_count = 0
+        with tempfile.TemporaryFile(dir=_archive_temp_dir()) as spool:
+            for chunk in adapter.open_read(ProviderFileId(archive.provider_file_id)):
+                spool.write(chunk)
+            spool.seek(0)
+            try:
+                bundle = zipfile.ZipFile(spool)
+            except zipfile.BadZipFile as exc:
+                raise ValidationError("That file isn't a readable zip archive.") from exc
+            with bundle:
+                created_root = adapter.create_folder(
+                    stem, parent_id=ProviderFileId(parent_id) if parent_id else None
+                )
+                root = self._record_folder(source_id, destination, created_root)
+                folders: dict[str, Folder] = {"": root}
+                for member in bundle.infolist():
+                    clean = _safe_entry_name(member.filename.rstrip("/"))
+                    if clean is None:
+                        skipped.append({"name": member.filename, "reason": "Unsafe path"})
+                        continue
+                    parts = clean.split("/")
+                    dirs = parts if member.is_dir() else parts[:-1]
+                    parent = root
+                    for depth in range(1, len(dirs) + 1):
+                        key = "/".join(dirs[:depth])
+                        if key not in folders:
+                            made = adapter.create_folder(
+                                dirs[depth - 1], parent_id=ProviderFileId(parent.provider_file_id)
+                            )
+                            folders[key] = self._record_folder(source_id, parent, made)
+                        parent = folders[key]
+                    if member.is_dir():
+                        continue
+                    with bundle.open(member) as reader:
+                        uploaded = adapter.upload(
+                            parts[-1],
+                            _iter_chunks(reader),
+                            mime_type="application/octet-stream",
+                            parent_id=ProviderFileId(parent.provider_file_id),
+                        )
+                    stored = adapter.get_file(uploaded.provider_file_id)
+                    if stored.size_bytes is not None and stored.size_bytes != member.file_size:
+                        skipped.append({"name": clean, "reason": "Stored size didn't match"})
+                        continue
+                    self._record_new_file(source_id, parent, stored)
+                    file_count += 1
+        return ExtractionSummary(folder=root, file_count=file_count, skipped=skipped)
 
     def run(self, execution_job_id: uuid.UUID) -> None:
         job = self._jobs.get_by_id(execution_job_id)
@@ -872,6 +1217,8 @@ class ExecutionService:
                         "File is already trashed outside this platform — nothing to do."
                     )
                 self._reject_if_stale(step, current)
+                self._reject_if_moved(step, current)
+                self._reject_if_protected(step, file)
                 # The authoritative rollback source — captured and committed
                 # *before* the live mutation, so a failure after a
                 # successful Drive write can never leave a mutation with no
@@ -1002,6 +1349,43 @@ class ExecutionService:
                 "version that was never reviewed.",
                 provider=current.provider,
                 provider_code="stale_revision",
+            )
+
+    @staticmethod
+    def _reject_if_moved(step: ExecutionStep, current: StorageFile) -> None:
+        """The user confirmed a change to a file at a particular name and
+        place. If the provider now reports it under another name or in
+        another folder, the step is refused rather than applied to a file
+        the user never saw there. Steps planned before this was recorded
+        carry no expectation and are not blocked."""
+        if not guards(step.action_type, step.planned_change):
+            return
+        expected_name = step.pre_state.get("name")
+        if expected_name and current.name != expected_name:
+            raise ConflictError(
+                f"The file is now called “{current.name}”, not “{expected_name}” as when this "
+                "was reviewed — refusing to act on it. Rescan and review it again."
+            )
+        expected_parent = step.pre_state.get("provider_parent_id")
+        if expected_parent and current.parent_ids and expected_parent not in current.parent_ids:
+            raise ConflictError(
+                "The file was moved since this was reviewed — refusing to act on it. Rescan "
+                "and review it again."
+            )
+
+    def _reject_if_protected(self, step: ExecutionStep, file: File) -> None:
+        """The last line of the protection policy (see
+        `vault_shared.protection`): whatever path built this plan,
+        a protected file is never removed or relocated unless the user who
+        picked it acknowledged that, as recorded on the step itself."""
+        if not guards(step.action_type, step.planned_change):
+            return
+        if step.planned_change.get("protection_override"):
+            return
+        reasons = self._protection.reasons(file)
+        if reasons:
+            raise ConflictError(
+                f"{file.name} is protected ({'; '.join(reasons)}) — it was left untouched."
             )
 
     @staticmethod
@@ -1200,6 +1584,16 @@ class ExecutionService:
         assert parent is not None
         return parent
 
+    def _chosen_archive_folder(self, folder_id: str | None, first_file: File) -> Folder | None:
+        if not folder_id:
+            return None
+        folder = self._folders.get_by_id(uuid.UUID(folder_id))
+        if folder is None or folder.storage_source_id != first_file.storage_source_id:
+            raise ValidationError(
+                "The chosen destination folder is no longer in this storage — choose another."
+            )
+        return folder
+
     def _execute_archive_batch(
         self,
         job: ExecutionJob,
@@ -1220,7 +1614,6 @@ class ExecutionService:
         If anything in 1-3 fails, every original is left untouched. Per-file
         problems (missing, oversized, unexportable) fail only that file's
         step; a failure in the shared part fails the whole batch."""
-        settings = get_settings()
         archive_job = self._archive_jobs.get_by_plan_id(plan.id) or self._archive_jobs.create(
             organization_id=plan.organization_id,
             execution_plan_id=plan.id,
@@ -1233,129 +1626,63 @@ class ExecutionService:
         self._db.commit()
 
         started_at = datetime.now(UTC)
-        archive_name = f"AI Vault Archive {started_at:%Y-%m-%d %H%M%S} ({len(steps)} files).zip"
-        manifest: list[dict] = []
+        requested = steps[0].planned_change if steps else {}
+        archive_name = (
+            requested.get("archive_name")
+            or f"AI Vault Archive {started_at:%Y-%m-%d %H%M%S} ({len(steps)} files).zip"
+        )
         included: list[tuple[ExecutionStep, File]] = []
-        skipped_reasons: list[str] = []
-        uploaded: StorageFile | None = None
+        manifest: list[dict] = []
         # Closed in the `finally` below (and by boto3 on upload) — a `with` block
         # here would re-indent the whole batch for no behavioral gain.
-        buffer = tempfile.SpooledTemporaryFile(max_size=64 * 1024 * 1024)  # noqa: SIM115
+        buffer = tempfile.SpooledTemporaryFile(  # noqa: SIM115
+            max_size=64 * 1024 * 1024, dir=_archive_temp_dir()
+        )
         try:
             try:
                 first_file = self._first_archivable_file(plan, steps)
-                destination = self._ensure_folder_path(
+                destination = self._chosen_archive_folder(
+                    requested.get("archive_folder_id"), first_file
+                ) or self._ensure_folder_path(
                     organization_id=plan.organization_id,
                     storage_source_id=first_file.storage_source_id,
                     names=["AI Vault Archive", f"{started_at:%Y}"],
                 )
-                with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
-                    used_names: set[str] = set()
-                    for step in steps:
-                        try:
-                            file = self._get_plan_file(plan, step)
-                        except NotFoundError:
-                            reason = "Target file no longer exists in this platform's inventory."
-                            skipped_reasons.append(reason)
-                            self._fail_archive_step(job, plan, step, reason)
-                            continue
-                        limit = settings.archive_max_file_size_bytes
-                        if (file.size_bytes or 0) > limit:
-                            reason = (
-                                f"'{file.name}' is too large to archive "
-                                f"({human_bytes(file.size_bytes or 0)}; the limit is "
-                                f"{human_bytes(limit)} per file)."
-                            )
-                            skipped_reasons.append(reason)
-                            self._fail_archive_step(job, plan, step, reason)
-                            continue
-
-                        try:
-                            opened = self._open_for_archive(file, adapter=adapter)
-                        except Exception as exc:  # noqa: BLE001 - one file's fetch failure must not stop the batch
-                            skipped_reasons.append(f"'{file.name}': {exc}")
-                            self._fail_archive_step(job, plan, step, str(exc))
-                            continue
-                        if opened is None:
-                            reason = f"'{file.name}' is a file type that can't be archived."
-                            skipped_reasons.append(reason)
-                            self._fail_archive_step(job, plan, step, reason)
-                            continue
-                        stream, exported_as = opened
-
-                        base_name = f"{file.name}.{exported_as}" if exported_as else file.name
-                        zip_name = base_name
-                        suffix = 1
-                        while zip_name in used_names:
-                            suffix += 1
-                            zip_name = f"{suffix} - {base_name}"
-                        used_names.add(zip_name)
-
-                        size_written, entry_sha256 = _write_zip_entry(
-                            zip_file,
-                            zip_name,
-                            stream,
-                            max_bytes=limit,
-                            store_only=_is_already_compressed(base_name),
-                        )
-                        manifest.append(
-                            {
-                                "file_id": str(file.id),
-                                "name": file.name,
-                                "path": file.path,
-                                "provider": plan.target_provider,
-                                "provider_file_id": file.provider_file_id,
-                                "original_size_bytes": file.size_bytes,
-                                "original_modified_at": (
-                                    file.provider_modified_at.isoformat()
-                                    if file.provider_modified_at
-                                    else None
-                                ),
-                                "size_bytes": size_written,
-                                "mime_type": file.mime_type,
-                                "exported_as": exported_as,
-                                "zip_entry_name": zip_name,
-                                "checksum_sha256": entry_sha256,
-                                "archived_at": started_at.isoformat(),
-                                "original_removed": False,
-                            }
-                        )
-                        included.append((step, file))
-
-                    if not manifest:
-                        raise ValidationError(
-                            " ".join(skipped_reasons)
-                            or "No selected file could be included in the archive."
-                        )
-                    zip_file.writestr("manifest.json", json.dumps(manifest, indent=2))
-
-                original_size = sum(entry["size_bytes"] for entry in manifest)
-                compressed_size = buffer.seek(0, 2)
-                md5, sha256 = _digests(buffer)
-
-                buffer.seek(0)
-                uploaded = adapter.upload(
+                # Never overwrite: a name already in that folder gets a number.
+                archive_name = numbered_archive_name(
                     archive_name,
-                    _iter_chunks(buffer),
-                    mime_type="application/zip",
-                    parent_id=ProviderFileId(destination.provider_file_id),
+                    self._files.names_in_folder(destination.storage_source_id, destination.id),
                 )
-                stored = adapter.get_file(uploaded.provider_file_id)
-                if stored.size_bytes != compressed_size or (
-                    stored.checksum is not None and stored.checksum != md5
-                ):
-                    raise ValidationError(
-                        "The archive stored in your connected storage does not match what "
-                        "was written — originals were left untouched."
+                built = (
+                    self._build_native_archive(
+                        job,
+                        plan,
+                        steps,
+                        adapter=adapter,
+                        destination=destination,
+                        archive_name=archive_name,
+                        started_at=started_at,
                     )
+                    if isinstance(adapter, NativeArchiver)
+                    else self._build_zip_archive(
+                        job,
+                        plan,
+                        steps,
+                        adapter=adapter,
+                        buffer=buffer,
+                        destination=destination,
+                        archive_name=archive_name,
+                        started_at=started_at,
+                    )
+                )
+                included, manifest, stored = built.included, built.manifest, built.stored
+                original_size, compressed_size = built.original_size, built.compressed_size
+                md5, sha256 = built.md5, built.sha256
                 verified_at = datetime.now(UTC)
+                # Shown in Files right away, in the folder it was saved to.
+                self._record_new_file(destination.storage_source_id, destination, stored)
             except Exception as exc:  # noqa: BLE001 - archive-batch boundary must never crash the worker
                 logger.exception("archive_batch_failed", extra={"execution_plan_id": str(plan.id)})
-                if uploaded is not None:
-                    try:
-                        adapter.trash(uploaded.provider_file_id)
-                    except Exception:  # noqa: BLE001 - best-effort cleanup of an unverified archive
-                        logger.exception("archive_cleanup_failed")
                 # rollback() expires every object in the session, so any
                 # individual _fail_archive_step calls already flushed above
                 # (but never committed) are undone too, and every step is
@@ -1372,7 +1699,7 @@ class ExecutionService:
             # cache-write failure does not fail the archive; large archives
             # are opened from the provider instead of being duplicated here.
             object_storage_key: str | None = None
-            if compressed_size <= _MAX_CACHED_ARCHIVE_BYTES:
+            if built.cacheable and compressed_size <= _MAX_CACHED_ARCHIVE_BYTES:
                 object_storage_key = f"archives/{plan.organization_id}/{plan.id}.zip"
                 try:
                     buffer.seek(0)
@@ -1402,7 +1729,7 @@ class ExecutionService:
             compressed_size_bytes=compressed_size,
             file_count=len(manifest),
             manifest=manifest,
-            destination_provider_file_id=uploaded.provider_file_id,
+            destination_provider_file_id=stored.provider_file_id,
             destination_path=f"{destination.path.rstrip('/')}/{archive_name}",
             destination_web_view_link=stored.web_view_link,
             archive_md5=md5,
@@ -1445,13 +1772,247 @@ class ExecutionService:
             )
         self._db.commit()
 
+    def _build_zip_archive(
+        self,
+        job: ExecutionJob,
+        plan: ExecutionPlan,
+        steps: list[ExecutionStep],
+        *,
+        adapter: StorageAdapter,
+        buffer: IO[bytes],
+        destination: Folder,
+        archive_name: str,
+        started_at: datetime,
+    ) -> "_BuiltArchive":
+        """Builds the zip here, uploads it, and checks the provider holds
+        exactly those bytes. Each file keeps its place in the folder
+        structure (`_archive_name_for`); already-compressed files are
+        stored, everything else deflated at the highest level."""
+        manifest: list[dict] = []
+        included: list[tuple[ExecutionStep, File]] = []
+        skipped_reasons: list[str] = []
+        with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as zip_file:
+            used_names: set[str] = set()
+            for step in steps:
+                try:
+                    file = self._get_plan_file(plan, step)
+                except NotFoundError:
+                    reason = "Target file no longer exists in this platform's inventory."
+                    skipped_reasons.append(reason)
+                    self._fail_archive_step(job, plan, step, reason)
+                    continue
+                try:
+                    _require_free_space(file.size_bytes or 0, what=f"archive '{file.name}'")
+                except ValidationError as exc:
+                    skipped_reasons.append(str(exc))
+                    self._fail_archive_step(job, plan, step, str(exc))
+                    continue
+
+                try:
+                    opened = self._open_for_archive(file, adapter=adapter)
+                except Exception as exc:  # noqa: BLE001 - one file's fetch failure must not stop the batch
+                    skipped_reasons.append(f"'{file.name}': {exc}")
+                    self._fail_archive_step(job, plan, step, str(exc))
+                    continue
+                if opened is None:
+                    reason = f"'{file.name}' is a file type that can't be archived."
+                    skipped_reasons.append(reason)
+                    self._fail_archive_step(job, plan, step, reason)
+                    continue
+                stream, exported_as = opened
+
+                in_archive = _archive_name_for(step, file)
+                base_name = f"{in_archive}.{exported_as}" if exported_as else in_archive
+                zip_name = base_name
+                suffix = 1
+                while zip_name in used_names:
+                    suffix += 1
+                    zip_name = f"{suffix} - {base_name}"
+                used_names.add(zip_name)
+
+                size_written, entry_sha256 = _write_zip_entry(
+                    zip_file,
+                    zip_name,
+                    stream,
+                    store_only=_is_already_compressed(base_name),
+                )
+                manifest.append(
+                    {
+                        "file_id": str(file.id),
+                        "name": file.name,
+                        "path": file.path,
+                        "provider": plan.target_provider,
+                        "provider_file_id": file.provider_file_id,
+                        "original_size_bytes": file.size_bytes,
+                        "original_modified_at": (
+                            file.provider_modified_at.isoformat()
+                            if file.provider_modified_at
+                            else None
+                        ),
+                        "size_bytes": size_written,
+                        "mime_type": file.mime_type,
+                        "exported_as": exported_as,
+                        "zip_entry_name": zip_name,
+                        "checksum_sha256": entry_sha256,
+                        "archived_at": started_at.isoformat(),
+                        "original_removed": False,
+                    }
+                )
+                included.append((step, file))
+
+            if not manifest:
+                raise ValidationError(
+                    " ".join(skipped_reasons)
+                    or "No selected file could be included in the archive."
+                )
+            zip_file.writestr("manifest.json", json.dumps(manifest, indent=2))
+
+        _verify_zip(buffer, expected_entries=len(manifest) + 1)
+        original_size = sum(entry["size_bytes"] for entry in manifest)
+        compressed_size = buffer.seek(0, 2)
+        md5, sha256 = _digests(buffer)
+
+        buffer.seek(0)
+        uploaded = adapter.upload(
+            archive_name,
+            _iter_chunks(buffer),
+            mime_type="application/zip",
+            parent_id=ProviderFileId(destination.provider_file_id),
+        )
+        try:
+            stored = adapter.get_file(uploaded.provider_file_id)
+            if stored.size_bytes != compressed_size or (
+                stored.checksum is not None and stored.checksum != md5
+            ):
+                raise ValidationError(
+                    "The archive stored in your connected storage does not match what "
+                    "was written — originals were left untouched."
+                )
+        except Exception:
+            _discard_unverified(adapter, uploaded)
+            raise
+        return _BuiltArchive(
+            included=included,
+            manifest=manifest,
+            stored=stored,
+            original_size=original_size,
+            compressed_size=compressed_size,
+            md5=md5,
+            sha256=sha256,
+            cacheable=True,
+        )
+
+    def _build_native_archive(
+        self,
+        job: ExecutionJob,
+        plan: ExecutionPlan,
+        steps: list[ExecutionStep],
+        *,
+        adapter: "NativeArchiver",
+        destination: Folder,
+        archive_name: str,
+        started_at: datetime,
+    ) -> "_BuiltArchive":
+        """The storage builds and checks the archive itself (this computer's
+        agent): the files never leave the disk. The result is then read back
+        from the storage and compared with what the agent reported."""
+        by_provider_id: dict[str, tuple[ExecutionStep, File]] = {}
+        items: list[tuple[ProviderFileId, str]] = []
+        for step in steps:
+            try:
+                file = self._get_plan_file(plan, step)
+            except NotFoundError:
+                self._fail_archive_step(
+                    job, plan, step, "Target file no longer exists in this platform's inventory."
+                )
+                continue
+            by_provider_id[file.provider_file_id] = (step, file)
+            items.append((ProviderFileId(file.provider_file_id), _archive_name_for(step, file)))
+        if not items:
+            raise ValidationError("None of the selected files are still in this storage.")
+
+        result = adapter.create_archive(
+            items,
+            parent_id=ProviderFileId(destination.provider_file_id),
+            name=archive_name,
+            expected_bytes=sum(file.size_bytes or 0 for _, file in by_provider_id.values()),
+        )
+        try:
+            stored = adapter.get_file(result.file.provider_file_id)
+            # The agent has already read every entry back against its CRC;
+            # this confirms the file it reported is the one on disk now.
+            if stored.size_bytes != result.file.size_bytes or (
+                stored.checksum is not None
+                and result.file.checksum is not None
+                and stored.checksum != result.file.checksum
+            ):
+                raise ValidationError(
+                    "The archive on disk does not match what was written — originals were "
+                    "left untouched."
+                )
+        except Exception:
+            _discard_unverified(adapter, result.file)
+            raise
+
+        written = {entry["file_id"]: entry for entry in result.entries}
+        included: list[tuple[ExecutionStep, File]] = []
+        manifest: list[dict] = []
+        for provider_id, (step, file) in by_provider_id.items():
+            entry = written.get(provider_id)
+            if entry is None:
+                reason = next(
+                    (
+                        item["reason"]
+                        for item in result.skipped
+                        if item.get("file_id") == provider_id
+                    ),
+                    "It could not be added to the archive.",
+                )
+                self._fail_archive_step(job, plan, step, f"'{file.name}': {reason}")
+                continue
+            included.append((step, file))
+            manifest.append(
+                {
+                    "file_id": str(file.id),
+                    "name": file.name,
+                    "path": file.path,
+                    "provider": plan.target_provider,
+                    "provider_file_id": file.provider_file_id,
+                    "original_size_bytes": file.size_bytes,
+                    "size_bytes": entry["size_bytes"],
+                    "compressed_size_bytes": entry["compressed_bytes"],
+                    "stored_uncompressed": entry["stored"],
+                    "zip_entry_name": entry["arcname"],
+                    "archived_at": started_at.isoformat(),
+                    "original_removed": False,
+                }
+            )
+        if not manifest:
+            raise ValidationError("None of the selected files could be added to the archive.")
+        return _BuiltArchive(
+            included=included,
+            manifest=manifest,
+            stored=stored,
+            original_size=sum(entry["size_bytes"] for entry in manifest),
+            compressed_size=stored.size_bytes or 0,
+            md5=None,
+            sha256=result.file.checksum,
+            cacheable=False,
+        )
+
     def _first_archivable_file(self, plan: ExecutionPlan, steps: list[ExecutionStep]) -> File:
+        """The first selected file still in this storage — where the archive
+        goes. When none is, says why for each file instead of a generic
+        refusal."""
+        reasons: list[str] = []
         for step in steps:
             try:
                 return self._get_plan_file(plan, step)
-            except NotFoundError:
-                continue
-        raise ValidationError("No selected file could be included in the archive.")
+            except NotFoundError as error:
+                reasons.append(str(error))
+        raise ValidationError(
+            "No selected file could be included in the archive: " + "; ".join(sorted(set(reasons)))
+        )
 
     def _remove_archived_originals(
         self, included: list[tuple[ExecutionStep, File]], *, adapter: StorageAdapter
@@ -1461,8 +2022,12 @@ class ExecutionService:
         the provider; one that fails stays where it was and is reported as
         not removed — never as removed."""
         removed: set[str] = set()
-        for _step, file in included:
+        for step, file in included:
             if file.trashed:
+                continue
+            if not step.planned_change.get("protection_override") and self._protection.reasons(
+                file
+            ):
                 continue
             file_id = ProviderFileId(file.provider_file_id)
             try:

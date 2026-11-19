@@ -9,6 +9,7 @@ from app.presentation.dependencies.auth import get_current_user
 from app.presentation.dependencies.services import get_conversation_service
 from fastapi.testclient import TestClient
 from vault_shared import NotFoundError
+from conftest import WORKSPACE
 
 client = TestClient(app)
 
@@ -17,6 +18,7 @@ class _FakeConversation:
     def __init__(self, *, title: str | None = "What files do we have?") -> None:
         self.id = uuid.uuid4()
         self.title = title
+        self.connector_id = WORKSPACE.id
         self.created_at = datetime.now(UTC)
         self.updated_at = datetime.now(UTC)
 

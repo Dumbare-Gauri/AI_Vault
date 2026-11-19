@@ -114,6 +114,16 @@ _CONTRACT_KEYWORDS = ("contract", "agreement", "nda")
 _DOCUMENTATION_KEYWORDS = ("readme", "guide", "manual", "documentation")
 
 
+def _ordered_words(text: str) -> list[str]:
+    return [word for word in re.split(r"[^a-z0-9]+", text.lower()) if word]
+
+
+def _words(text: str) -> set[str]:
+    """Whole words only — "nda" is a word in "Acme NDA.pdf" but not in
+    "agenda.docx", and "dev" is not in "/devices"."""
+    return set(_ordered_words(text))
+
+
 class FileTypeClassifierProcessor:
     """The Classification Pipeline (Phase 5 spec) — an ordered set of
     deterministic rules, first match wins. Broad type (mime/extension) is
@@ -145,11 +155,12 @@ class FileTypeClassifierProcessor:
             return self._result("Design Asset", 0.9, "extension_design_asset")
 
         if mime_type in _DOCUMENT_MIMES or extension in {"doc", "docx", "pdf", "txt", "md"}:
-            if any(keyword in name_lower for keyword in _INVOICE_KEYWORDS):
+            words = _words(name_lower)
+            if words & set(_INVOICE_KEYWORDS):
                 return self._result("Invoice", 0.75, "keyword_invoice")
-            if any(keyword in name_lower for keyword in _CONTRACT_KEYWORDS):
+            if words & set(_CONTRACT_KEYWORDS):
                 return self._result("Contract", 0.75, "keyword_contract")
-            if any(keyword in name_lower for keyword in _DOCUMENTATION_KEYWORDS):
+            if words & set(_DOCUMENTATION_KEYWORDS):
                 return self._result("Documentation", 0.7, "keyword_documentation")
             return self._result("Documentation", 0.5, "mime_document_default")
 
@@ -181,9 +192,11 @@ class FolderContextAnalyzerProcessor:
     name = "folder_context_analyzer"
 
     def run(self, context: EnrichmentContext) -> ProcessorResult:
-        segments = [segment.lower() for segment in context.file.path.split("/") if segment]
+        folders = context.file.path.lower().split("/")[:-1]
+        words = set().union(*(_words(folder) for folder in folders)) if folders else set()
+        phrases = {" ".join(_ordered_words(folder)) for folder in folders}
         for department, keywords in _DEPARTMENT_KEYWORDS.items():
-            if any(keyword in segment for segment in segments for keyword in keywords):
+            if any(keyword in words or keyword in phrases for keyword in keywords):
                 return ProcessorResult(
                     knowledge_attributes=[
                         {

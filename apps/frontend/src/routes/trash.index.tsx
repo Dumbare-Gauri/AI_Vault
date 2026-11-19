@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, createFileRoute, redirect } from "@tanstack/react-router";
-import type { Connector, ExecutionPlan, FileListResponse } from "@vault/types";
+import type { ExecutionPlan, FileListResponse } from "@vault/types";
 import {
   ChevronLeft,
   ChevronRight,
@@ -21,12 +21,14 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { PermanentDeleteDialog } from "@/components/file-explorer/permanent-delete-dialog";
 import { Skeleton } from "@/components/ui/skeleton";
 import { toast } from "@/components/ui/toaster";
+import { fetchConnectors } from "@/lib/connectors";
 import { ApiError, apiClient } from "@/lib/api-client";
 import { runStorageAction, trackAction } from "@/lib/storage-action";
 import { fileTypeIconElement } from "@/lib/file-icon";
 import { formatBytes } from "@/lib/format-bytes";
 import { formatRelativeTime } from "@/lib/format-relative-time";
 import { useAuthStore } from "@/stores/auth-store";
+import { useCopilotPage } from "@/stores/copilot-store";
 
 export const Route = createFileRoute("/trash/")({
   beforeLoad: () => {
@@ -69,7 +71,7 @@ function TrashPage() {
 
   const connectorsQuery = useQuery({
     queryKey: ["connectors"],
-    queryFn: () => apiClient.get<Connector[]>("/v1/connectors"),
+    queryFn: fetchConnectors,
   });
   const connector = connectorsQuery.data?.find(
     (candidate) => candidate.provider === "google_workspace" && candidate.status === "connected",
@@ -100,6 +102,7 @@ function TrashPage() {
   });
 
   const files = trashQuery.data?.items ?? [];
+  useCopilotPage({ page: "trash", label: "Trash", fileIds: files.map((file) => file.id) });
   const total = trashQuery.data?.total ?? 0;
   // Only an already-archived file is eligible for permanent deletion (the
   // backend enforces this too) — bulk-select never includes anything else.
@@ -304,6 +307,7 @@ function TrashPage() {
         <PermanentDeleteDialog
           onOpenChange={(open) => !open && setConfirming(false)}
           fileIds={Array.from(selected)}
+          fileNames={files.filter((file) => selected.has(file.id)).map((file) => file.name)}
           onDeleted={() => setSelected(new Set())}
         />
       )}

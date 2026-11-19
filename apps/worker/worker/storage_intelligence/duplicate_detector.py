@@ -45,10 +45,12 @@ class DuplicateDetector:
 
         total_file_count = 0
         total_recoverable = 0
-        seen_checksums: set[str] = set()
+        seen: set[tuple[uuid.UUID, str]] = set()
 
-        for checksum, _reported_count, _reported_total in checksum_groups:
-            members = self._files.list_for_checksum_in_organization(organization_id, checksum)
+        for connector_id, checksum, _reported_count, _reported_total in checksum_groups:
+            members = self._files.list_for_checksum_in_organization(
+                organization_id, checksum, connector_id=connector_id
+            )
             # Google-native files (Docs/Sheets/Slides) never carry an
             # md5Checksum (Phase 1 spec §6.7) — `checksum` is only ever
             # non-null for real binary content, so every member here has a
@@ -62,13 +64,14 @@ class DuplicateDetector:
                 # protective cap spirit as Phase 5's relationship discovery.
                 continue
 
-            seen_checksums.add(checksum)
+            seen.add((connector_id, checksum))
             keep_file, reason, confidence = _recommend_keep(members)
             total_size = sum(f.size_bytes or 0 for f in members)
             recoverable = total_size - (keep_file.size_bytes or 0)
 
             group = self._groups.upsert_group(
                 organization_id=organization_id,
+                connector_id=connector_id,
                 storage_analysis_job_id=storage_analysis_job_id,
                 checksum=checksum,
                 file_count=len(members),
@@ -83,10 +86,10 @@ class DuplicateDetector:
             total_file_count += len(members)
             total_recoverable += recoverable
 
-        self._groups.delete_groups_for_organization_not_in(organization_id, seen_checksums)
+        self._groups.delete_groups_for_organization_not_in(organization_id, seen)
 
         return DuplicateAnalysisSummary(
-            group_count=len(seen_checksums),
+            group_count=len(seen),
             file_count=total_file_count,
             recoverable_bytes=total_recoverable,
         )

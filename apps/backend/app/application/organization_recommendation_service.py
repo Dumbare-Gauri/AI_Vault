@@ -46,18 +46,27 @@ class OrganizationRecommendationService:
         *,
         status: str | None = None,
         kind: str | None = None,
+        connector_id: uuid.UUID | None = None,
     ) -> list[OrganizationRecommendation]:
         return self._recommendations.list_for_organization(
-            organization_id, status=status, kind=kind
+            organization_id, status=status, kind=kind, connector_id=connector_id
         )
 
     def get_owned(
-        self, recommendation_id: uuid.UUID, *, organization_id: uuid.UUID
+        self,
+        recommendation_id: uuid.UUID,
+        *,
+        organization_id: uuid.UUID,
+        connector_id: uuid.UUID | None = None,
     ) -> OrganizationRecommendation:
+        """With `connector_id`, a suggestion from another storage reads as
+        not found — it is never shown or applied from the wrong workspace."""
         recommendation = self._recommendations.get_owned(
             recommendation_id, organization_id=organization_id
         )
-        if recommendation is None:
+        if recommendation is None or (
+            connector_id is not None and recommendation.connector_id != connector_id
+        ):
             raise NotFoundError("Organization recommendation not found.")
         return recommendation
 
@@ -83,9 +92,16 @@ class OrganizationRecommendationService:
         return job
 
     def trigger_apply(
-        self, recommendation_id: uuid.UUID, *, organization_id: uuid.UUID, user_id: uuid.UUID
+        self,
+        recommendation_id: uuid.UUID,
+        *,
+        organization_id: uuid.UUID,
+        user_id: uuid.UUID,
+        connector_id: uuid.UUID,
     ) -> OrganizationRecommendation:
-        recommendation = self.get_owned(recommendation_id, organization_id=organization_id)
+        recommendation = self.get_owned(
+            recommendation_id, organization_id=organization_id, connector_id=connector_id
+        )
         if recommendation.status != OrganizationRecommendationStatus.ACTIVE:
             raise ConflictError(f"This recommendation is already {recommendation.status}.")
         self._check_write_permissions(recommendation, organization_id=organization_id)

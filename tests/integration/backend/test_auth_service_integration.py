@@ -146,3 +146,17 @@ def test_organization_service_renames_the_organization(db: Session) -> None:
     renamed = organization_service.rename(session.user.organization, name="Renamed Co")
 
     assert renamed.name == "Renamed Co"
+
+
+@requires_infra
+def test_an_unverified_email_never_creates_or_enters_an_account(db: Session) -> None:
+    from dataclasses import replace
+
+    from vault_shared.db.repositories import UserRepository
+
+    unverified = replace(_google_user(), email_verified=False)
+
+    with pytest.raises(UnauthorizedError):
+        AuthService(db).complete_google_login(google_user=unverified, ip_address=None)
+
+    assert UserRepository(db).get_by_google_sub(unverified.sub) is None

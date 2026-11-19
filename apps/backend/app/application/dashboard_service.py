@@ -74,13 +74,20 @@ class DashboardService:
         self._entities = OrganizationEntityRepository(db)
         self._organization_recommendations = OrganizationRecommendationRepository(db)
 
-    def get_overview(self, organization_id: uuid.UUID) -> DashboardOverview:
+    def get_overview(
+        self, organization_id: uuid.UUID, *, connector_id: uuid.UUID
+    ) -> DashboardOverview:
+        """One storage workspace's dashboard: its own snapshot history,
+        insights, recent files and pipeline status. Connections are listed
+        individually so each keeps its own labelled figures; nothing is
+        totalled across storages."""
         connectors = self._connectors.list_for_organization(organization_id)
+        workspace = [c for c in connectors if c.id == connector_id]
 
         history = list(
             reversed(
                 self._snapshots.list_recent_for_organization(
-                    organization_id, limit=_SNAPSHOT_HISTORY_LIMIT
+                    organization_id, limit=_SNAPSHOT_HISTORY_LIMIT, connector_id=connector_id
                 )
             )
         )
@@ -91,19 +98,19 @@ class DashboardService:
             latest_snapshot=latest_snapshot,
             snapshot_history=history,
             recent_insights=self._insights.list_recent_for_organization(
-                organization_id, limit=_RECENT_INSIGHTS_LIMIT
+                organization_id, limit=_RECENT_INSIGHTS_LIMIT, connector_id=connector_id
             ),
             recent_activity=self._files.list_recently_modified_for_organization(
-                organization_id, limit=_RECENT_ACTIVITY_LIMIT
+                organization_id, limit=_RECENT_ACTIVITY_LIMIT, connector_id=connector_id
             ),
             latest_scan_status=self._latest_status(
-                [self._scan_jobs.list_for_connector(c.id) for c in connectors]
+                [self._scan_jobs.list_for_connector(c.id) for c in workspace]
             ),
             latest_enrichment_status=self._latest_status(
-                [self._enrichment_jobs.list_for_connector(c.id) for c in connectors]
+                [self._enrichment_jobs.list_for_connector(c.id) for c in workspace]
             ),
             latest_embedding_status=self._latest_status(
-                [self._embedding_jobs.list_for_connector(c.id) for c in connectors]
+                [self._embedding_jobs.list_for_connector(c.id) for c in workspace]
             ),
             latest_recommendation_status=(
                 job.status
@@ -111,12 +118,18 @@ class DashboardService:
                 else None
             ),
             intelligence=IntelligenceSummary(
-                files_analyzed=self._intelligence.count_analyzed_for_organization(organization_id),
-                entities_by_type=self._entities.count_active_by_type(organization_id),
-                lifecycle_by_state=self._lifecycles.count_states_for_organization(organization_id),
+                files_analyzed=self._intelligence.count_analyzed_for_organization(
+                    organization_id, connector_id=connector_id
+                ),
+                entities_by_type=self._entities.count_active_by_type(
+                    organization_id, connector_id=connector_id
+                ),
+                lifecycle_by_state=self._lifecycles.count_states_for_organization(
+                    organization_id, connector_id=connector_id
+                ),
                 organize_suggestions=(
                     self._organization_recommendations.count_active_for_organization(
-                        organization_id
+                        organization_id, connector_id=connector_id
                     )
                 ),
             ),

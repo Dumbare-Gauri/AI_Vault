@@ -30,8 +30,10 @@ class ObjectStorageClient:
         self._client = boto3.client(
             "s3",
             endpoint_url=settings.object_storage_endpoint_url or None,
-            aws_access_key_id=settings.object_storage_access_key,
-            aws_secret_access_key=settings.object_storage_secret_key,
+            # Empty keys mean "use the server's own AWS role" (boto3's default
+            # chain), never a blank credential.
+            aws_access_key_id=settings.object_storage_access_key or None,
+            aws_secret_access_key=settings.object_storage_secret_key or None,
             use_ssl=settings.object_storage_secure,
             config=Config(signature_version="s3v4"),
         )

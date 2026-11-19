@@ -123,8 +123,9 @@ class StorageContextService:
             provider_trash_bytes=connector.storage_trash_bytes,
             last_synced_at=connector.last_synced_at,
             operations=self._operations(connector),
-            # Zipping needs a binary upload, which the computer agent doesn't do yet.
-            can_archive=not is_local,
+            # Drive archives are built and uploaded by the Execution Engine; the
+            # computer's agent builds them on its own disk.
+            can_archive=True,
         )
 
     def _operations(self, connector: StorageConnector) -> tuple[str, ...]:

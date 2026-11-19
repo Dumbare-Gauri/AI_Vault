@@ -20,6 +20,11 @@ export type CreateItemKind = "folder" | "text" | "markdown";
 interface CreateItemDialogProps {
   kind: CreateItemKind;
   connectorId: string;
+  /** Where to create it: the folder being viewed, or — at the top of an
+   * authorized folder on this computer — that top-level folder. */
+  parentFolderId?: string | null;
+  sourceId?: string | null;
+  storageLabel?: string;
   onOpenChange: (open: boolean) => void;
 }
 
@@ -33,7 +38,14 @@ const EXTENSIONS: Record<CreateItemKind, string> = { folder: "", text: ".txt", m
 
 /** Creates the item directly in Google Drive and waits for the provider to
  * confirm it before reporting success. Mounted only while open. */
-export function CreateItemDialog({ kind, connectorId, onOpenChange }: CreateItemDialogProps) {
+export function CreateItemDialog({
+  kind,
+  connectorId,
+  parentFolderId = null,
+  sourceId = null,
+  storageLabel = "your storage",
+  onOpenChange,
+}: CreateItemDialogProps) {
   const [name, setName] = useState("");
   const [content, setContent] = useState("");
   const queryClient = useQueryClient();
@@ -52,11 +64,17 @@ export function CreateItemDialog({ kind, connectorId, onOpenChange }: CreateItem
             name: fullName,
             content,
             format: kind,
+            parent_folder_id: parentFolderId,
+            source_id: parentFolderId ? null : sourceId,
           })
-        : apiClient.post<CreatedItem>(`/v1/connectors/${connectorId}/folders`, { name: fullName }),
+        : apiClient.post<CreatedItem>(`/v1/connectors/${connectorId}/folders`, {
+            name: fullName,
+            parent_folder_id: parentFolderId,
+            source_id: parentFolderId ? null : sourceId,
+          }),
     onSuccess: (created) => {
       void queryClient.invalidateQueries({ queryKey: ["files"] });
-      toast.success(`"${created.name}" created in Google Drive — confirmed`, {
+      toast.success(`"${created.name}" created in ${storageLabel} — confirmed by the storage`, {
         action: created.web_view_link
           ? {
               label: "Open",

@@ -5,7 +5,8 @@ from app.presentation.api.v1.schemas import SearchRequest, SearchResponse, Searc
 from app.presentation.dependencies.auth import get_current_user
 from app.presentation.dependencies.rate_limit import rate_limiter
 from app.presentation.dependencies.services import get_search_service
-from vault_shared.db.models import User
+from app.presentation.dependencies.workspace import get_workspace
+from vault_shared.db.models import StorageConnector, User
 from vault_shared.search import FileQuery
 
 search_router = APIRouter(tags=["search"])
@@ -21,11 +22,14 @@ _search_rate_limit = rate_limiter("search", limit=60, window_seconds=60)
 )
 def search(
     request: SearchRequest,
+    workspace: StorageConnector = Depends(get_workspace),
     user: User = Depends(get_current_user),
     service: SearchService = Depends(get_search_service),
 ) -> SearchResponse:
     """Plain words ("python files larger than 500 MB before 2023") and/or
-    explicit filters. Every result is a real, indexed, non-trashed file."""
+    explicit filters. Every result is a real, indexed, non-trashed file
+    in the workspace's storage — the body's own `connector_id`, if any, is
+    ignored in favor of the validated workspace."""
     f = request.filters
     filters = FileQuery(
         categories=tuple(f.categories) if f else (),
@@ -35,7 +39,7 @@ def search(
         modified_after=f.modified_after if f else None,
         modified_before=f.modified_before if f else None,
         folder=f.folder if f else None,
-        connector_id=f.connector_id if f else None,
+        connector_id=str(workspace.id),
         ownership=f.ownership if f else None,
         sort=f.sort if f else "relevance",
         limit=request.limit,

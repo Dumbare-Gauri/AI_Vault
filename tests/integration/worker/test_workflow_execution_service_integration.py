@@ -4,13 +4,13 @@ from datetime import UTC, datetime, timedelta
 from urllib.parse import urlparse
 
 import pytest
+from workspace_testing import workspace_of
 from sqlalchemy.orm import Session
 
 from vault_shared import get_settings
 from vault_shared.db.models import (
     ConnectorProvider,
     DriveType,
-    ExecutionJobStatus,
     NotificationChannel,
     RoleName,
     WorkflowExecutionStatus,
@@ -160,7 +160,7 @@ def _provision_recommendation(
         triggered_by_user_id=None,
     )
     recommendation = RecommendationRepository(db).upsert(
-        organization_id=organization_id,
+        organization_id=organization_id, connector_id=workspace_of(db, organization_id).id,
         recommendation_job_id=job.id,
         rule_name=rule_name,
         category="storage_optimization",
@@ -519,7 +519,7 @@ def test_execute_action_node_is_skipped_when_no_policy_is_configured(
 
 
 @requires_infra
-def test_execute_action_node_auto_executes_via_a_published_policy(db: Session) -> None:
+def test_a_policy_cannot_auto_execute_a_removal_it_waits_for_a_person(db: Session) -> None:
     user = _provision_user(db)
     connector = _provision_connector(
         db, organization_id=user.organization_id, user_id=user.id
@@ -573,22 +573,16 @@ def test_execute_action_node_auto_executes_via_a_published_policy(db: Session) -
     service = WorkflowExecutionService(db)
     service.run(execution.id)
 
-    completed = WorkflowExecutionRepository(db).get_by_id(execution.id)
-    assert completed.status == WorkflowExecutionStatus.COMPLETED
+    paused = WorkflowExecutionRepository(db).get_by_id(execution.id)
+    assert paused.status == WorkflowExecutionStatus.PAUSED
 
     act_node_execution = next(
         ne
         for ne in WorkflowNodeExecutionRepository(db).list_for_execution(execution.id)
         if ne.workflow_node_id == nodes["act"].id
     )
-    assert act_node_execution.status == WorkflowNodeExecutionStatus.COMPLETED
-    assert act_node_execution.output_context["auto_executed"] is True
-
-    plan_id = uuid.UUID(act_node_execution.output_context["execution_plan_id"])
-    jobs = ExecutionJobRepository(db).list_for_plan(plan_id)
-    assert len(jobs) == 1
-    assert jobs[0].status == ExecutionJobStatus.PENDING
-    assert jobs[0].triggered_by_user_id is None
+    assert act_node_execution.status == WorkflowNodeExecutionStatus.WAITING_APPROVAL
+    assert ExecutionJobRepository(db).list_for_organization(user.organization_id) == []
 
 
 @requires_infra

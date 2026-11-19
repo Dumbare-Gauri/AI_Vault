@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Skeleton } from "@/components/ui/skeleton";
+import { fetchConnectors } from "@/lib/connectors";
 import { apiClient } from "@/lib/api-client";
 import { connectorStatusBadgeVariant } from "@/lib/connector-status";
 import {
@@ -20,6 +21,7 @@ import {
 import { formatBytes } from "@/lib/format-bytes";
 import { formatRelativeTime } from "@/lib/format-relative-time";
 import { useAuthStore } from "@/stores/auth-store";
+import { useCopilotPage } from "@/stores/copilot-store";
 
 export const Route = createFileRoute("/storage-connections")({
   beforeLoad: () => {
@@ -33,6 +35,7 @@ export const Route = createFileRoute("/storage-connections")({
 const UPCOMING_PROVIDERS = ["Microsoft OneDrive", "Dropbox"];
 
 function StorageConnectionsPage() {
+  useCopilotPage({ page: "connections", label: "Storage connections" });
   const queryClient = useQueryClient();
   const user = useAuthStore((state) => state.user);
   const canManage = user?.role === "owner" || user?.role === "admin";
@@ -40,7 +43,7 @@ function StorageConnectionsPage() {
 
   const connectorsQuery = useQuery({
     queryKey: ["connectors"],
-    queryFn: () => apiClient.get<Connector[]>("/v1/connectors"),
+    queryFn: fetchConnectors,
   });
 
   const connectMutation = useMutation({

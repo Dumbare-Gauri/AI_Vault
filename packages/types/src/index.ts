@@ -21,6 +21,7 @@ export type {
   ArchiveManifestEntry,
 } from "./archives";
 export type {
+  AccountDeletionResult,
   AuthSession,
   GoogleLoginRequest,
   Organization,
@@ -34,6 +35,8 @@ export type {
   CompleteConnectRequest,
   Connector,
   EmptyTrashRequest,
+  EmptyTrashStarted,
+  EmptyTrashStatus,
   InitiateConnectResponse,
   LocalAgent,
   LocalAgentKey,
@@ -41,6 +44,7 @@ export type {
   TrashSummary,
 } from "./connectors";
 export type {
+  AskPageContext,
   AskRequest,
   ActionProposalBlock,
   ActionResultBlock,
@@ -113,7 +117,13 @@ export type {
   FileIntelligenceStatus,
   FileLifecycle,
   FileLifecycleState,
+  BrowseCrumb,
+  BrowseFolder,
+  ArchiveContents,
+  ArchiveEntry,
+  ExtractedArchive,
   FileListResponse,
+  FolderListing,
   FileMetadata,
   FileSummary,
   FolderSummary,

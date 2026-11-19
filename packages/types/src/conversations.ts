@@ -4,6 +4,20 @@ import type { RetrievalMethod } from "./search";
 
 export interface AskRequest {
   question: string;
+  /** What is on screen: the page and the ids of the files on it. */
+  context?: AskPageContext;
+}
+
+export interface AskPageContext {
+  page: string;
+  label?: string;
+  /** Visible on the page. */
+  file_ids?: string[];
+  /** The folder being browsed, or a whole connected folder/drive. */
+  folder_id?: string | null;
+  source_id?: string | null;
+  /** What the user ticked — always what "these" means when present. */
+  selected_file_ids?: string[];
 }
 
 /** "tool" (ADR-024) — set on a citation/message produced by the AI Storage
@@ -129,10 +143,18 @@ export interface ActionProposalBlock {
   description: string;
   risk: "low" | "medium" | "high";
   confirm_label: string;
+  /** Every affected file can be paged through; `items` is the first page. */
   affected_count: number;
   items: AnswerFile[];
+  /** Protected files (source code, project or program files) the action leaves alone. */
+  protected_count?: number;
+  protected_items?: ProtectedAnswerFile[];
   preview: OrganizationPreview | null;
   status: "pending" | "confirmed" | "cancelled";
+}
+
+export interface ProtectedAnswerFile extends AnswerFile {
+  reasons: string[];
 }
 
 export interface ActionResultStep {
@@ -173,6 +195,8 @@ export interface ResultPage {
 export interface Conversation {
   id: string;
   title: string | null;
+  /** The storage workspace this conversation works in; null = from before workspaces (read-only). */
+  connector_id: string | null;
   created_at: string;
   updated_at: string;
 }

@@ -2,7 +2,7 @@ import uuid
 
 from sqlalchemy.orm import Session
 
-from vault_shared.db.models import DuplicateGroup, DuplicateGroupMember, File, StorageSource
+from vault_shared.db.models import DuplicateGroup, DuplicateGroupMember, File
 
 
 class DuplicateGroupRepository:
@@ -10,11 +10,13 @@ class DuplicateGroupRepository:
         self._session = session
 
     def get_by_org_and_checksum(
-        self, organization_id: uuid.UUID, checksum: str
+        self, organization_id: uuid.UUID, checksum: str, *, connector_id: uuid.UUID
     ) -> DuplicateGroup | None:
         return (
             self._session.query(DuplicateGroup)
-            .filter_by(organization_id=organization_id, checksum=checksum)
+            .filter_by(
+                organization_id=organization_id, connector_id=connector_id, checksum=checksum
+            )
             .first()
         )
 
@@ -22,6 +24,7 @@ class DuplicateGroupRepository:
         self,
         *,
         organization_id: uuid.UUID,
+        connector_id: uuid.UUID,
         storage_analysis_job_id: uuid.UUID,
         checksum: str,
         file_count: int,
@@ -31,13 +34,15 @@ class DuplicateGroupRepository:
         recommended_keep_reason: str | None,
         recommended_keep_confidence: float | None,
     ) -> DuplicateGroup:
-        """Identity key is `(organization_id, checksum)` — updated in place
-        on every rerun so the group's `id` (and any deep link to it) stays
-        stable across analyses, mirroring `Recommendation`'s
-        upsert-by-rule-name convention."""
-        group = self.get_by_org_and_checksum(organization_id, checksum)
+        """Identity key is `(organization_id, connector_id, checksum)` —
+        updated in place on every rerun so the group's `id` (and any deep
+        link to it) stays stable across analyses, mirroring
+        `Recommendation`'s upsert-by-rule-name convention."""
+        group = self.get_by_org_and_checksum(organization_id, checksum, connector_id=connector_id)
         if group is None:
-            group = DuplicateGroup(organization_id=organization_id, checksum=checksum)
+            group = DuplicateGroup(
+                organization_id=organization_id, connector_id=connector_id, checksum=checksum
+            )
             self._session.add(group)
 
         group.storage_analysis_job_id = storage_analysis_job_id
@@ -66,19 +71,20 @@ class DuplicateGroupRepository:
         self._session.flush()
 
     def delete_groups_for_organization_not_in(
-        self, organization_id: uuid.UUID, checksums_still_duplicated: set[str]
+        self,
+        organization_id: uuid.UUID,
+        still_duplicated: set[tuple[uuid.UUID, str]],
     ) -> None:
         """A checksum that no longer has ≥2 files (the last duplicate was
         removed/moved) stops being a duplicate group at all — deleted
         outright (cascades to its members), unlike `Recommendation`'s
         soft-resolve, since there's no "this used to be a duplicate"
         narrative worth keeping for storage accounting."""
-        query = self._session.query(DuplicateGroup).filter(
+        for group in self._session.query(DuplicateGroup).filter(
             DuplicateGroup.organization_id == organization_id
-        )
-        if checksums_still_duplicated:
-            query = query.filter(DuplicateGroup.checksum.notin_(checksums_still_duplicated))
-        query.delete(synchronize_session=False)
+        ):
+            if (group.connector_id, group.checksum) not in still_duplicated:
+                self._session.delete(group)
         self._session.flush()
 
     def list_for_organization(
@@ -89,20 +95,11 @@ class DuplicateGroupRepository:
         offset: int,
         connector_id: uuid.UUID | None = None,
     ) -> tuple[list[DuplicateGroup], int]:
-        """With `connector_id`, only groups that have a redundant copy in
-        that storage — the copies that storage could free."""
+        """With `connector_id`, that storage's groups — every member of a
+        group is in the group's own storage."""
         query = self._session.query(DuplicateGroup).filter_by(organization_id=organization_id)
         if connector_id is not None:
-            in_storage = (
-                self._session.query(DuplicateGroupMember.duplicate_group_id)
-                .join(File, DuplicateGroupMember.file_id == File.id)
-                .join(StorageSource, File.storage_source_id == StorageSource.id)
-                .filter(
-                    StorageSource.connector_id == connector_id,
-                    DuplicateGroupMember.is_recommended_keep.is_(False),
-                )
-            )
-            query = query.filter(DuplicateGroup.id.in_(in_storage))
+            query = query.filter(DuplicateGroup.connector_id == connector_id)
         total = query.count()
         items = (
             query.order_by(DuplicateGroup.recoverable_size_bytes.desc())
@@ -122,7 +119,7 @@ class DuplicateGroupRepository:
         )
 
     def list_recoverable_members_for_organization(
-        self, organization_id: uuid.UUID
+        self, organization_id: uuid.UUID, *, connector_id: uuid.UUID | None = None
     ) -> list[tuple[uuid.UUID, uuid.UUID, int]]:
         """`(group_id, file_id, size)` for every redundant copy — lets a
         per-storage summary count only the copies in that storage."""
@@ -137,13 +134,14 @@ class DuplicateGroupRepository:
             .filter(
                 DuplicateGroup.organization_id == organization_id,
                 DuplicateGroupMember.is_recommended_keep.is_(False),
+                *([DuplicateGroup.connector_id == connector_id] if connector_id else []),
             )
             .all()
         )
         return [(group_id, file_id, size or 0) for group_id, file_id, size in rows]
 
     def list_recoverable_file_ids_with_sizes_for_organization(
-        self, organization_id: uuid.UUID
+        self, organization_id: uuid.UUID, *, connector_id: uuid.UUID | None = None
     ) -> list[tuple[uuid.UUID, int]]:
         """Every non-keep duplicate member across all of an org's groups —
         the exact recoverable file set, read from already-persisted
@@ -158,6 +156,7 @@ class DuplicateGroupRepository:
             .filter(
                 DuplicateGroup.organization_id == organization_id,
                 DuplicateGroupMember.is_recommended_keep.is_(False),
+                *([DuplicateGroup.connector_id == connector_id] if connector_id else []),
             )
             .all()
         )

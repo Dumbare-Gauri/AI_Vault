@@ -1,7 +1,9 @@
 import { Link, useNavigate } from "@tanstack/react-router";
 import { LogOut, Menu, Search, Settings, Sparkles, User } from "lucide-react";
 
+import { WorkspaceSwitcher } from "@/components/storage-intelligence/storage-scope-switcher";
 import { useAuthStore } from "@/stores/auth-store";
+import { useCopilotStore } from "@/stores/copilot-store";
 import { useLayoutStore } from "@/stores/layout-store";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
@@ -26,6 +28,7 @@ export function Topbar({ title }: { title?: string }) {
   const logout = useAuthStore((s) => s.logout);
   const setMobileNavOpen = useLayoutStore((s) => s.setMobileNavOpen);
   const setCommandPaletteOpen = useLayoutStore((s) => s.setCommandPaletteOpen);
+  const setCopilotOpen = useCopilotStore((s) => s.setOpen);
   const navigate = useNavigate();
 
   async function handleLogout() {
@@ -60,11 +63,11 @@ export function Topbar({ title }: { title?: string }) {
         </kbd>
       </button>
 
-      <Button variant="ai" size="sm" asChild className="hidden sm:inline-flex">
-        <Link to="/chat">
-          <Sparkles className="size-4" />
-          Ask Vault
-        </Link>
+      <WorkspaceSwitcher />
+
+      <Button variant="ai" size="sm" className="hidden sm:inline-flex" onClick={() => setCopilotOpen(true)}>
+        <Sparkles className="size-4" />
+        Ask Vault
       </Button>
 
       <DropdownMenu>

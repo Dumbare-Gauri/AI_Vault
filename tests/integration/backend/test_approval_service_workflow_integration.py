@@ -4,6 +4,7 @@ from datetime import UTC, datetime, timedelta
 from urllib.parse import urlparse
 
 import pytest
+from workspace_testing import workspace_of
 from app.application.auth_service import AuthService
 from app.infrastructure.auth.google_identity import GoogleUserInfo
 from sqlalchemy.orm import Session
@@ -98,7 +99,7 @@ def _provision_plan(db: Session, *, organization_id: uuid.UUID, user_id: uuid.UU
         organization_id=organization_id, triggered_by="manual", triggered_by_user_id=None
     )
     recommendation = RecommendationRepository(db).upsert(
-        organization_id=organization_id, recommendation_job_id=job.id, rule_name="duplicate_files",
+        organization_id=organization_id, connector_id=workspace_of(db, organization_id).id, recommendation_job_id=job.id, rule_name="duplicate_files",
         category="storage_optimization", title="Duplicates found", description="test",
         confidence=0.9, estimated_impact="impact", impact_value=10.0, risk_level="low",
         suggested_action="Remove them.", related_departments=[], affected_file_ids=[],

@@ -13,6 +13,7 @@ import { archiveStatusBadgeVariant, archiveStatusLabel } from "@/lib/archive-sty
 import { formatBytes } from "@/lib/format-bytes";
 import { formatRelativeTime } from "@/lib/format-relative-time";
 import { useAuthStore } from "@/stores/auth-store";
+import { useCopilotPage } from "@/stores/copilot-store";
 
 export const Route = createFileRoute("/archives/")({
   beforeLoad: () => {
@@ -24,6 +25,7 @@ export const Route = createFileRoute("/archives/")({
 });
 
 function ArchivesPage() {
+  useCopilotPage({ page: "archives", label: "Archives" });
   const archivesQuery = useQuery({
     queryKey: ["archives"],
     queryFn: () => apiClient.get<ArchiveJob[]>("/v1/archives"),

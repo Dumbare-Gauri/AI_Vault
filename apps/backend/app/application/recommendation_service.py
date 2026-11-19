@@ -48,6 +48,7 @@ class RecommendationService:
         category: str | None = None,
         status: str | None = None,
         search: str | None = None,
+        connector_id: uuid.UUID | None = None,
     ) -> list[Recommendation]:
         exclude_categories = (
             None if role in _AUTHORIZED_FOR_SECURITY else [RecommendationCategory.SECURITY]
@@ -58,6 +59,7 @@ class RecommendationService:
             status=status,
             search=search,
             exclude_categories=exclude_categories,
+            connector_id=connector_id,
         )
 
     def get_owned(
@@ -67,11 +69,14 @@ class RecommendationService:
         organization_id: uuid.UUID,
         user_id: uuid.UUID,
         role: str,
+        connector_id: uuid.UUID | None = None,
     ) -> Recommendation:
         recommendation = self._recommendations.get_owned(
             recommendation_id, organization_id=organization_id
         )
-        if recommendation is None:
+        if recommendation is None or (
+            connector_id is not None and recommendation.connector_id != connector_id
+        ):
             raise NotFoundError("Recommendation not found.")
         is_hidden_security_item = (
             recommendation.category == RecommendationCategory.SECURITY

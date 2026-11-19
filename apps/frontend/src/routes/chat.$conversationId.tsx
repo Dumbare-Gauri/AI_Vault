@@ -1,15 +1,17 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, createFileRoute, redirect } from "@tanstack/react-router";
-import type { AskResponse, ConversationDetail, ConversationMessage } from "@vault/types";
-import { ChevronLeft, Send, Sparkles } from "lucide-react";
+import type { AskResponse, ConversationDetail } from "@vault/types";
+import { Send } from "lucide-react";
 import { useState } from "react";
 
 import { AppShell } from "@/components/app-shell/app-shell";
-import { AIResponseRenderer } from "@/components/ai-response/ai-response-renderer";
+import { MessageBubble, ThinkingBubble, UserBubble } from "@/components/ai-response/conversation-thread";
+import { storageLabel, useStorageScope } from "@/components/storage-intelligence/storage-scope-switcher";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { apiClient } from "@/lib/api-client";
 import { useAuthStore } from "@/stores/auth-store";
+import { BackLink } from "@/components/ui/back-link";
 
 export const Route = createFileRoute("/chat/$conversationId")({
   beforeLoad: () => {
@@ -19,43 +21,6 @@ export const Route = createFileRoute("/chat/$conversationId")({
   },
   component: ChatDetailPage,
 });
-
-function ThinkingBubble() {
-  return (
-    <div className="flex items-start gap-2.5">
-      <span className="mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-full bg-ai-muted text-ai">
-        <Sparkles className="size-3.5" />
-      </span>
-      <div className="flex items-center gap-1 rounded-2xl rounded-tl-sm border border-border bg-card px-4 py-3 shadow-clay-sm">
-        <span className="size-1.5 animate-bounce rounded-full bg-muted-foreground [animation-delay:-0.3s]" />
-        <span className="size-1.5 animate-bounce rounded-full bg-muted-foreground [animation-delay:-0.15s]" />
-        <span className="size-1.5 animate-bounce rounded-full bg-muted-foreground" />
-      </div>
-    </div>
-  );
-}
-
-function MessageBubble({
-  message,
-  conversationId,
-}: {
-  message: ConversationMessage;
-  conversationId: string;
-}) {
-  if (message.role === "user") {
-    return (
-      <div className="flex flex-col items-end gap-2">
-        <div className="flex max-w-[85%] flex-row-reverse items-start gap-2.5">
-          <div className="whitespace-pre-wrap rounded-2xl rounded-tr-sm bg-primary px-4 py-2.5 text-sm text-primary-foreground shadow-clay-sm">
-            {message.content}
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  return <AIResponseRenderer message={message} conversationId={conversationId} />;
-}
 
 function ChatDetailPage() {
   const { conversationId } = Route.useParams();
@@ -96,16 +61,15 @@ function ChatDetailPage() {
   }
 
   const conversation = conversationQuery.data;
+  const { connectorId, connector } = useStorageScope();
+  // A conversation works in one storage workspace; from another one it is
+  // read-only, so nothing said here can act on the wrong storage.
+  const otherWorkspace = conversation !== undefined && conversation.connector_id !== connectorId;
 
   return (
     <AppShell title="Conversation">
       <div className="mx-auto flex max-w-3xl flex-col gap-4">
-        <Link
-          to="/chat"
-          className="flex w-fit items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
-        >
-          <ChevronLeft className="size-4" /> Back to conversations
-        </Link>
+        <BackLink to="/chat">Back to conversations</BackLink>
 
         {conversationQuery.isLoading && (
           <div className="flex flex-col gap-3">
@@ -129,16 +93,24 @@ function ChatDetailPage() {
               ))}
               {pendingQuestion && (
                 <>
-                  <div className="flex flex-col items-end gap-2">
-                    <div className="max-w-[85%] rounded-2xl rounded-tr-sm bg-primary px-4 py-2.5 text-sm text-primary-foreground shadow-clay-sm">
-                      {pendingQuestion}
-                    </div>
-                  </div>
+                  <UserBubble text={pendingQuestion} />
                   <ThinkingBubble />
                 </>
               )}
             </div>
 
+            {otherWorkspace ? (
+              <p className="rounded-lg bg-secondary px-3 py-2 text-sm text-muted-foreground">
+                {conversation.connector_id
+                  ? "This conversation belongs to another storage workspace — switch to it to continue."
+                  : "This conversation is from before storage workspaces and can only be read."}{" "}
+                {connector ? (
+                  <Link to="/chat" className="underline">
+                    Start a new one in {storageLabel(connector)}
+                  </Link>
+                ) : null}
+              </p>
+            ) : (
             <form onSubmit={handleSubmit} className="sticky bottom-4 flex gap-2 pt-2">
               <textarea
                 value={question}
@@ -164,6 +136,7 @@ function ChatDetailPage() {
                 <Send className="size-4" />
               </Button>
             </form>
+            )}
             {askMutation.isError && (
               <p className="text-sm text-destructive">
                 Couldn&rsquo;t send that message. Please try again.

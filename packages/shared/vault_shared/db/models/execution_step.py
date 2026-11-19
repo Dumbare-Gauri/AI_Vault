@@ -72,8 +72,12 @@ class ExecutionStep(Base):
     )
     step_order: Mapped[int] = mapped_column(Integer, nullable=False)
     action_type: Mapped[str] = mapped_column(String(30), nullable=False)
-    target_file_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("files.id", ondelete="CASCADE"), nullable=False, index=True
+    # SET NULL, not CASCADE: when the file leaves the index (its folder is
+    # removed from the agent, say) the step — and the result, rollback record
+    # and audit trail hanging off it — must stay. `pre_state` keeps the file's
+    # identity and path for exactly that case.
+    target_file_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("files.id", ondelete="SET NULL"), nullable=True, index=True
     )
     pre_state: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     planned_change: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)

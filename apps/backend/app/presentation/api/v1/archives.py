@@ -8,7 +8,8 @@ from app.application.archive_service import ArchiveService
 from app.presentation.api.v1.schemas import ArchiveJobDetailResponse, ArchiveJobResponse
 from app.presentation.dependencies.auth import get_current_user, require_role
 from app.presentation.dependencies.services import get_archive_service
-from vault_shared.db.models import RoleName, User
+from app.presentation.dependencies.workspace import get_workspace
+from vault_shared.db.models import RoleName, StorageConnector, User
 
 archives_router = APIRouter(tags=["archives"])
 
@@ -17,10 +18,14 @@ _require_owner_or_admin = require_role(RoleName.OWNER, RoleName.ADMIN)
 
 @archives_router.get("/archives", response_model=list[ArchiveJobResponse])
 def list_archives(
+    workspace: StorageConnector = Depends(get_workspace),
     user: User = Depends(get_current_user),
     service: ArchiveService = Depends(get_archive_service),
 ) -> list[ArchiveJobResponse]:
-    archive_jobs, _total = service.list_for_organization(user.organization_id)
+    """Archives made from this storage workspace's files."""
+    archive_jobs, _total = service.list_for_organization(
+        user.organization_id, provider=workspace.provider
+    )
     return [ArchiveJobResponse.from_model(job) for job in archive_jobs]
 
 

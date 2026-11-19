@@ -3,7 +3,7 @@ from datetime import UTC, datetime
 
 from sqlalchemy.orm import Session
 
-from vault_shared.db.models import ArchiveJob, ArchiveJobStatus
+from vault_shared.db.models import ArchiveJob, ArchiveJobStatus, ExecutionPlan
 
 
 class ArchiveJobRepository:
@@ -47,9 +47,19 @@ class ArchiveJobRepository:
         )
 
     def list_for_organization(
-        self, organization_id: uuid.UUID, *, limit: int = 100, offset: int = 0
+        self,
+        organization_id: uuid.UUID,
+        *,
+        limit: int = 100,
+        offset: int = 0,
+        provider: str | None = None,
     ) -> tuple[list[ArchiveJob], int]:
+        """With `provider`, only archives made from that storage's files."""
         query = self._session.query(ArchiveJob).filter_by(organization_id=organization_id)
+        if provider is not None:
+            query = query.join(
+                ExecutionPlan, ExecutionPlan.id == ArchiveJob.execution_plan_id
+            ).filter(ExecutionPlan.target_provider == provider)
         total = query.count()
         items = query.order_by(ArchiveJob.created_at.desc()).limit(limit).offset(offset).all()
         return items, total

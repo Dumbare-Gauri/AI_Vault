@@ -95,6 +95,13 @@ class AgentService:
             "list_trash": ({"root": str}, {}, self._list_trash),
             "trash_contents": ({}, {}, self._trash_contents),
             "empty_trash": ({"confirm": bool}, {}, self._empty_trash),
+            "create_archive": (
+                {"items": list, "parent_id": str, "name": str},
+                {},
+                self._create_archive,
+            ),
+            "extract_archive": ({"id": str, "parent_id": str}, {}, self._extract_archive),
+            "archive_contents": ({"id": str}, {}, self._archive_contents),
         }
 
     def handle(self, command: dict) -> dict:
@@ -326,6 +333,48 @@ class AgentService:
         result = self.ops.restore(place.root, place.trash_id)
         return self._remember(place.root, result.entry)
 
+    def _create_archive(self, items: list, parent_id: str, name: str) -> dict:
+        """Zips files into a new archive, built and checked on this disk; the
+        files never leave the computer. Every file and the destination must
+        be in the same authorized folder."""
+        destination = self._active(parent_id)
+        resolved: list[tuple[str, str, str]] = []
+        for item in items:
+            if not isinstance(item, dict) or not isinstance(item.get("id"), str):
+                raise OperationFailed("Each archive item needs an id.")
+            arcname = item.get("arcname")
+            if not isinstance(arcname, str) or not arcname:
+                raise OperationFailed("Each archive item needs a name inside the archive.")
+            place = self._active(item["id"])
+            if place.root != destination.root:
+                raise OperationFailed("Archive files from one authorized folder at a time.")
+            resolved.append((place.relative_path, item["id"], arcname))
+        result = self.ops.create_archive(
+            destination.root, destination.relative_path, name, resolved
+        )
+        answer = self._remember(destination.root, result.entry)
+        answer["entries"] = [asdict(entry) for entry in result.entries]
+        answer["skipped"] = result.skipped
+        return answer
+
+    def _archive_contents(self, id: str) -> dict:  # noqa: A002
+        place = self._active(id)
+        return self.ops.archive_contents(place.root, place.relative_path, id)
+
+    def _extract_archive(self, id: str, parent_id: str) -> dict:
+        """Unpacks an archive into a new folder inside `parent_id`, never
+        overwriting anything and never writing outside that new folder."""
+        place = self._active(id)
+        destination = self._active(parent_id)
+        if place.root != destination.root:
+            raise OperationFailed("Extract into the same authorized folder as the archive.")
+        result = self.ops.extract_archive(
+            place.root, place.relative_path, id, destination.relative_path
+        )
+        folder = self._remember(destination.root, result.folder)["file"]
+        created = [self._remember(destination.root, entry)["file"] for entry in result.created]
+        return {"file": folder, "created": created, "skipped": result.skipped}
+
     def _permanent_delete(self, id: str, confirm: bool) -> dict:  # noqa: A002
         place = self._place(id)
         if place.trash_id is None:
@@ -340,12 +389,18 @@ class AgentService:
         if not confirm:
             raise OperationFailed("Emptying the Trash must be confirmed.")
         deleted = 0
+        failed: list[dict] = []
         for root in self.authorized.roots:
             for item in self.ops.list_trash(root):
-                self.ops.permanent_delete(root, item.trash_id, confirm=True)
+                # One locked or protected item must not stop the rest.
+                try:
+                    self.ops.permanent_delete(root, item.trash_id, confirm=True)
+                except (OperationFailed, PathRefused, OSError) as error:
+                    failed.append({"name": item.name, "reason": str(error)})
+                    continue
                 deleted += 1
         self.index = {fid: place for fid, place in self.index.items() if place.trash_id is None}
-        return {"deleted_count": deleted}
+        return {"deleted_count": deleted, "failed": failed}
 
     # -- helpers ---------------------------------------------------------------
 

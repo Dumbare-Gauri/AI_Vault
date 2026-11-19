@@ -11,6 +11,7 @@ from app.presentation.dependencies.services import (
 )
 from fastapi.testclient import TestClient
 from vault_shared import ConflictError, NotFoundError, ValidationError
+from conftest import WORKSPACE
 
 client = TestClient(app)
 
@@ -135,6 +136,7 @@ def test_create_execution_plan_runs_immediately_with_no_approval_step(
         organization_id=as_owner.organization_id,
         user_id=as_owner.id,
         require_approval=False,
+        connector_id=WORKSPACE.id,
     )
 
 
@@ -185,6 +187,7 @@ def test_owner_can_create_an_execution_plan_from_a_duplicate_group(
         organization_id=as_owner.organization_id,
         user_id=as_owner.id,
         require_approval=False,
+        connector_id=WORKSPACE.id,
     )
     fake_plan_service.create_plan.assert_not_called()
 
@@ -257,14 +260,14 @@ def test_owner_can_create_a_permanent_delete_plan(as_owner, fake_plan_service) -
 def test_create_permanent_delete_plan_runs_immediately_with_no_approval_step(
     as_owner, fake_plan_service
 ) -> None:
-    """ADR-026: permanent delete runs immediately like every other plan —
-    the frontend's own type-to-confirm dialog is the only gate before this
-    endpoint is ever called; there is no server-side approval step."""
+    """Permanent delete runs immediately once confirmed — and what the user
+    typed travels to the service, which checks it on the server."""
     file_id = uuid.uuid4()
     fake_plan_service.create_permanent_delete_plan.return_value = _FakeExecutionPlan()
 
     response = client.post(
-        "/v1/execution-plans/permanent-delete", json={"file_ids": [str(file_id)]}
+        "/v1/execution-plans/permanent-delete",
+        json={"file_ids": [str(file_id)], "confirmation": "DELETE 1 FILE"},
     )
 
     assert response.status_code == 201
@@ -272,7 +275,10 @@ def test_create_permanent_delete_plan_runs_immediately_with_no_approval_step(
         [file_id],
         organization_id=as_owner.organization_id,
         user_id=as_owner.id,
+        confirmation="DELETE 1 FILE",
         require_approval=False,
+        connector_id=WORKSPACE.id,
+        allow_protected=False,
     )
 
 

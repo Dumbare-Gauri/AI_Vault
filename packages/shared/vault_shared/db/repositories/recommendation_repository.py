@@ -23,11 +23,26 @@ class RecommendationRepository:
         )
 
     def get_by_rule(
-        self, *, organization_id: uuid.UUID, rule_name: str
+        self,
+        *,
+        organization_id: uuid.UUID,
+        rule_name: str,
+        connector_id: uuid.UUID | None = None,
     ) -> Recommendation | None:
+        """A rule fires once per storage. Without `connector_id` (the
+        Automation Engine, which works across the organization) this is the
+        highest-priority active one, never a combination of storages."""
+        query = self._session.query(Recommendation).filter_by(
+            organization_id=organization_id, rule_name=rule_name
+        )
+        if connector_id is not None:
+            return query.filter(Recommendation.connector_id == connector_id).first()
         return (
-            self._session.query(Recommendation)
-            .filter_by(organization_id=organization_id, rule_name=rule_name)
+            query.filter(
+                Recommendation.connector_id.isnot(None),
+                Recommendation.status == RecommendationStatus.ACTIVE,
+            )
+            .order_by(Recommendation.priority_score.desc())
             .first()
         )
 
@@ -35,6 +50,7 @@ class RecommendationRepository:
         self,
         *,
         organization_id: uuid.UUID,
+        connector_id: uuid.UUID,
         recommendation_job_id: uuid.UUID,
         rule_name: str,
         category: str,
@@ -58,9 +74,13 @@ class RecommendationRepository:
         what makes a rule's recommendation recomputable across runs
         instead of accumulating duplicates (Phase 7 spec: "Recomputable
         after new scans")."""
-        recommendation = self.get_by_rule(organization_id=organization_id, rule_name=rule_name)
+        recommendation = self.get_by_rule(
+            organization_id=organization_id, rule_name=rule_name, connector_id=connector_id
+        )
         if recommendation is None:
-            recommendation = Recommendation(organization_id=organization_id, rule_name=rule_name)
+            recommendation = Recommendation(
+                organization_id=organization_id, connector_id=connector_id, rule_name=rule_name
+            )
             self._session.add(recommendation)
 
         recommendation.recommendation_job_id = recommendation_job_id
@@ -81,7 +101,7 @@ class RecommendationRepository:
         return recommendation
 
     def resolve_stale(
-        self, *, organization_id: uuid.UUID, seen_rule_names: set[str]
+        self, *, organization_id: uuid.UUID, connector_id: uuid.UUID, seen_rule_names: set[str]
     ) -> None:
         """Any rule that didn't fire this run means its underlying
         condition no longer holds — mark its previously `ACTIVE`
@@ -89,6 +109,7 @@ class RecommendationRepository:
         history for trend analysis (Phase 7 spec)."""
         query = self._session.query(Recommendation).filter(
             Recommendation.organization_id == organization_id,
+            Recommendation.connector_id == connector_id,
             Recommendation.status == RecommendationStatus.ACTIVE,
         )
         if seen_rule_names:
@@ -110,8 +131,11 @@ class RecommendationRepository:
         exclude_categories: list[str] | None = None,
         limit: int = 100,
         offset: int = 0,
+        connector_id: uuid.UUID | None = None,
     ) -> list[Recommendation]:
         query = self._session.query(Recommendation).filter_by(organization_id=organization_id)
+        if connector_id is not None:
+            query = query.filter(Recommendation.connector_id == connector_id)
         if category is not None:
             query = query.filter(Recommendation.category == category)
         if status is not None:
@@ -130,9 +154,12 @@ class RecommendationRepository:
             .all()
         )
 
-    def count_active_for_organization(self, organization_id: uuid.UUID) -> int:
-        return (
-            self._session.query(Recommendation)
-            .filter_by(organization_id=organization_id, status=RecommendationStatus.ACTIVE)
-            .count()
+    def count_active_for_organization(
+        self, organization_id: uuid.UUID, *, connector_id: uuid.UUID | None = None
+    ) -> int:
+        query = self._session.query(Recommendation).filter_by(
+            organization_id=organization_id, status=RecommendationStatus.ACTIVE
         )
+        if connector_id is not None:
+            query = query.filter(Recommendation.connector_id == connector_id)
+        return query.count()

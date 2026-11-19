@@ -32,6 +32,7 @@ from vault_shared.db.repositories import (
     WorkflowVersionRepository,
 )
 from vault_shared.execution import ApprovalService, ExecutionPlanService
+from vault_shared.execution.plan_service import rule_removes_files
 from vault_shared.notifications import NotificationDispatcher, get_email_provider
 
 logger = get_logger("worker.workflow.execution_service")
@@ -382,7 +383,9 @@ class WorkflowExecutionService:
             self._node_executions.mark_failed(node_execution, error="Plan has no approval request.")
             raise ValidationError("Execution plan was created without an approval request.")
 
-        if policy.effect == WorkflowPolicyEffect.AUTO_EXECUTE:
+        # A policy may auto-run what only rearranges; anything that removes
+        # files always waits for a person, whatever the policy says.
+        if policy.effect == WorkflowPolicyEffect.AUTO_EXECUTE and not rule_removes_files(rule_name):
             try:
                 self._approval_service.auto_decide_via_policy(approval_request.id, policy=policy)
             except VaultError as exc:

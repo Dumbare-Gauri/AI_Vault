@@ -38,3 +38,12 @@ export interface AuthSession {
 export interface GoogleLoginRequest {
   id_token: string;
 }
+
+/** What deleting an account removed from AI Vault. Files in the person's
+ * own storage are never part of it. */
+export interface AccountDeletionResult {
+  connections_removed: number;
+  tokens_revoked: number;
+  files_unindexed: number;
+  cached_archives_deleted: number;
+}

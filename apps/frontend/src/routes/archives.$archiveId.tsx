@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Link, createFileRoute, redirect } from "@tanstack/react-router";
+import { createFileRoute, redirect } from "@tanstack/react-router";
 import type { ArchiveJobDetail, ExecutionPlan } from "@vault/types";
-import { Archive, ChevronLeft, Download, ExternalLink, ShieldCheck, Trash2 } from "lucide-react";
+import { Archive, Download, ExternalLink, ShieldCheck, Trash2 } from "lucide-react";
 import { useState } from "react";
 
 import { AppShell } from "@/components/app-shell/app-shell";
@@ -19,6 +19,7 @@ import { downloadFile } from "@/lib/download-file";
 import { formatBytes } from "@/lib/format-bytes";
 import { formatRelativeTime } from "@/lib/format-relative-time";
 import { useAuthStore } from "@/stores/auth-store";
+import { BackLink } from "@/components/ui/back-link";
 
 export const Route = createFileRoute("/archives/$archiveId")({
   beforeLoad: () => {
@@ -88,12 +89,7 @@ function ArchiveDetailPage() {
   return (
     <AppShell title="Archive">
       <div className="mx-auto flex max-w-3xl flex-col gap-4">
-        <Link
-          to="/archives"
-          className="flex w-fit items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
-        >
-          <ChevronLeft className="size-4" /> Back to archives
-        </Link>
+        <BackLink to="/archives">Back to archives</BackLink>
 
         {archiveQuery.isLoading && <Skeleton className="h-64 rounded-2xl" />}
         {archiveQuery.isError && <p className="text-sm text-destructive">Couldn&rsquo;t load this archive.</p>}

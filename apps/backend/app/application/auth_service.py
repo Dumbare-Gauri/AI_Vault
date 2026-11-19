@@ -49,6 +49,10 @@ class AuthService:
     def complete_google_login(
         self, *, google_user: GoogleUserInfo, ip_address: str | None
     ) -> AuthenticatedSession:
+        if not google_user.email_verified:
+            # The verifier already refuses these; checked again here so no
+            # other caller can create or enter an account on an unproven email.
+            raise UnauthorizedError("Google sign-in failed — the account's email isn't verified.")
         user = self._users.get_by_google_sub(google_user.sub)
 
         if user is None:

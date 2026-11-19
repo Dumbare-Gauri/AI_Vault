@@ -64,6 +64,10 @@ class OrganizationRecommendation(Base):
     organization_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True
     )
+    # The storage this suggestion moves files within — never more than one.
+    connector_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("storage_connectors.id", ondelete="CASCADE"), nullable=True, index=True
+    )
     kind: Mapped[str] = mapped_column(String(30), nullable=False)
     entity_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("organization_entities.id", ondelete="SET NULL"), nullable=True

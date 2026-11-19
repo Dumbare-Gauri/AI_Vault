@@ -1,6 +1,7 @@
 from fastapi import Depends
 from sqlalchemy.orm import Session
 
+from app.application.account_deletion_service import AccountDeletionService
 from app.application.action_service import ActionService
 from app.application.ai_provider_config_service import AIProviderConfigService
 from app.application.approval_service import ApprovalService
@@ -38,6 +39,7 @@ from vault_shared.connectors.google_workspace import (
     get_google_workspace_oauth_client,
 )
 from vault_shared.db.session import get_db
+from vault_shared.object_storage import ObjectStorageClient
 from vault_shared.storage import StorageAdapterRegistry
 from vault_shared.storage.default_registry import build_storage_registry
 
@@ -59,6 +61,15 @@ def get_connector_service(
     oauth_client: GoogleWorkspaceOAuthClient = Depends(get_google_workspace_oauth_client),
 ) -> ConnectorService:
     return ConnectorService(db, oauth_client=oauth_client)
+
+
+def get_account_deletion_service(
+    db: Session = Depends(get_db),
+    oauth_client: GoogleWorkspaceOAuthClient = Depends(get_google_workspace_oauth_client),
+) -> AccountDeletionService:
+    return AccountDeletionService(
+        db, oauth_client=oauth_client, object_storage=ObjectStorageClient()
+    )
 
 
 def get_scan_service(db: Session = Depends(get_db)) -> ScanService:

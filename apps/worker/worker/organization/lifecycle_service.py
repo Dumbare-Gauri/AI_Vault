@@ -66,9 +66,13 @@ class LifecycleService:
         is_duplicate_not_kept = membership is not None and not membership.is_recommended_keep
 
         relationships = self._relationships.list_for_file(file.id)
+        # Only an explicit version sequence (v1, v2…) says a newer version
+        # exists. Two files that merely share a base name — report.pdf and
+        # report.docx, index.js and index.ts — are not versions of each other.
         has_newer_version = any(
             relationship.relationship_type == RelationshipType.SEQUENTIAL_VERSION
             and relationship.file_id == file.id
+            and (relationship.metadata_ or {}).get("match_reason") == "explicit_version_sequence"
             for relationship in relationships
         )
 
