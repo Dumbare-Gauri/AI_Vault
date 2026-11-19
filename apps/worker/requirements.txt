@@ -1,6 +1,7 @@
 -e ../../packages/shared
 
-celery[redis]>=5.4,<6
+# <5.7: celery 5.4 + kombu 5.7 fails to publish tasks; 5.7 is untested here.
+celery[redis]>=5.6,<5.7
 
 # Content Extraction Framework (Phase 5) — deterministic text extraction
 # only, no AI/ML. Worker-only: the backend never extracts file content.
