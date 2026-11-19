@@ -2,9 +2,7 @@ name: CI
 
 on:
   pull_request:
-    branches: [develop, main, production]
-  push:
-    branches: [develop]
+    branches: [main, production]
   # Pushes to main and production run CI through .github/workflows/deploy.yml,
   # which deploys only if every job here passes.
   workflow_call:
