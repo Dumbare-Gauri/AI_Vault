@@ -1,0 +1,75 @@
+name: Deploy
+
+# A push to:
+#   main       -> full CI, then staging, automatically
+#   production -> full CI, then production, only after a required reviewer
+#                 approves the `production` GitHub environment
+# AWS access is short-lived (GitHub OIDC -> one IAM role per environment),
+# and each role may run only its own environment's SSM deploy document on
+# the server (infrastructure/single-server/ssm, iam). No AWS keys are stored
+# in GitHub.
+on:
+  push:
+    branches: [main, production]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+
+  # Off until the repository variable STAGING_DEPLOY_ENABLED or
+  # PRODUCTION_DEPLOY_ENABLED is set to `true` — merging this file deploys
+  # nothing until the environment and its AWS role exist.
+  deploy:
+    name: Deploy ${{ github.ref_name == 'production' && 'production' || 'staging' }}
+    needs: [ci]
+    if: >-
+      (github.ref_name == 'main' && vars.STAGING_DEPLOY_ENABLED == 'true') ||
+      (github.ref_name == 'production' && vars.PRODUCTION_DEPLOY_ENABLED == 'true')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    # Environment-scoped settings (AWS_DEPLOY_ROLE_ARN, AIVAULT_INSTANCE_ID),
+    # the branch restriction and, for production, the approval gate.
+    environment: ${{ github.ref_name == 'production' && 'production' || 'staging' }}
+    timeout-minutes: 45
+    env:
+      TARGET: ${{ github.ref_name == 'production' && 'production' || 'staging' }}
+      COMMIT_SHA: ${{ github.sha }}
+      INSTANCE_ID: ${{ vars.AIVAULT_INSTANCE_ID }}
+    steps:
+      - name: Get short-lived AWS credentials for this environment
+        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4.3.1
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ap-south-1
+          role-session-name: aivault-${{ github.run_id }}
+
+      - name: Deploy on the server and wait for the result
+        run: |
+          set -euo pipefail
+          [[ "$COMMIT_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "Bad commit SHA"; exit 1; }
+          command_id="$(aws ssm send-command \
+            --instance-ids "$INSTANCE_ID" \
+            --document-name "AIVault-Deploy-$TARGET" \
+            --parameters "CommitSha=$COMMIT_SHA" \
+            --comment "AI Vault $TARGET ${COMMIT_SHA:0:12}" \
+            --query Command.CommandId --output text)"
+          echo "SSM command: $command_id"
+          status=Pending
+          for _ in $(seq 1 180); do
+            status="$(aws ssm get-command-invocation --command-id "$command_id" \
+              --instance-id "$INSTANCE_ID" --query Status --output text 2>/dev/null || echo Pending)"
+            case "$status" in Pending|InProgress|Delayed) sleep 10 ;; *) break ;; esac
+          done
+          aws ssm get-command-invocation --command-id "$command_id" --instance-id "$INSTANCE_ID" \
+            --query '[StandardOutputContent, StandardErrorContent]' --output text || true
+          echo "Result: $status"
+          [ "$status" = "Success" ]

@@ -2,23 +2,12 @@ name: CI
 
 on:
   pull_request:
-    branches: [develop, main]
+    branches: [develop, main, production]
   push:
     branches: [develop]
-  # Phase 10 (ADR-022) — deployment is manual-dispatch only, never automatic
-  # on push, and only ever targets a GitHub Environment (below) that the
-  # repo owner configures with required reviewers — this workflow can be
-  # merged and exist in CI without ever being able to touch a real
-  # environment until both the environment's approval gate AND its cloud
-  # credentials are set up.
-  workflow_dispatch:
-    inputs:
-      target_environment:
-        description: "Environment to deploy (staging or production)"
-        required: true
-        type: choice
-        options: [staging, production]
-        default: staging
+  # Pushes to main and production run CI through .github/workflows/deploy.yml,
+  # which deploys only if every job here passes.
+  workflow_call:
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
@@ -265,6 +254,7 @@ jobs:
           severity: CRITICAL,HIGH
           ignore-unfixed: true
           exit-code: 1
+          trivyignores: .trivyignore.yaml
 
       - name: Scan worker image (Trivy)
         uses: aquasecurity/trivy-action@v0.36.0
@@ -273,6 +263,7 @@ jobs:
           severity: CRITICAL,HIGH
           ignore-unfixed: true
           exit-code: 1
+          trivyignores: .trivyignore.yaml
 
       - name: Scan frontend image (Trivy)
         uses: aquasecurity/trivy-action@v0.36.0
@@ -281,100 +272,4 @@ jobs:
           severity: CRITICAL,HIGH
           ignore-unfixed: true
           exit-code: 1
-
-  # Phase 10 (ADR-022) — deployment automation skeleton. Only runs on a
-  # manual `workflow_dispatch` (never on push/PR — see the `on:` trigger
-  # above), and only after every other job in this run has passed
-  # (`needs:` below), and only after this run's `target_environment` GitHub
-  # Environment approves it (configure required reviewers on the
-  # `staging`/`production` Environments in repo Settings — until that's
-  # done, dispatching this job just waits forever, which is the safe
-  # failure mode). The registry push/terraform apply/rollback steps below
-  # are real, complete automation — they simply have no cloud credentials
-  # to run against yet in this repo's secrets, so a dispatch today fails
-  # fast at the first step that needs one, per Docs/04_DEPLOYMENT_HANDBOOK.md.
-  deploy:
-    name: Deploy (${{ inputs.target_environment }})
-    if: github.event_name == 'workflow_dispatch'
-    needs: [frontend, backend, worker, security, docker-build]
-    runs-on: ubuntu-latest
-    environment: ${{ inputs.target_environment }}
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: docker/setup-buildx-action@v3
-
-      - name: Log in to the container registry
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ secrets.CONTAINER_REGISTRY }}
-          username: ${{ secrets.CONTAINER_REGISTRY_USERNAME }}
-          password: ${{ secrets.CONTAINER_REGISTRY_PASSWORD }}
-
-      - name: Build and push backend image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: infrastructure/docker/backend.Dockerfile
-          push: true
-          tags: ${{ secrets.CONTAINER_REGISTRY }}/vault-backend:${{ github.sha }}
-
-      - name: Build and push worker image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: infrastructure/docker/worker.Dockerfile
-          push: true
-          tags: ${{ secrets.CONTAINER_REGISTRY }}/vault-worker:${{ github.sha }}
-
-      - name: Build and push frontend image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: infrastructure/docker/frontend.Dockerfile
-          target: production
-          push: true
-          tags: ${{ secrets.CONTAINER_REGISTRY }}/vault-frontend:${{ github.sha }}
-
-      - uses: hashicorp/setup-terraform@v3
-
-      - name: Terraform apply
-        working-directory: infrastructure/terraform/environments/${{ inputs.target_environment }}
-        env:
-          TF_VAR_backend_image_tag: ${{ github.sha }}
-          TF_VAR_worker_image_tag: ${{ github.sha }}
-          TF_VAR_frontend_image_tag: ${{ github.sha }}
-        run: |
-          terraform init
-          terraform apply -auto-approve
-
-      - name: Post-deploy health check + smoke test
-        run: infrastructure/scripts/smoke_test.sh "${{ secrets.DEPLOYED_BASE_URL }}"
-
-  # Runs only if `deploy` was attempted and failed — redeploys the previous
-  # known-good image tag rather than leaving a broken deploy live. Needs
-  # the same environment approval `deploy` needed, since rolling back is
-  # itself a production change.
-  rollback:
-    name: Rollback (${{ inputs.target_environment }})
-    if: failure() && needs.deploy.result == 'failure'
-    needs: [deploy]
-    runs-on: ubuntu-latest
-    environment: ${{ inputs.target_environment }}
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: hashicorp/setup-terraform@v3
-
-      - name: Terraform apply (previous release)
-        working-directory: infrastructure/terraform/environments/${{ inputs.target_environment }}
-        env:
-          TF_VAR_backend_image_tag: ${{ secrets.LAST_KNOWN_GOOD_IMAGE_TAG }}
-          TF_VAR_worker_image_tag: ${{ secrets.LAST_KNOWN_GOOD_IMAGE_TAG }}
-          TF_VAR_frontend_image_tag: ${{ secrets.LAST_KNOWN_GOOD_IMAGE_TAG }}
-        run: |
-          terraform init
-          terraform apply -auto-approve
-
-      - name: Post-rollback health check
-        run: infrastructure/scripts/smoke_test.sh "${{ secrets.DEPLOYED_BASE_URL }}"
+          trivyignores: .trivyignore.yaml

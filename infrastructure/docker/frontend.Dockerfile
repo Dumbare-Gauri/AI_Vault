@@ -26,14 +26,27 @@ CMD ["pnpm", "dev", "--", "--host", "0.0.0.0"]
 # ---- production build ----
 FROM base AS build
 
+# Empty API base = same origin: the app calls `/v1/...` on whatever address
+# it is served from, so moving from an IP to a domain needs no rebuild.
+ARG VITE_API_BASE_URL=""
+# The environment's own Google OAuth client (staging and production differ).
+ARG VITE_GOOGLE_CLIENT_ID=""
+ENV VITE_API_BASE_URL=$VITE_API_BASE_URL \
+    VITE_GOOGLE_CLIENT_ID=$VITE_GOOGLE_CLIENT_ID
+
 RUN pnpm --filter @vault/frontend build
 
 # ---- production (static file server) ----
-FROM nginx:1.27-alpine AS production
+FROM nginx:1.30-alpine AS production
+
+RUN apk upgrade --no-cache
 
 COPY --from=build /workspace/apps/frontend/dist /usr/share/nginx/html
+# Rendered at start-up from the container's environment (nginx's
+# /etc/nginx/templates mechanism): routes /v1 to the API on the same origin.
+COPY infrastructure/single-server/nginx/default.conf.template /etc/nginx/templates/default.conf.template
 
 EXPOSE 80
 
 HEALTHCHECK --interval=10s --timeout=3s --start-period=5s --retries=5 \
-    CMD wget -qO- http://localhost:80 || exit 1
+    CMD wget -qO- --header "X-Origin-Verify: ${ORIGIN_VERIFY_SECRET}" http://127.0.0.1:80/ || exit 1
