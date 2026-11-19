@@ -38,7 +38,12 @@ class DuplicateGroup(Base):
 
     __tablename__ = "duplicate_groups"
     __table_args__ = (
-        UniqueConstraint("organization_id", "checksum", name="uq_duplicate_group_org_checksum"),
+        UniqueConstraint(
+            "organization_id",
+            "connector_id",
+            "checksum",
+            name="uq_duplicate_group_org_checksum",
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -46,6 +51,11 @@ class DuplicateGroup(Base):
     )
     organization_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    # Duplicates are found within one storage: a Drive file and a local file
+    # are separate copies in separate places, never one group.
+    connector_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("storage_connectors.id", ondelete="CASCADE"), nullable=True, index=True
     )
     storage_analysis_job_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("storage_analysis_jobs.id", ondelete="SET NULL"), nullable=True

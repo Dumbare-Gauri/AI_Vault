@@ -7,8 +7,10 @@ from sqlalchemy.orm import Session
 from vault_shared.db.models import File, FileLifecycle, StorageConnector, StorageSource
 
 
-def _organization_files(organization_id: uuid.UUID) -> Select[uuid.UUID]:
-    return (
+def _organization_files(
+    organization_id: uuid.UUID, connector_id: uuid.UUID | None = None
+) -> Select[uuid.UUID]:
+    query = (
         select(File.id)
         .join(StorageSource, StorageSource.id == File.storage_source_id)
         .join(StorageConnector, StorageConnector.id == StorageSource.connector_id)
@@ -18,6 +20,9 @@ def _organization_files(organization_id: uuid.UUID) -> Select[uuid.UUID]:
             File.permanently_deleted_at.is_(None),
         )
     )
+    if connector_id is not None:
+        query = query.where(StorageConnector.id == connector_id)
+    return query
 
 
 class FileLifecycleRepository:
@@ -52,10 +57,12 @@ class FileLifecycleRepository:
         self._session.flush()
         return lifecycle
 
-    def count_states_for_organization(self, organization_id: uuid.UUID) -> dict[str, int]:
+    def count_states_for_organization(
+        self, organization_id: uuid.UUID, *, connector_id: uuid.UUID | None = None
+    ) -> dict[str, int]:
         rows = self._session.execute(
             select(FileLifecycle.state, func.count())
-            .where(FileLifecycle.file_id.in_(_organization_files(organization_id)))
+            .where(FileLifecycle.file_id.in_(_organization_files(organization_id, connector_id)))
             .group_by(FileLifecycle.state)
         ).all()
         return {state: count for state, count in rows}

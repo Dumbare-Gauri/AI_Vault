@@ -11,12 +11,20 @@ import os
 import shutil
 import stat
 import uuid
-from dataclasses import dataclass
+import zipfile
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
-from aivault_agent.safety import AuthorizedRoots, PathRefused
-from aivault_agent.scanner import TRASH_DIR, Entry, _cluster_size, _sha256, describe, identity
+from aivault_agent.safety import AuthorizedRoots, PathRefused, misread_by_windows
+from aivault_agent.scanner import (
+    TRASH_DIR,
+    Entry,
+    _cluster_size,
+    _sha256,
+    describe,
+    identity,
+)
 
 
 class OperationFailed(Exception):
@@ -27,6 +35,57 @@ class OperationFailed(Exception):
 class OperationResult:
     entry: Entry | None
     trash_id: str | None = None
+
+
+# Already-compressed content gains nothing from deflate; it is stored as is.
+_STORED_EXTENSIONS = frozenset(
+    {
+        "zip", "7z", "rar", "gz", "tgz", "bz2", "xz", "zst", "jpg", "jpeg", "png", "gif",
+        "webp", "heic", "avif", "mp4", "mov", "mkv", "webm", "avi", "m4v", "mp3", "m4a",
+        "aac", "ogg", "flac", "opus", "docx", "xlsx", "pptx", "pdf", "jar", "apk",
+    }
+)  # fmt: skip
+_CHUNK = 1024 * 1024
+# Kept free on the disk after an archive is written or unpacked, so archiving
+# never fills the disk the user's system and apps run from.
+SPACE_RESERVE_BYTES = 512 * 1024 * 1024
+
+
+def _require_space(folder: Path, needed: int, *, what: str) -> None:
+    free = shutil.disk_usage(folder).free
+    if needed + SPACE_RESERVE_BYTES > free:
+        raise OperationFailed(
+            f"Not enough free space on this disk to {what}: it needs about "
+            f"{_megabytes(needed)} and {_megabytes(max(free - SPACE_RESERVE_BYTES, 0))} is "
+            "available. Free up space or choose fewer files."
+        )
+
+
+def _megabytes(size: int) -> str:
+    return f"{size / 1024**3:.1f} GB" if size >= 1024**3 else f"{size / 1024**2:.0f} MB"
+
+
+@dataclass(frozen=True)
+class ArchiveEntry:
+    file_id: str
+    arcname: str
+    size_bytes: int
+    compressed_bytes: int
+    stored: bool
+
+
+@dataclass
+class ArchiveResult:
+    entry: Entry
+    entries: list[ArchiveEntry] = field(default_factory=list)
+    skipped: list[dict] = field(default_factory=list)
+
+
+@dataclass
+class ExtractResult:
+    folder: Entry
+    created: list[Entry] = field(default_factory=list)
+    skipped: list[dict] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -171,6 +230,182 @@ class LocalOperations:
             raise OperationFailed(f"{relative} does not exist.")
         return self._describe(real_root, path)
 
+    # -- archives -----------------------------------------------------------
+
+    def create_archive(
+        self, root: Path, folder: str, name: str, items: list[tuple[str, str, str]]
+    ) -> ArchiveResult:
+        """Zips `items` - `(relative_path, file_id, name_in_archive)` - into
+        a new archive in `folder`. It is written under a temporary name
+        first; every entry is then read back and checked against its CRC,
+        and only a sound archive is moved into place. A broken one is
+        removed and nothing else on disk changes. Never overwrites."""
+        real_root, destination = self._folder(root, folder)
+        if not name.lower().endswith(".zip"):
+            raise OperationFailed("An archive's name must end in .zip.")
+        target = self._new_path(destination, name)
+        partial = self._new_path(destination, f"{name}.partial")
+        _require_space(
+            destination, self._total_size(real_root, items), what="write this archive"
+        )
+        entries: list[ArchiveEntry] = []
+        skipped: list[dict] = []
+        used: set[str] = set()
+        try:
+            with zipfile.ZipFile(partial, "w", compresslevel=9) as archive:
+                for relative, file_id, arcname in items:
+                    added = self._add_to_archive(archive, root, relative, file_id, arcname, used)
+                    if isinstance(added, ArchiveEntry):
+                        entries.append(added)
+                    else:
+                        skipped.append({"file_id": file_id, "reason": added})
+            if not entries:
+                raise OperationFailed("None of the selected files could be added to the archive.")
+            with zipfile.ZipFile(partial) as check:
+                broken = check.testzip()
+                if broken is not None or len(check.infolist()) != len(entries):
+                    raise OperationFailed(f"The archive failed its integrity check ({broken}).")
+            os.rename(partial, target)
+        except BaseException:
+            if os.path.lexists(partial):
+                partial.unlink()
+            raise
+        return ArchiveResult(
+            entry=self._describe(real_root, target, with_hash=True),
+            entries=entries,
+            skipped=skipped,
+        )
+
+    @staticmethod
+    def _total_size(real_root: Path, items: list[tuple[str, str, str]]) -> int:
+        """At most what the archive can take up: deflate only shrinks."""
+        total = 0
+        for relative, _, _ in items:
+            try:
+                total += os.stat(real_root / relative, follow_symlinks=False).st_size
+            except OSError:
+                continue
+        return total
+
+    def _add_to_archive(
+        self,
+        archive: zipfile.ZipFile,
+        root: Path,
+        relative: str,
+        file_id: str,
+        arcname: str,
+        used: set[str],
+    ) -> ArchiveEntry | str:
+        """The entry written, or why this file was left out."""
+        try:
+            _, source = self._existing(root, relative, file_id)
+        except (OperationFailed, PathRefused) as error:
+            return str(error)
+        if source.is_dir():
+            return "A folder is archived through its files."
+        clean = _safe_arcname(arcname)
+        if clean is None or clean in used:
+            return f"Unusable name inside the archive: {arcname}"
+        used.add(clean)
+        stored = clean.rsplit(".", 1)[-1].lower() in _STORED_EXTENSIONS
+        info = zipfile.ZipInfo.from_file(source, clean)
+        info.compress_type = zipfile.ZIP_STORED if stored else zipfile.ZIP_DEFLATED
+        with open(source, "rb") as reader, archive.open(info, "w", force_zip64=True) as writer:
+            while chunk := reader.read(_CHUNK):
+                writer.write(chunk)
+        written = archive.getinfo(clean)
+        return ArchiveEntry(
+            file_id=file_id,
+            arcname=clean,
+            size_bytes=written.file_size,
+            compressed_bytes=written.compress_size,
+            stored=stored,
+        )
+
+    def archive_contents(self, root: Path, relative: str, file_id: str) -> dict:
+        """What an archive holds, read from its index — nothing is unpacked
+        or written. Entries that would escape their folder are flagged."""
+        _, path = self._existing(root, relative, file_id)
+        try:
+            with zipfile.ZipFile(path) as archive:
+                return describe_members(archive.infolist(), safe_name=_safe_arcname)
+        except zipfile.BadZipFile as error:
+            raise OperationFailed("That file isn't a readable zip archive.") from error
+
+    def extract_archive(
+        self, root: Path, relative: str, file_id: str, folder: str
+    ) -> ExtractResult:
+        """Unpacks an archive into a new folder, named after the archive,
+        inside `folder`. Every name is checked first: nothing absolute, no
+        `..`, nothing Windows would read as another name - such an entry is
+        skipped, never written outside the new folder. Never overwrites."""
+        real_root, archive_path = self._existing(root, relative, file_id)
+        _, destination = self._folder(root, folder)
+        stem = archive_path.name
+        if stem.lower().endswith(".zip"):
+            stem = stem[:-4]
+        try:
+            with zipfile.ZipFile(archive_path) as archive:
+                _require_space(
+                    destination,
+                    sum(member.file_size for member in archive.infolist()),
+                    what="unpack this archive",
+                )
+        except zipfile.BadZipFile as error:
+            raise OperationFailed("That file isn't a readable zip archive.") from error
+        target = self._unused_folder(destination, stem)
+        target.mkdir()
+        result = ExtractResult(folder=self._describe(real_root, target))
+        try:
+            with zipfile.ZipFile(archive_path) as archive:
+                for member in archive.infolist():
+                    self._extract_member(archive, member, real_root, target, result)
+        except zipfile.BadZipFile as error:
+            raise OperationFailed("That file isn't a readable zip archive.") from error
+        return result
+
+    def _extract_member(
+        self,
+        archive: zipfile.ZipFile,
+        member: zipfile.ZipInfo,
+        real_root: Path,
+        target: Path,
+        result: ExtractResult,
+    ) -> None:
+        clean = _safe_arcname(member.filename.rstrip("/"))
+        if clean is None:
+            result.skipped.append({"name": member.filename, "reason": "Unsafe path"})
+            return
+        parts = clean.split("/")
+        directory = target
+        for part in parts[:-1] if not member.is_dir() else parts:
+            directory = self.roots.check(directory / part, for_change=True)
+            if not directory.exists():
+                directory.mkdir()
+                result.created.append(self._describe(real_root, directory))
+        if member.is_dir():
+            return
+        out = self.roots.check(directory / parts[-1], for_change=True)
+        if os.path.lexists(out):
+            result.skipped.append({"name": clean, "reason": "Already exists"})
+            return
+        with archive.open(member) as reader, open(out, "xb") as writer:
+            shutil.copyfileobj(reader, writer, _CHUNK)
+        if os.stat(out).st_size != member.file_size:
+            raise OperationFailed(f"{clean} did not extract completely.")
+        result.created.append(self._describe(real_root, out))
+
+    def _unused_folder(self, folder: Path, name: str) -> Path:
+        candidate = self._new_path_name(folder, name)
+        number = 2
+        while os.path.lexists(candidate):
+            candidate = self._new_path_name(folder, f"{name} ({number})")
+            number += 1
+        return candidate
+
+    def _new_path_name(self, folder: Path, name: str) -> Path:
+        return self.roots.check(folder / self.roots.check_new_name(name), for_change=True)
+
     # -- helpers -------------------------------------------------------------
 
     def _folder(self, root: Path, relative: str) -> tuple[Path, Path]:
@@ -254,3 +489,43 @@ def _remove_tree(path: Path, device: int) -> None:
     for child in os.scandir(path):
         _remove_tree(Path(child.path), device)
     os.rmdir(path)
+
+
+MAX_LISTED_ENTRIES = 5000
+
+
+def describe_members(members: list[zipfile.ZipInfo], *, safe_name) -> dict:  # noqa: ANN001
+    """An archive's index as plain data: every entry is counted, the first
+    `MAX_LISTED_ENTRIES` are listed, and unsafe paths are flagged."""
+    entries = [
+        {
+            "name": member.filename,
+            "size_bytes": member.file_size,
+            "compressed_bytes": member.compress_size,
+            "is_folder": member.is_dir(),
+            "safe": safe_name(member.filename.rstrip("/")) is not None,
+        }
+        for member in members
+    ]
+    return {
+        "entries": entries[:MAX_LISTED_ENTRIES],
+        "entry_count": len(entries),
+        "file_count": sum(1 for entry in entries if not entry["is_folder"]),
+        "total_bytes": sum(entry["size_bytes"] for entry in entries),
+        "unsafe_count": sum(1 for entry in entries if not entry["safe"]),
+    }
+
+
+def _safe_arcname(name: str) -> str | None:
+    """A name inside an archive that stays inside wherever it is unpacked:
+    relative, forward slashes, no `.`/`..` parts, no drive letters, nothing
+    Windows would read as another name. None if it can't be made so."""
+    if name.startswith(("/", "\\")):
+        return None
+    parts = [part for part in name.replace("\\", "/").split("/") if part not in ("", ".")]
+    if not parts or ":" in parts[0]:
+        return None
+    for part in parts:
+        if part == ".." or misread_by_windows(part) or any(ord(ch) < 32 for ch in part):
+            return None
+    return "/".join(parts)

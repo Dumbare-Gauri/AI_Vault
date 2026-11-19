@@ -20,6 +20,59 @@ export interface FileListResponse {
   total: number;
 }
 
+export interface BrowseCrumb {
+  label: string;
+  source_id: string | null;
+  folder_id: string | null;
+}
+
+/** A folder inside the one being browsed. A top-level folder of the storage
+ * (an authorized folder on this computer) has `source_id` and no `id`. */
+export interface BrowseFolder {
+  id: string | null;
+  source_id: string;
+  provider_file_id: string | null;
+  name: string;
+  path: string;
+  provider_modified_at?: string | null;
+}
+
+/** One folder of a storage, as the storage arranges it. */
+export interface FolderListing {
+  breadcrumbs: BrowseCrumb[];
+  folders: BrowseFolder[];
+  files: FileSummary[];
+  total_files: number;
+  source_id: string | null;
+  folder_id: string | null;
+}
+
+export interface ArchiveEntry {
+  name: string;
+  size_bytes: number;
+  compressed_bytes: number;
+  is_folder: boolean;
+  /** False when the path would land outside its folder on extraction. */
+  safe: boolean;
+}
+
+/** What a zip holds; `entries` lists at most 5,000, the counts cover all. */
+export interface ArchiveContents {
+  entries: ArchiveEntry[];
+  entry_count: number;
+  file_count: number;
+  total_bytes: number;
+  unsafe_count: number;
+}
+
+export interface ExtractedArchive {
+  id: string;
+  name: string;
+  path: string;
+  file_count: number;
+  skipped: { name?: string; reason?: string }[];
+}
+
 /** Backs the Files browser's "Move to folder" picker.
  * `provider_file_id` is Drive's own id — the value a move plan's
  * `new_parent_id` must carry, not this platform's `id`. */

@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 from urllib.parse import urlparse
 
 import pytest
+from workspace_testing import workspace_of
 from sqlalchemy.orm import Session
 
 from app.application.auth_service import AuthService
@@ -147,7 +148,7 @@ def test_search_finds_a_file_by_name_substring(db: Session) -> None:
     )
     service = SearchService(db, ai_gateway=gateway)
 
-    results = service.search("Board Deck", organization_id=user.organization_id, user_id=user.id)
+    results = service.search("Board Deck", organization_id=user.organization_id, user_id=user.id, connector_id=workspace_of(db, user.organization_id).id)
 
     assert len(results) == 1
     assert results[0].retrieval_method == "metadata"
@@ -191,7 +192,7 @@ def test_search_ranks_semantic_matches_by_similarity(db: Session) -> None:
     results = service.search(
         "content that means the same thing",
         organization_id=user.organization_id,
-        user_id=user.id,
+        user_id=user.id, connector_id=workspace_of(db, user.organization_id).id,
     )
 
     assert [r.file.id for r in results] == [aligned.id]
@@ -238,7 +239,7 @@ def test_search_marks_a_file_found_by_both_methods(db: Session) -> None:
     )
     service = SearchService(db, ai_gateway=gateway)
 
-    results = service.search("Alpha", organization_id=user.organization_id, user_id=user.id)
+    results = service.search("Alpha", organization_id=user.organization_id, user_id=user.id, connector_id=workspace_of(db, user.organization_id).id)
 
     assert len(results) == 1
     assert results[0].retrieval_method == "both"
@@ -343,7 +344,7 @@ def test_search_never_returns_another_organizations_files(db: Session) -> None:
     service = SearchService(db, ai_gateway=gateway)
 
     results = service.search(
-        "Confidential Salary Data", organization_id=user.organization_id, user_id=user.id
+        "Confidential Salary Data", organization_id=user.organization_id, user_id=user.id, connector_id=workspace_of(db, user.organization_id).id
     )
 
     assert results == []

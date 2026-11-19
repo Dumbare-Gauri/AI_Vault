@@ -1,7 +1,9 @@
 import uuid
+from datetime import UTC, datetime
 from unittest.mock import MagicMock
 
 import pytest
+from workspace_testing import workspace_of
 from sqlalchemy.orm import Session
 from test_execution_service_integration import (
     _provision_connector,
@@ -12,10 +14,17 @@ from test_execution_service_integration import (
 
 from app.application.action_service import ActionService
 from vault_shared import NotFoundError
-from vault_shared.db.models import ExecutionActionType, ExecutionPlanStatus
+from vault_shared.db.models import (
+    ExecutionActionType,
+    ExecutionPlanStatus,
+    ExecutionResultStatus,
+    VerificationStatus,
+)
 from vault_shared.db.repositories import (
     ArchiveJobRepository,
+    ExecutionJobRepository,
     ExecutionPlanRepository,
+    ExecutionResultRepository,
     ExecutionStepRepository,
 )
 from vault_shared.db.session import get_session_factory
@@ -59,12 +68,29 @@ def _service(db: Session) -> ActionService:
 
 
 def _finish(db: Session, plan, *, failed_file_ids: set[uuid.UUID] = frozenset()) -> None:
+    """What the engine records: each step's outcome, and for a completed
+    one the provider's confirmation."""
     steps = ExecutionStepRepository(db)
+    job = ExecutionJobRepository(db).create(
+        execution_plan_id=plan.id, organization_id=plan.organization_id, triggered_by_user_id=None
+    )
     for step in steps.list_for_plan(plan.id):
-        if step.target_file_id in failed_file_ids:
+        failed = step.target_file_id in failed_file_ids
+        if failed:
             steps.mark_failed(step)
         else:
             steps.mark_completed(step)
+        ExecutionResultRepository(db).create(
+            execution_job_id=job.id,
+            execution_step_id=step.id,
+            status=ExecutionResultStatus.FAILED if failed else ExecutionResultStatus.SUCCESS,
+            verification_status=(
+                VerificationStatus.SKIPPED if failed else VerificationStatus.VERIFIED
+            ),
+            error="Drive refused the change." if failed else None,
+            executed_at=datetime.now(UTC),
+            verified_at=None if failed else datetime.now(UTC),
+        )
     status = (
         ExecutionPlanStatus.PARTIALLY_COMPLETED
         if failed_file_ids
@@ -116,16 +142,18 @@ def test_another_organizations_action_is_not_found(db: Session) -> None:
 
 
 @requires_infra
-def test_activity_skips_an_action_whose_files_no_longer_exist(db: Session) -> None:
+def test_activity_keeps_an_action_whose_files_left_the_index(db: Session) -> None:
+    """What was done to files stays on record after the files leave the
+    index (a rescan, a folder removed from the agent) — migration 0029."""
     user, files, plan = _trash_plan(db)
     _finish(db, plan)
     for file in files:
         db.delete(file)
     db.commit()
 
-    activity = _service(db).recent_activity(user.organization_id)
+    activity = _service(db).recent_activity(user.organization_id, workspace=workspace_of(db, user.organization_id))
 
-    assert str(plan.id) not in {item.id for item in activity}
+    assert str(plan.id) in {item.id for item in activity}
 
 
 @requires_infra
@@ -158,5 +186,6 @@ def test_an_archive_that_kept_originals_says_where_the_zip_went(db: Session) -> 
     action = _service(db).get(plan.id, organization_id=user.organization_id)
 
     assert action.message == (
-        "1 file zipped into 'AI Vault Archive/2026' in Google Drive — originals kept where they were"
+        "1 file zipped into 'a.zip' in 'AI Vault Archive/2026' in Google Drive — verified, "
+        "originals kept where they were"
     )

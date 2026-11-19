@@ -250,6 +250,14 @@ class IntelligenceService:
             result = self._ai_gateway.complete(messages=messages, context=None, max_tokens=1024)
             parsed = parse_response(result.text)
         except IntelligenceParseError as exc:
+            previous = self._intelligence.get_by_file_id(file.id)
+            if previous is not None and previous.status == IntelligenceStatus.SUCCESS:
+                # One bad answer must not erase a good earlier analysis: keep
+                # it, note the failed attempt, and leave the file pending so
+                # the next run tries again.
+                previous.error = str(exc)[:2048]
+                self._db.flush()
+                return
             # An unusable response is an anticipated, structured outcome —
             # same treatment `ContentExtractionService` gives an unreadable
             # PDF (`FileExtraction.status = FAILED`, not a raised

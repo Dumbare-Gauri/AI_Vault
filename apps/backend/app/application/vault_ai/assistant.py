@@ -25,10 +25,12 @@ from app.application.vault_ai.understanding import Request
 from vault_shared.db.models import ConnectorProvider, File, StorageConnector
 from vault_shared.db.repositories import DuplicateGroupRepository, FileRepository, FolderRepository
 from vault_shared.formatting import human_bytes
+from vault_shared.protection import AssetProtection, ProtectedFile, describe
 from vault_shared.search.file_query import FILE_CATEGORIES, FileQuery
 
 _ALL = b.MAX_RESULT_IDS
 _MAX_PENDING = 10
+_MAX_ORGANIZE = 500
 _MAX_HISTORY = 20
 _ALREADY_COMPRESSED = frozenset(
     {"mp4", "mov", "mkv", "webm", "avi", "m4v", "jpg", "jpeg", "png", "gif", "webp", "heic",
@@ -58,6 +60,43 @@ _TYPE_WORDS = {
     "code": "code files",
     "document": "documents",
 }
+
+
+@dataclass(frozen=True)
+class Place:
+    """Where the user is when they ask, validated against the workspace by
+    the caller: a folder (or a whole connected folder/drive), and the files
+    they selected there. Recomputed every turn — never carried over from an
+    earlier screen."""
+
+    key: str = ""
+    label: str | None = None
+    source_id: uuid.UUID | None = None
+    folder_id: uuid.UUID | None = None
+    folder_path: str | None = None
+    selected_ids: tuple[uuid.UUID, ...] = ()
+
+    @classmethod
+    def from_state(cls, here: dict[str, Any] | None) -> "Place":
+        if not here:
+            return cls()
+        return cls(
+            key=here.get("key") or "",
+            label=here.get("label"),
+            source_id=uuid.UUID(here["source_id"]) if here.get("source_id") else None,
+            folder_id=uuid.UUID(here["folder_id"]) if here.get("folder_id") else None,
+            folder_path=here.get("folder_path"),
+            selected_ids=tuple(uuid.UUID(i) for i in here.get("selected_ids") or []),
+        )
+
+    def holds(self, file: File) -> bool:
+        if self.source_id is None:
+            return True
+        if file.storage_source_id != self.source_id:
+            return False
+        if not self.folder_path:
+            return True
+        return (file.path or "").startswith(self.folder_path.rstrip("/") + "/")
 
 
 @dataclass
@@ -92,13 +131,18 @@ class VaultAssistant:
         *,
         organization_id: uuid.UUID,
         user_id: uuid.UUID,
+        workspace: StorageConnector,
         search: SearchService,
         storage_context: StorageContextService,
         reasoning: ModelReasoning | None,
     ) -> None:
+        """`workspace` is the one connected storage this assistant works
+        in — validated by the caller against the organization. Nothing from
+        another storage is ever listed, counted or acted on here."""
         self._db = db
         self._org = organization_id
         self._user = user_id
+        self._workspace = workspace
         self._search = search
         self._context = storage_context
         self._reasoning = reasoning
@@ -106,18 +150,34 @@ class VaultAssistant:
         self._folders = FolderRepository(db)
         self._duplicate_repo = DuplicateGroupRepository(db)
         self._intelligence = StorageIntelligenceService(db)
-        self._connected = storage_context.connected(organization_id)
-        self._owners = storage_context.source_owners(organization_id)
-        self._facts = {f.connector_id: f for f in storage_context.facts(organization_id)}
+        self._protection = AssetProtection(db)
+        self._connected = [
+            c for c in storage_context.connected(organization_id) if c.id == workspace.id
+        ]
+        self._owners = {
+            source_id: connector
+            for source_id, connector in storage_context.source_owners(organization_id).items()
+            if connector.id == workspace.id
+        }
+        self._facts = {
+            f.connector_id: f
+            for f in storage_context.facts(organization_id)
+            if f.connector_id == workspace.id
+        }
 
     # -- entry point ---------------------------------------------------------------
 
     def handle(self, request: Request, state: dict[str, Any]) -> Reply:
         state = dict(state)
+        place = Place.from_state(state.get("here"))
+        self._place = place
+        # "everywhere" widens the folder to the whole storage; a selection
+        # still counts — it is what the user explicitly picked.
+        self._narrowed = place.source_id is not None and not request.everywhere
         if not self._connected:
             return Reply(
-                "No storage is connected yet. Connect Google Drive or this computer on "
-                "Storage Connections, and I'll be able to answer from your files.",
+                f"{self._workspace_name()} isn't connected right now. Reconnect it on Storage "
+                "Connections, and I'll be able to answer from its files.",
                 state=state,
             )
         scoped = self._scope(request)
@@ -130,24 +190,52 @@ class VaultAssistant:
 
     # -- scope and helpers -----------------------------------------------------------
 
-    def _scope(self, request: Request) -> StorageConnector | None | Reply:
-        if request.scope is None:
-            return None
-        local = request.scope == "local"
-        match = next(
-            (c for c in self._connected if (c.provider == ConnectorProvider.LOCAL_AGENT) == local),
-            None,
-        )
-        if match is None:
-            where = "this computer" if local else "a cloud storage"
-            return Reply(f"I can't look there yet — {where} isn't connected.")
-        return match
+    def _workspace_name(self) -> str:
+        if self._workspace.provider == ConnectorProvider.LOCAL_AGENT:
+            return "This computer"
+        return "Google Drive"
+
+    def _scope(self, request: Request) -> StorageConnector | Reply:
+        """Always the workspace. A request naming the *other* storage ("on
+        my computer" while in Google Drive) is answered with where the user
+        is, never by quietly reaching into the other storage."""
+        workspace_is_local = self._workspace.provider == ConnectorProvider.LOCAL_AGENT
+        if request.scope is not None and (request.scope == "local") != workspace_is_local:
+            other = "This computer" if request.scope == "local" else "Google Drive"
+            return Reply(
+                f"You're working in {self._workspace_name()}. {other} is a separate workspace — "
+                "switch to it to work with its files. I never mix files from the two."
+            )
+        return self._workspace
 
     def _label(self, connector: StorageConnector | None) -> str:
         if connector is None:
             return "all your storage"
         facts = self._facts.get(connector.id)
         return facts.label if facts else "your storage"
+
+    def _where(self, scope: StorageConnector | None) -> str:
+        """Where an answer looked — the folder on screen, unless widened."""
+        if self._narrowed and self._place.label:
+            return self._place.label
+        return self._label(scope)
+
+    def _here(self, files: list[File]) -> list[File]:
+        """Only the files in the place the user is working in."""
+        if not self._narrowed:
+            return files
+        return [file for file in files if self._place.holds(file)]
+
+    def _place_files(self) -> list[File]:
+        place = self._place
+        if place.source_id is None:
+            return []
+        if place.folder_path:
+            return self._files.list_under_folder(place.source_id, place.folder_path)
+        return self._files.list_for_source(place.source_id)
+
+    def _selected(self) -> list[File]:
+        return self._owned(list(self._place.selected_ids))
 
     def _item(self, file: File) -> dict[str, Any]:
         connector = self._owners.get(file.storage_source_id)
@@ -180,11 +268,15 @@ class VaultAssistant:
         state["last_result"] = {
             "label": label,
             "file_ids": [str(f.id) for f in files[: b.MAX_RESULT_IDS]],
+            # "them" only means these while the user stays on this screen.
+            "place": self._place.key,
         }
 
     def _previous(self, state: dict[str, Any]) -> list[File]:
-        ids = (state.get("last_result") or {}).get("file_ids") or []
-        return self._owned([uuid.UUID(i) for i in ids])
+        last = state.get("last_result") or {}
+        if last.get("place", "") != self._place.key:
+            return []
+        return self._owned([uuid.UUID(i) for i in last.get("file_ids") or []])
 
     def _owned(self, ids: list[uuid.UUID]) -> list[File]:
         """Only files of this organization's connected storage — ids from
@@ -196,7 +288,12 @@ class VaultAssistant:
             key=lambda f: order.get(f.id, 0),
         )
 
-    def _find(self, request: Request, scope: StorageConnector | None) -> tuple[list[File], int]:
+    def _find(
+        self, request: Request, scope: StorageConnector | None, *, exact_only: bool = False
+    ) -> tuple[list[File], int, bool]:
+        """`(files, total, similar_only)`. `exact_only` is for anything that
+        would remove files: a file that only *resembles* the request is
+        something to look at, never something to delete."""
         text = request.search_text or request.query
         filters = FileQuery(
             connector_id=str(scope.id) if scope else None,
@@ -209,14 +306,22 @@ class VaultAssistant:
         # Files that only *resemble* the request are offered only when nothing
         # matches it — otherwise "find the README files" lists unrelated PDFs.
         exact = [r.file for r in outcome.results if r.retrieval_method != "semantic"]
-        if exact:
+        if exact or exact_only:
             similar = len(outcome.results) - len(exact)
-            return exact, outcome.total - similar
-        return [result.file for result in outcome.results], outcome.total
+            return exact, outcome.total - similar, False
+        return [result.file for result in outcome.results], outcome.total, True
 
     def _targets(
-        self, request: Request, state: dict[str, Any], scope: StorageConnector | None
+        self,
+        request: Request,
+        state: dict[str, Any],
+        scope: StorageConnector | None,
+        *,
+        exact_only: bool = False,
     ) -> tuple[list[File], str] | None:
+        selected = self._selected()
+        if selected and (request.refers_to_selection or not (request.query or request.file_type)):
+            return selected, f"the {_plural(len(selected), 'selected file')}"
         if request.refers_to_previous or not (request.query or request.file_type):
             previous = self._previous(state)
             if previous and scope is not None:
@@ -229,8 +334,11 @@ class VaultAssistant:
                 return previous, label
             if request.refers_to_previous:
                 return None
+            if self._narrowed:
+                return self._place_files(), f"the files in {self._place.label}"
         if request.query or request.file_type:
-            files, _total = self._find(request, scope)
+            files, _total, _similar_only = self._find(request, scope, exact_only=exact_only)
+            files = self._here(files)
             words = request.query or _TYPE_WORDS.get(request.file_type or "", "files")
             return files, f"files matching “{words}”"
         return None
@@ -257,7 +365,12 @@ class VaultAssistant:
         files: list[File],
         preview: dict[str, Any] | None = None,
         items: list[dict[str, Any]] | None = None,
+        protected: list[ProtectedFile] | None = None,
     ) -> dict[str, Any]:
+        """Every file the action would touch is listed (`file_ids` pages
+        through all of them), and every protected file it leaves alone is
+        named with the reason — the user sees exactly what will happen."""
+        protected = protected or []
         action_id = uuid.uuid4().hex[:12]
         pending = dict(state.get("pending") or {})
         pending[action_id] = {
@@ -276,9 +389,25 @@ class VaultAssistant:
             "confirm_label": confirm_label,
             "affected_count": len(files),
             "items": (items or [self._item(f) for f in files])[: b.FIRST_PAGE],
+            "file_ids": [str(f.id) for f in files[: b.MAX_RESULT_IDS]],
+            "protected_count": len(protected),
+            "protected_items": [
+                {**self._item(entry.file), "reasons": entry.reasons}
+                for entry in protected[: b.FIRST_PAGE]
+            ],
             "preview": preview,
             "status": "pending",
         }
+
+    def _protected_reply(self, verb: str, protected: list[ProtectedFile]) -> Reply:
+        return Reply(
+            f"I won't {verb} any of these — all {_plural(len(protected), 'file')} are protected "
+            f"({protected[0].reasons[0].lower()}"
+            + (" and similar" if len(protected) > 1 else "")
+            + "). Source code, project files and program files are never changed in bulk or "
+            "on an AI suggestion. If you really mean to, pick them yourself in Files.",
+            [b.notice(protected_summary(protected), tone="warning")],
+        )
 
     def _no_targets(self, verb: str) -> Reply:
         return Reply(
@@ -326,6 +455,19 @@ class VaultAssistant:
         return list(self._facts.values())
 
     def _count_files(self, request: Request, state: dict, scope: StorageConnector | None) -> Reply:
+        if self._narrowed:
+            files = self._place_files()
+            size = sum(f.size_bytes or 0 for f in files)
+            self._remember_result(state, files, f"the files in {self._place.label}")
+            return Reply(
+                f"{self._place.label} holds {_plural(len(files), 'file')} "
+                f"({human_bytes(size)}), counting every subfolder.",
+                [
+                    b.file_list(f"Files in {self._place.label}", files, len(files), self._item),
+                    *self._stale_notice(scope),
+                ],
+                state,
+            )
         facts = self._scoped_facts(scope)
         known = [f for f in facts if f.indexed_files is not None]
         if not known:
@@ -403,7 +545,15 @@ class VaultAssistant:
     def _query(self, query: FileQuery, scope: StorageConnector | None) -> tuple[list[File], int]:
         query = replace(query, connector_id=str(scope.id) if scope else None, limit=_ALL)
         rows, total = self._files.query_files(self._org, query)
-        return [file for file, _connector in rows], total
+        return self._narrow([file for file, _connector in rows], total)
+
+    def _narrow(self, files: list[File], total: int) -> tuple[list[File], int]:
+        """`files` limited to the place on screen; `total` stays exact — it
+        is recounted from the files when narrowed."""
+        if not self._narrowed:
+            return files, total
+        kept = self._here(files)
+        return kept, len(kept)
 
     def _largest_files(
         self, request: Request, state: dict, scope: StorageConnector | None
@@ -424,17 +574,46 @@ class VaultAssistant:
         )
 
     def _find_files(self, request: Request, state: dict, scope: StorageConnector | None) -> Reply:
-        files, total = self._find(request, scope)
+        files, total, similar_only = self._find(request, scope)
         words = request.query or _TYPE_WORDS.get(request.file_type or "", "") or request.search_text
-        where = f" in {self._label(scope)}" if scope else ""
+        where = f" in {self._where(scope)}" if scope else ""
+        elsewhere: list[dict[str, Any]] = []
+        if self._narrowed:
+            here = self._here(files)
+            if here or not files:
+                files, total = here, len(here)
+            else:
+                # Said plainly, never passed off as being in this folder.
+                elsewhere = [
+                    b.notice(
+                        f"Nothing in {self._place.label} matches — these are elsewhere in "
+                        f"{self._label(scope)}.",
+                        tone="warning",
+                    )
+                ]
+                where = f" in {self._label(scope)}"
         if not files:
             # The search words aren't repeated back: nothing matched, so there
             # is nothing to show.
             return Reply(f"I couldn't find any matching files{where}.", state=state)
+        if similar_only:
+            self._remember_result(state, files, f"the files similar to “{words}”")
+            return Reply(
+                f"Nothing matches “{words}” by name, path or content{where}. These "
+                f"{_plural(len(files), 'file')} only have similar content — check them before "
+                "acting on them.",
+                [
+                    b.notice("Similar content, not exact matches.", tone="warning"),
+                    b.file_list(f"Similar to “{words}”", files, len(files), self._item),
+                    *self._stale_notice(scope),
+                ],
+                state,
+            )
         self._remember_result(state, files, f"the files matching “{words}”")
         return Reply(
             f"Found {_plural(total, 'file')} matching “{words}”{where}.",
             [
+                *elsewhere,
                 b.file_list(f"Matching “{words}”", files, total, self._item),
                 *self._stale_notice(scope),
             ],
@@ -452,11 +631,13 @@ class VaultAssistant:
         empty: str,
         note: str | None = None,
     ) -> Reply:
+        files, total = self._narrow(files, total)
         if not files:
             return Reply(empty, state=state)
         self._remember_result(state, files, title.lower())
+        where = f" in {self._place.label}" if self._narrowed else ""
         return Reply(
-            f"Found {_plural(total, 'file')} — {title.lower()}.",
+            f"Found {_plural(total, 'file')}{where} — {title.lower()}.",
             [b.file_list(title, files, total, self._item, note=note), *self._stale_notice(scope)],
             state,
         )
@@ -497,8 +678,10 @@ class VaultAssistant:
     def _archive_candidates(
         self, request: Request, state: dict, scope: StorageConnector | None
     ) -> Reply:
-        files, total = self._intelligence.list_old_files(
-            self._org, limit=_ALL, offset=0, connector_id=scope.id if scope else None
+        files, total = self._narrow(
+            *self._intelligence.list_old_files(
+                self._org, limit=_ALL, offset=0, connector_id=scope.id if scope else None
+            )
         )
         compressed = sum(1 for f in files if _extension(f.name) in _ALREADY_COMPRESSED)
         note = (
@@ -525,7 +708,7 @@ class VaultAssistant:
         rows = []
         for group_id in wanted:
             group = self._duplicate_repo.get_owned(group_id, organization_id=self._org)
-            if group is not None:
+            if group is not None and group.connector_id == self._workspace.id:
                 rows.append(self._group_row(group, members.get(group_id, [])))
         return rows
 
@@ -551,6 +734,14 @@ class VaultAssistant:
         )
         members = self._duplicate_repo.list_members_with_files_for_groups([g.id for g in groups])
         rows = [(group, members.get(group.id, [])) for group in groups]
+        if self._narrowed:
+            # Duplicates *within* the folder on screen: two or more copies
+            # here. Copies elsewhere are neither shown nor touched.
+            rows = [
+                (group, here)
+                for group, all_members in rows
+                if len(here := [(m, f) for m, f in all_members if self._place.holds(f)]) >= 2
+            ]
         if request.file_type:
             rows = [
                 (g, m) for g, m in rows if any(_in_category(f, request.file_type) for _x, f in m)
@@ -560,10 +751,14 @@ class VaultAssistant:
     def _duplicates(self, request: Request, state: dict, scope: StorageConnector | None) -> Reply:
         rows = self._duplicate_rows(request, scope)
         kind = _TYPE_WORDS.get(request.file_type or "", "files")
-        where = f" in {self._label(scope)}" if scope else ""
+        where = f" in {self._where(scope)}" if scope else ""
         if not rows:
             return Reply(f"No duplicate {kind}{where} — every copy is unique.", state=state)
-        recoverable = sum(g.recoverable_size_bytes or 0 for g, _m in rows)
+        # Recomputed from the copies shown, so a folder's figure covers only it.
+        recoverable = sum(
+            sum(f.size_bytes or 0 for _m, f in members) - (members[0][1].size_bytes or 0)
+            for _g, members in rows
+        )
         groups = [self._group_row(group, members) for group, members in rows]
         redundant = [f for _g, members in rows for m, f in members if not m.is_recommended_keep]
         self._remember_result(state, redundant, "the extra duplicate copies")
@@ -610,15 +805,26 @@ class VaultAssistant:
             kept_for.update({copy.id: keep for copy in copies})
         if scope is not None:
             redundant = [f for f in redundant if self._owners.get(f.storage_source_id) == scope]
+        redundant, protected = self._protection.split(redundant)
+        if not redundant:
+            if protected:
+                return replace(self._protected_reply("remove", protected), state=state)
+            return Reply("There are no duplicates to clean up.", state=state)
         freed = sum(f.size_bytes or 0 for f in redundant)
         which = {"newest": "the newest", "oldest": "the oldest"}.get(request.keep or "", "the best")
         description = (
             f"Keeps {which} copy in each of {_plural(len(rows), 'group')} and moves "
             f"{_plural(len(redundant), 'extra copy')} to Trash, freeing about "
-            f"{human_bytes(freed)}. Each copy is byte-for-byte identical to the file kept — the "
-            "same size and the same content fingerprint — so no content is lost. Everything "
-            "stays restorable until the Trash is emptied."
+            f"{human_bytes(freed)}. Each copy is identical to the file kept — the same size and "
+            "content fingerprint — so its content survives; but a file can matter because of "
+            "where it is, so check the locations below. Everything stays restorable until the "
+            "Trash is emptied."
         )
+        if protected:
+            description += (
+                f" {_plural(len(protected), 'protected copy')} (source code, project or program "
+                "files) stay where they are."
+            )
         if request.permanent:
             description += " Permanent deletion happens only when you empty the Trash yourself."
         block = self._propose(
@@ -633,6 +839,7 @@ class VaultAssistant:
                 {**self._item(copy), "duplicate_of": self._item(kept_for[copy.id])}
                 for copy in redundant[: b.FIRST_PAGE]
             ],
+            protected=protected,
         )
         return Reply(
             f"Here's what I'll do — {_plural(len(redundant), 'copy')} will go to Trash. "
@@ -644,10 +851,20 @@ class VaultAssistant:
     # -- actions ------------------------------------------------------------------------
 
     def _trash(self, request: Request, state: dict, scope: StorageConnector | None) -> Reply:
-        targets = self._targets(request, state, scope)
+        targets = self._targets(request, state, scope, exact_only=True)
         if not targets or not targets[0]:
+            if request.query and not request.refers_to_previous:
+                return Reply(
+                    f"Nothing is named or about “{request.query}” exactly, so I won't remove "
+                    "anything — I never delete files that only look similar. Ask me to find "
+                    "them first, check the list, then say what to remove.",
+                    state=state,
+                )
             return self._no_targets("remove")
         files, label = targets
+        files, protected = self._protection.split(files)
+        if not files:
+            return replace(self._protected_reply("remove", protected), state=state)
         description = (
             f"Moves {_plural(len(files), 'file')} "
             f"({human_bytes(sum(f.size_bytes or 0 for f in files))}) "
@@ -666,6 +883,7 @@ class VaultAssistant:
             risk="high" if len(files) > 20 else "medium",
             confirm_label=f"Move {_plural(len(files), 'file')} to Trash",
             files=files,
+            protected=protected,
         )
         return Reply("Please confirm before I remove anything.", [block], state)
 
@@ -674,7 +892,7 @@ class VaultAssistant:
         files = self._files.list_owned_by_organization_including_trashed(
             [uuid.UUID(i) for i in ids], organization_id=self._org
         )
-        files = [f for f in files if f.trashed]
+        files = [f for f in files if f.trashed and f.storage_source_id in self._owners]
         if request.refers_to_previous or not files:
             previous = [f for f in self._previous(state) if f.trashed]
             files = previous or files
@@ -731,6 +949,9 @@ class VaultAssistant:
         if not targets or not targets[0]:
             return self._no_targets("move")
         files, label = targets
+        files, protected = self._protection.split(files)
+        if not files:
+            return replace(self._protected_reply("move", protected), state=state)
         storage = self._single_storage(files)
         if storage is None:
             names = " or ".join(self._label(c) for c in self._connected)
@@ -766,6 +987,7 @@ class VaultAssistant:
             risk="medium",
             confirm_label=f"Move {_plural(len(files), 'file')}",
             files=files,
+            protected=protected,
         )
         return Reply("Here's the move — confirm to go ahead.", [block], state)
 
@@ -809,10 +1031,28 @@ class VaultAssistant:
         return Reply("Confirm and I'll build the archive.", [block], state)
 
     def _organize(self, request: Request, state: dict, scope: StorageConnector | None) -> Reply:
-        targets = self._targets(request, state, scope)
+        place = self._place
+        in_folder = self._narrowed and (
+            request.whole_place or not (request.query or request.file_type)
+        )
+        targets = (
+            # "Organize this folder": the files directly in it — its
+            # subfolders are already organized by whoever made them.
+            (
+                self._files.list_children(place.source_id, place.folder_id, limit=_ALL, offset=0)[
+                    0
+                ],
+                f"the files in {place.label}",
+            )
+            if in_folder and place.source_id and not place.selected_ids
+            else self._targets(request, state, scope)
+        )
         if not targets or not targets[0]:
             return self._no_targets("organize")
         files, label = targets
+        files, protected = self._protection.split(files)
+        if not files:
+            return replace(self._protected_reply("reorganize", protected), state=state)
         storage = self._single_storage(files)
         if storage is None:
             return Reply(
@@ -820,11 +1060,12 @@ class VaultAssistant:
                 "(say “organize my Blarrow files on my computer”).",
                 state=state,
             )
-        files = files[:500]
+        considered, beyond = files[:_MAX_ORGANIZE], files[_MAX_ORGANIZE:]
         root = request.name or (request.query.title() if request.query else "Organized")
-        plan = self._reasoning.organize(files, root=root) if self._reasoning else None
+        plan = self._reasoning.organize(considered, root=root) if self._reasoning else None
         if plan is None:
-            plan = _group_by_type(files, root=root)
+            plan = _group_by_type(considered, root=root)
+        plan["unsure"] = [*plan["unsure"], *(str(f.id) for f in beyond)]
         by_id = {str(f.id): f for f in files}
         folders = [
             {
@@ -843,6 +1084,10 @@ class VaultAssistant:
             {
                 "kind": "organize",
                 "connector_id": str(storage.id),
+                # The new folders go inside the folder being organized.
+                "parent_folder_id": str(place.folder_id)
+                if self._narrowed and place.folder_id
+                else None,
                 "root": plan["root"],
                 "folders": [
                     {"name": f["name"], "file_ids": f["file_ids"]} for f in plan["folders"]
@@ -851,17 +1096,24 @@ class VaultAssistant:
             title=f"Organize {label} into “{plan['root']}”",
             description=(
                 f"Creates “{plan['root']}” with {_plural(len(plan['folders']), 'folder')} in "
-                f"{self._label(storage)} and moves {_plural(moving, 'file')} into them. "
+                f"{self._where(storage)} and moves {_plural(moving, 'file')} into them. "
                 + (
                     f"{_plural(len(unsure), 'file')} I wasn't sure about stay where they are. "
                     if unsure
                     else ""
                 )
                 + f"Grouped by {plan['basis']}. Nothing is renamed or deleted."
+                + (
+                    f" {_plural(len(protected), 'protected file')} (source code and project "
+                    "files) stay where they are — a project is only moved as a whole."
+                    if protected
+                    else ""
+                )
             ),
             risk="medium",
             confirm_label="Organize",
             files=[by_id[i] for f in plan["folders"] for i in f["file_ids"]],
+            protected=protected,
             preview={
                 "root": plan["root"],
                 "folders": folders,
@@ -884,6 +1136,9 @@ class VaultAssistant:
         if not targets or not targets[0]:
             return self._no_targets("rename")
         files, label = targets
+        files, protected = self._protection.split(files)
+        if not files:
+            return replace(self._protected_reply("rename", protected), state=state)
         if self._reasoning is None:
             return Reply(
                 "Suggesting better names needs an AI model — add one under Organization → AI "
@@ -906,6 +1161,7 @@ class VaultAssistant:
             risk="medium",
             confirm_label=f"Rename {_plural(len(renames), 'file')}",
             files=[by_id[r["file_id"]] for r in renames],
+            protected=protected,
         )
         return Reply(f"Suggested names for {label} — confirm to apply them.", [block], state)
 
@@ -931,6 +1187,10 @@ class VaultAssistant:
 
     def _ask(self, request: Request, state: dict, scope: StorageConnector | None) -> Reply:
         raise AssertionError("questions about file content are answered by ConversationService")
+
+
+def protected_summary(protected: list[ProtectedFile]) -> str:
+    return f"Protected, left untouched: {describe(protected)}."
 
 
 def _group_by_type(files: list[File], *, root: str) -> dict[str, Any]:

@@ -54,7 +54,9 @@ class Recommendation(Base):
 
     __tablename__ = "recommendations"
     __table_args__ = (
-        UniqueConstraint("organization_id", "rule_name", name="uq_recommendation_org_rule"),
+        UniqueConstraint(
+            "organization_id", "connector_id", "rule_name", name="uq_recommendation_org_rule"
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -62,6 +64,11 @@ class Recommendation(Base):
     )
     organization_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    # The storage this recommendation is about — rules run per storage, so a
+    # recommendation never mixes Google Drive and local files.
+    connector_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("storage_connectors.id", ondelete="CASCADE"), nullable=True, index=True
     )
     recommendation_job_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("recommendation_jobs.id", ondelete="CASCADE"), nullable=False, index=True

@@ -92,12 +92,13 @@ class SearchService:
             for file, connector in rows
         }
 
+        scope = uuid.UUID(query.connector_id) if query.connector_id else None
         understood = list(query.understood)
         if total == 0 and query.text and not query.has_filters and query.offset == 0:
             # Nothing is named like this — look inside the files' text, so
             # "the contract mentioning the payment amount" still finds it.
             for file, connector, score in self._files.rank_by_terms(
-                organization_id, question_terms(query.text), limit=query.limit
+                organization_id, question_terms(query.text), limit=query.limit, connector_id=scope
             ):
                 results_by_file_id[file.id] = SearchResult(
                     file=file,
@@ -113,7 +114,9 @@ class SearchService:
             # content files are offered only when nothing matched exactly.
             # Conversation retrieval (allow_ai=False) always blends both.
             add_similar = total == 0 or not allow_ai
-            for file, score in self._semantic_matches(query.text, organization_id=organization_id):
+            for file, score in self._semantic_matches(
+                query.text, organization_id=organization_id, connector_id=scope
+            ):
                 existing = results_by_file_id.get(file.id)
                 if existing is None:
                     if not add_similar:
@@ -156,14 +159,18 @@ class SearchService:
         *,
         organization_id: uuid.UUID,
         user_id: uuid.UUID,
+        connector_id: uuid.UUID,
         limit: int = _MAX_RESULTS,
     ) -> list[SearchResult]:
         """For answering a question from file content: files ranked by how many
         of the question's meaningful words they match — in the name, inside the
         file's text, in a linked project/client name or the path — followed by
         files with semantically similar content. No AI translation step (the
-        caller is already an AI turn)."""
-        ranked = self._files.rank_by_terms(organization_id, question_terms(query_text), limit=limit)
+        caller is already an AI turn). Only `connector_id`'s files are
+        considered, by name, content and similarity alike."""
+        ranked = self._files.rank_by_terms(
+            organization_id, question_terms(query_text), limit=limit, connector_id=connector_id
+        )
         best = max((score for _, _, score in ranked), default=1.0)
         results = [
             SearchResult(
@@ -172,7 +179,9 @@ class SearchService:
             for file, connector, score in ranked
         ]
         by_id = {result.file.id: index for index, result in enumerate(results)}
-        for file, similarity in self._semantic_matches(query_text, organization_id=organization_id):
+        for file, similarity in self._semantic_matches(
+            query_text, organization_id=organization_id, connector_id=connector_id
+        ):
             index = by_id.get(file.id)
             if index is not None:
                 found = results[index]
@@ -189,11 +198,18 @@ class SearchService:
         return results
 
     def _semantic_matches(
-        self, query_text: str, *, organization_id: uuid.UUID
+        self, query_text: str, *, organization_id: uuid.UUID, connector_id: uuid.UUID | None
     ) -> list[tuple[File, float]]:
         rows = [
             (file, embedding)
-            for file, embedding in self._embeddings.list_for_organization(organization_id)
+            for file, embedding in self._embeddings.list_for_organization(
+                organization_id,
+                model=(
+                    self._ai_gateway.embedding_model_name,
+                    self._ai_gateway.embedding_model_version,
+                ),
+                connector_id=connector_id,
+            )
             if not file.trashed and file.permanently_deleted_at is None
         ]
         if not rows:

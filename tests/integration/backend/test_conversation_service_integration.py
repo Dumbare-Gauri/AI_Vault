@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 from urllib.parse import urlparse
 
 import pytest
+from workspace_testing import workspace_of
 from app.application.auth_service import AuthService
 from app.application.conversation_service import ConversationService
 from app.infrastructure.auth.google_identity import GoogleUserInfo
@@ -188,6 +189,7 @@ def test_ask_creates_a_new_conversation_with_a_derived_title(db: Session) -> Non
 
     turn = service.ask(
         organization_id=user.organization_id,
+        workspace=workspace_of(db, user.organization_id),
         user_id=user.id,
         conversation_id=None,
         question="What does the payroll file say?",
@@ -208,6 +210,7 @@ def test_ask_with_no_matching_files_says_so_instead_of_guessing(db: Session) -> 
 
     turn = service.ask(
         organization_id=user.organization_id,
+        workspace=workspace_of(db, user.organization_id),
         user_id=user.id,
         conversation_id=None,
         question="Anything at all?",
@@ -229,6 +232,7 @@ def test_a_follow_up_question_continues_the_same_conversation(db: Session) -> No
     service = ConversationService(db, ai_gateway=_gateway())
     first_turn = service.ask(
         organization_id=user.organization_id,
+        workspace=workspace_of(db, user.organization_id),
         user_id=user.id,
         conversation_id=None,
         question="What does the payroll file say?",
@@ -236,6 +240,7 @@ def test_a_follow_up_question_continues_the_same_conversation(db: Session) -> No
 
     second_turn = service.ask(
         organization_id=user.organization_id,
+        workspace=workspace_of(db, user.organization_id),
         user_id=user.id,
         conversation_id=first_turn.conversation.id,
         question="Tell me more.",
@@ -295,6 +300,7 @@ def test_ask_uses_the_organizations_own_ai_provider_when_configured(
 
     turn = service.ask(
         organization_id=user.organization_id,
+        workspace=workspace_of(db, user.organization_id),
         user_id=user.id,
         conversation_id=None,
         question="What does the payroll file say?",
@@ -313,6 +319,7 @@ def test_get_detail_rejects_another_users_conversation(db: Session) -> None:
     service = ConversationService(db, ai_gateway=_gateway())
     turn = service.ask(
         organization_id=user.organization_id,
+        workspace=workspace_of(db, user.organization_id),
         user_id=user.id,
         conversation_id=None,
         question="Anything?",

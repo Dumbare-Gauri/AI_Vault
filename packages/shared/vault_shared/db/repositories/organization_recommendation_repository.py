@@ -19,17 +19,32 @@ class OrganizationRecommendationRepository:
             .first()
         )
 
-    def get_active_for_entity(self, entity_id: uuid.UUID) -> OrganizationRecommendation | None:
+    def get_active_for_entity(
+        self, entity_id: uuid.UUID, *, connector_id: uuid.UUID
+    ) -> OrganizationRecommendation | None:
+        return (
+            self._session.query(OrganizationRecommendation)
+            .filter_by(
+                entity_id=entity_id,
+                connector_id=connector_id,
+                status=OrganizationRecommendationStatus.ACTIVE,
+            )
+            .first()
+        )
+
+    def list_active_for_entity(self, entity_id: uuid.UUID) -> list[OrganizationRecommendation]:
+        """One per storage the entity's files are scattered in."""
         return (
             self._session.query(OrganizationRecommendation)
             .filter_by(entity_id=entity_id, status=OrganizationRecommendationStatus.ACTIVE)
-            .first()
+            .all()
         )
 
     def upsert_for_entity(
         self,
         *,
         organization_id: uuid.UUID,
+        connector_id: uuid.UUID,
         entity_id: uuid.UUID,
         kind: str,
         title: str,
@@ -41,16 +56,16 @@ class OrganizationRecommendationRepository:
         suggested_destination: list[str],
         estimated_storage_impact_bytes: int,
     ) -> OrganizationRecommendation:
-        """One active recommendation per entity at a time — a re-run that
+        """One active recommendation per entity per storage — a re-run that
         still finds the entity scattered refreshes the existing row
         in place (same rationale as `Recommendation.upsert`) rather than
         accumulating repeats; an `APPLIED`/`REJECTED` row is left alone
         and a fresh `ACTIVE` one is created instead, since those are
         historical facts about a decision already made."""
-        recommendation = self.get_active_for_entity(entity_id)
+        recommendation = self.get_active_for_entity(entity_id, connector_id=connector_id)
         if recommendation is None:
             recommendation = OrganizationRecommendation(
-                organization_id=organization_id, entity_id=entity_id
+                organization_id=organization_id, connector_id=connector_id, entity_id=entity_id
             )
             self._session.add(recommendation)
 
@@ -66,6 +81,23 @@ class OrganizationRecommendationRepository:
         recommendation.status = OrganizationRecommendationStatus.ACTIVE
         self._session.flush()
         return recommendation
+
+    def was_rejected(
+        self, entity_id: uuid.UUID, suggested_destination: list[str], *, connector_id: uuid.UUID
+    ) -> bool:
+        """Whether the user already said no to moving this entity's files to
+        this destination — a decision a re-run must respect, not overturn."""
+        return (
+            self._session.query(OrganizationRecommendation)
+            .filter_by(
+                entity_id=entity_id,
+                connector_id=connector_id,
+                status=OrganizationRecommendationStatus.REJECTED,
+            )
+            .filter(OrganizationRecommendation.suggested_destination == suggested_destination)
+            .first()
+            is not None
+        )
 
     def list_active_of_kind(
         self, organization_id: uuid.UUID, kind: str
@@ -84,6 +116,7 @@ class OrganizationRecommendationRepository:
         self,
         *,
         organization_id: uuid.UUID,
+        connector_id: uuid.UUID,
         file_id: uuid.UUID,
         kind: str,
         title: str,
@@ -106,7 +139,9 @@ class OrganizationRecommendationRepository:
             None,
         )
         if recommendation is None:
-            recommendation = OrganizationRecommendation(organization_id=organization_id)
+            recommendation = OrganizationRecommendation(
+                organization_id=organization_id, connector_id=connector_id
+            )
             self._session.add(recommendation)
 
         recommendation.kind = kind
@@ -143,10 +178,13 @@ class OrganizationRecommendationRepository:
         *,
         status: str | None = None,
         kind: str | None = None,
+        connector_id: uuid.UUID | None = None,
     ) -> list[OrganizationRecommendation]:
         query = self._session.query(OrganizationRecommendation).filter_by(
             organization_id=organization_id
         )
+        if connector_id is not None:
+            query = query.filter(OrganizationRecommendation.connector_id == connector_id)
         if status is not None:
             query = query.filter(OrganizationRecommendation.status == status)
         if kind is not None:
@@ -178,12 +216,15 @@ class OrganizationRecommendationRepository:
             if file_id_strings & set(recommendation.affected_file_ids)
         ]
 
-    def count_active_for_organization(self, organization_id: uuid.UUID) -> int:
+    def count_active_for_organization(
+        self, organization_id: uuid.UUID, *, connector_id: uuid.UUID | None = None
+    ) -> int:
+        conditions = [
+            OrganizationRecommendation.organization_id == organization_id,
+            OrganizationRecommendation.status == OrganizationRecommendationStatus.ACTIVE,
+        ]
+        if connector_id is not None:
+            conditions.append(OrganizationRecommendation.connector_id == connector_id)
         return self._session.execute(
-            select(func.count())
-            .select_from(OrganizationRecommendation)
-            .where(
-                OrganizationRecommendation.organization_id == organization_id,
-                OrganizationRecommendation.status == OrganizationRecommendationStatus.ACTIVE,
-            )
+            select(func.count()).select_from(OrganizationRecommendation).where(*conditions)
         ).scalar_one()

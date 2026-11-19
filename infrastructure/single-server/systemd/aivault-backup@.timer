@@ -1,0 +1,12 @@
+# Enable once per environment:
+#   systemctl enable --now aivault-backup@staging.timer aivault-backup@production.timer
+[Unit]
+Description=Daily AI Vault %i database backup
+
+[Timer]
+OnCalendar=*-*-* 21:30:00 UTC
+RandomizedDelaySec=20m
+Persistent=true
+
+[Install]
+WantedBy=timers.target

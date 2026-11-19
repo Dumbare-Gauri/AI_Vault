@@ -26,6 +26,13 @@
 - [ ] New architectural decisions recorded in `Docs/03_ARCHITECTURE_DECISIONS.md`.
 - [ ] `Docs/02_CTO_DASHBOARD.md` updated if this changes sprint status, risks, or blockers.
 
+## Deployment
+
+- [ ] Target is `main` (or `production` only for a `release: vX.Y.Z` PR from `main` or a `hotfix/…`).
+- [ ] Runs in Docker Compose locally (`infrastructure/docker/docker-compose.yml`).
+- [ ] New settings are in `infrastructure/single-server/env.example`.
+- [ ] Migrations work on the existing data and the previous release can still run (deploys don't roll back migrations).
+
 ## Reviewer checklist
 
 - [ ] Naming, folder placement, and error handling follow the Coding Standards.

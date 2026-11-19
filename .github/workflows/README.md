@@ -1,13 +1,14 @@
 # .github/workflows
 
-CI/CD pipeline definitions.
+| Workflow | Runs on | Does |
+|---|---|---|
+| **PR Validation** (`pr-validation.yml`) | PRs into `main` / `production` | CI + PR title format; production PRs must come from `main` or `hotfix/*` and be titled `release: vX.Y.Z`. `PR validation passed` is the one required check. |
+| **Deploy — Staging** (`deploy-staging.yml`) | Push to `main` | CI, then staging. Off until `STAGING_DEPLOY_ENABLED` is `true`. |
+| **Deploy — Production** (`deploy-production.yml`) | Push to `production` | CI, then approval on the `production` environment, then production. Off until `PRODUCTION_DEPLOY_ENABLED` is `true`. |
+| **Release** (`release.yml`) | After a successful production deploy, or by hand | Tags `vX.Y.Z` on the deployed commit and publishes a GitHub Release. |
+| CI (`ci.yml`) | Called by the three above | Frontend lint/typecheck/test/build; backend + worker ruff, mypy, migrations, pytest; dependency + secret scans; Docker builds + Trivy. |
+| Deploy to server (`deploy-to-server.yml`) | Called by the two deploys | GitHub OIDC → that environment's AWS role → SSM `deploy.sh` on the server. |
 
-- `ci.yml` — **implemented in Phase 1.** Runs on every PR into `develop`/`main` and every push to `develop`: frontend (lint, typecheck, vitest, vite build), backend (ruff, mypy, alembic migration against a real Postgres service container, pytest unit+integration), worker (ruff, mypy, pytest unit), and a Docker image build validation job for all three Dockerfiles.
-
-Still planned, not yet implemented (no phase has reached the milestone that needs them):
-
-- `e2e.yml` — end-to-end suite on every PR into `main`. Deferred until a phase has a real critical-path flow (auth, scan → recommendation → execution) worth driving end-to-end; Phase 1's only e2e coverage is `tests/e2e/test_stack_boots.py`, run manually against `docker compose up`, not yet wired into CI.
-- `deploy-staging.yml` — deploy `develop` to staging on merge.
-- `deploy-production.yml` — deploy `main` to production on tagged release, gated on manual approval.
-
-Both deploy workflows are blocked on ADR-009's open question — the actual deployment target (ECS, Kubernetes, a PaaS) — which is deliberately still undecided.
+Branch model, environments and one-time setup:
+`infrastructure/single-server/README.md` ("Deployment") and
+`.github/scripts/setup-github.sh`.

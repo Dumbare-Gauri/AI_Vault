@@ -6,7 +6,7 @@ import type { LucideIcon } from "lucide-react";
 import { useState } from "react";
 
 import { AppShell } from "@/components/app-shell/app-shell";
-import { StorageScopeSwitcher, useStorageScope } from "@/components/storage-intelligence/storage-scope-switcher";
+import { useStorageScope } from "@/components/storage-intelligence/storage-scope-switcher";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -20,6 +20,8 @@ import { formatBytes } from "@/lib/format-bytes";
 import { formatRelativeTime } from "@/lib/format-relative-time";
 import { useAuthStore } from "@/stores/auth-store";
 import { scopedPath } from "@/stores/storage-scope-store";
+import { useCopilotPage } from "@/stores/copilot-store";
+import { BackLink } from "@/components/ui/back-link";
 
 const PAGE_SIZE = 20;
 
@@ -64,6 +66,7 @@ export function StorageFileListPage({
   });
 
   const items = listQuery.data?.items ?? [];
+  useCopilotPage({ page: "storage-intelligence-list", label: title, fileIds: items.map((file) => file.id) });
 
   // Selection is scoped to the page currently in view — paging away would
   // otherwise leave a "phantom" selection over files no longer visible.
@@ -126,18 +129,12 @@ export function StorageFileListPage({
     <AppShell title={title}>
       <div className="mx-auto flex max-w-4xl flex-col gap-4">
         <div>
-          <Link
-            to="/storage-intelligence"
-            className="flex w-fit items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
-          >
-            <ChevronLeft className="size-4" /> Back to Storage Intelligence
-          </Link>
+          <BackLink to="/storage-intelligence">Back to Storage Intelligence</BackLink>
           <h1 className="mt-2 text-xl font-semibold tracking-tight">{title}</h1>
           <p className="text-sm text-muted-foreground">
             {total > 0 ? `${total.toLocaleString()} files found. ${description}` : description}
           </p>
         </div>
-        <StorageScopeSwitcher />
 
         {listQuery.isLoading && (
           <div className="flex flex-col gap-2">

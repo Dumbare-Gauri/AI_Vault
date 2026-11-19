@@ -17,7 +17,7 @@ export interface ExecutionStep {
   id: string;
   step_order: number;
   action_type: ExecutionActionType;
-  target_file_id: string;
+  target_file_id: string | null;
   pre_state: Record<string, unknown>;
   planned_change: Record<string, unknown>;
   status: ExecutionStepStatus;
@@ -72,6 +72,14 @@ export interface CreateExecutionPlanRequest {
   new_parent_id?: string;
   /** create_archive only: trash originals once the archive is verified. */
   remove_originals?: boolean;
+  /** The user saw that some picked files are protected and still wants them included. */
+  include_protected?: boolean;
+  /** create_archive only: whole folders, archived with their structure. */
+  folder_ids?: string[];
+  /** create_archive only: the name chosen; numbered if already taken. */
+  archive_name?: string;
+  /** create_archive only: a folder in the same storage to save it in. */
+  archive_folder_id?: string;
 }
 
 export type ApprovalStatus = "pending" | "approved" | "rejected" | "changes_requested" | "expired";

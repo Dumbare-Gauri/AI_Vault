@@ -32,12 +32,14 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { fetchConnectors } from "@/lib/connectors";
 import { apiClient } from "@/lib/api-client";
 import { formatBytes } from "@/lib/format-bytes";
 import { formatRelativeTime } from "@/lib/format-relative-time";
 import { summarizeStorage } from "@/lib/storage-summary";
 import { cn } from "@/lib/utils";
 import { useAuthStore } from "@/stores/auth-store";
+import { useCopilotPage } from "@/stores/copilot-store";
 
 export const Route = createFileRoute("/dashboard")({
   beforeLoad: () => {
@@ -333,6 +335,7 @@ function ActivityRow({ item }: { item: ActivityItem }) {
 }
 
 function DashboardPage() {
+  useCopilotPage({ page: "dashboard", label: "Dashboard" });
   const user = useAuthStore((state) => state.user);
   const canManage = user?.role === "owner" || user?.role === "admin";
 
@@ -342,7 +345,7 @@ function DashboardPage() {
   });
   const connectorsQuery = useQuery({
     queryKey: ["connectors"],
-    queryFn: () => apiClient.get<Connector[]>("/v1/connectors"),
+    queryFn: fetchConnectors,
   });
   const overviewQuery = useQuery({
     queryKey: ["storage-intelligence", "overview"],

@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy.orm import Session
 
 from vault_shared import ConflictError, NotFoundError, ValidationError, get_settings
+from vault_shared.archive_naming import clean_archive_name
 from vault_shared.db.models import (
     ExecutionActionType,
     ExecutionPlan,
@@ -37,22 +38,42 @@ from vault_shared.db.repositories import (
 )
 from vault_shared.execution.permission_validation import validate_execution_permissions
 from vault_shared.formatting import human_bytes
+from vault_shared.protection import AssetProtection, describe, guards
 from vault_shared.storage.models import Revision
 
 # Only these Phase 7 rules map to a Phase 8-supported action type — every
 # other rule (security/collaboration/productivity/knowledge findings) has
 # no concrete, safe storage mutation behind it yet. `create_plan` rejects
 # any other rule_name with a clear `ValidationError` rather than silently
-# doing nothing.
+# doing nothing. "Old" and "large and unused" are deliberately not here:
+# age and size are no evidence a file is unneeded, so those findings are
+# for review — the user can still pick files from them and act directly.
 _EXECUTABLE_RULES: dict[str, str] = {
     "duplicate_files": ExecutionActionType.REMOVE_DUPLICATE,
-    "archive_candidates": ExecutionActionType.ARCHIVE,
-    "large_unused_files": ExecutionActionType.ARCHIVE,
 }
 
 
 def is_executable_rule(rule_name: str) -> bool:
     return rule_name in _EXECUTABLE_RULES
+
+
+def _same_storage(recorded: uuid.UUID | None, workspace: uuid.UUID | None) -> uuid.UUID | None:
+    """A recommendation or duplicate group belongs to one storage; acting
+    on it from another workspace is refused, and acting on it at all keeps
+    to its own storage."""
+    if recorded is not None and workspace is not None and recorded != workspace:
+        raise ValidationError("That belongs to a different storage from the one you're working in.")
+    return recorded or workspace
+
+
+def rule_removes_files(rule_name: str) -> bool:
+    """Whether acting on this rule takes files away (to Trash or beyond) —
+    such an action always needs a person's approval, never a policy's."""
+    return _EXECUTABLE_RULES.get(rule_name) in (
+        ExecutionActionType.ARCHIVE,
+        ExecutionActionType.REMOVE_DUPLICATE,
+        ExecutionActionType.PERMANENT_DELETE,
+    )
 
 
 # Storage Intelligence's ad-hoc plans (large/old/inactive/temporary-
@@ -77,6 +98,16 @@ _AD_HOC_ALLOWED_ACTIONS = frozenset(
 # only ever targets active files.
 _TRASH_AWARE_ACTIONS = frozenset({ExecutionActionType.CREATE_ARCHIVE, ExecutionActionType.RESTORE})
 _MAX_AD_HOC_FILES = 500
+# One archive is one batch, so a whole folder tree can go in at once.
+_MAX_ARCHIVE_FILES = 50_000
+_MAX_RECORDED_PROTECTED = 200
+
+
+def permanent_delete_confirmation(file_count: int) -> str:
+    """What the user types to permanently delete. It names the count, so
+    a confirmation given for one file can't stand in for a hundred."""
+    return f"DELETE {file_count} FILE" + ("" if file_count == 1 else "S")
+
 
 # Execution risk is a different question than the recommendation's own
 # risk_level (which describes the *business* risk of the underlying
@@ -154,6 +185,7 @@ class ExecutionPlanService:
         organization_id: uuid.UUID,
         user_id: uuid.UUID,
         require_approval: bool = True,
+        connector_id: uuid.UUID | None = None,
     ) -> ExecutionPlan:
         recommendation = self._recommendations.get_owned(
             recommendation_id, organization_id=organization_id
@@ -163,6 +195,7 @@ class ExecutionPlanService:
         if recommendation.status != RecommendationStatus.ACTIVE:
             raise ConflictError("Only active recommendations can be turned into an execution plan.")
 
+        connector_id = _same_storage(recommendation.connector_id, connector_id)
         action_type = _EXECUTABLE_RULES.get(recommendation.rule_name)
         if action_type is None:
             raise ValidationError(
@@ -192,6 +225,8 @@ class ExecutionPlanService:
             ordered_files=ordered_files,
             audit_metadata={"recommendation_id": str(recommendation_id)},
             require_approval=require_approval,
+            connector_id=connector_id,
+            skip_protected=True,
         )
 
     def create_plan_from_duplicate_group(
@@ -201,6 +236,7 @@ class ExecutionPlanService:
         organization_id: uuid.UUID,
         user_id: uuid.UUID,
         require_approval: bool = True,
+        connector_id: uuid.UUID | None = None,
     ) -> ExecutionPlan:
         """Storage Intelligence's (post-hardening) equivalent of `create_plan`
         — a `DuplicateGroup` is already a concrete, content-verified set of
@@ -215,6 +251,7 @@ class ExecutionPlanService:
         )
         if group is None:
             raise NotFoundError("Duplicate group not found.")
+        connector_id = _same_storage(group.connector_id, connector_id)
         if self._plans.has_active_plan_for_duplicate_group(duplicate_group_id):
             raise ConflictError(
                 "An execution plan is already pending or in progress for this duplicate group."
@@ -237,6 +274,8 @@ class ExecutionPlanService:
             ordered_files=ordered_files,
             audit_metadata={"duplicate_group_id": str(duplicate_group_id)},
             require_approval=require_approval,
+            connector_id=connector_id,
+            skip_protected=True,
         )
 
     def create_ad_hoc_plan(
@@ -250,6 +289,11 @@ class ExecutionPlanService:
         new_parent_id: str | None = None,
         remove_originals: bool = False,
         require_approval: bool = True,
+        connector_id: uuid.UUID | None = None,
+        allow_protected: bool = False,
+        folder_ids: list[uuid.UUID] | None = None,
+        archive_name: str | None = None,
+        archive_folder_id: uuid.UUID | None = None,
     ) -> ExecutionPlan:
         """Storage Intelligence's large/old/inactive/temporary-candidate
         listings are live queries, not precomputed groups (ADR-023) — there
@@ -267,10 +311,26 @@ class ExecutionPlanService:
         every selected file to the same destination folder."""
         if action_type not in _AD_HOC_ALLOWED_ACTIONS:
             raise ValidationError(f"'{action_type}' is not a supported ad-hoc action.")
+        archive_paths: dict[uuid.UUID, str] = {}
+        if folder_ids:
+            if action_type != ExecutionActionType.CREATE_ARCHIVE:
+                raise ValidationError("Only an archive can take whole folders.")
+            archive_paths = self._files_in_folders(folder_ids, organization_id=organization_id)
+            file_ids = [*file_ids, *(fid for fid in archive_paths if fid not in set(file_ids))]
         if not file_ids:
             raise ValidationError("Select at least one file.")
-        if len(file_ids) > _MAX_AD_HOC_FILES:
-            raise ValidationError(f"Select at most {_MAX_AD_HOC_FILES} files at a time.")
+        limit = (
+            _MAX_ARCHIVE_FILES
+            if action_type == ExecutionActionType.CREATE_ARCHIVE
+            else _MAX_AD_HOC_FILES
+        )
+        if len(file_ids) > limit:
+            raise ValidationError(f"Select at most {limit:,} files at a time.")
+        if action_type != ExecutionActionType.CREATE_ARCHIVE and (
+            archive_name or archive_folder_id
+        ):
+            raise ValidationError("Only an archive takes an archive name and destination.")
+        clean_name = clean_archive_name(archive_name) if archive_name else None
         if action_type == ExecutionActionType.RENAME:
             if len(file_ids) != 1:
                 raise ValidationError("Rename one file at a time.")
@@ -305,8 +365,20 @@ class ExecutionPlanService:
                 ordered_files[0].id: {"action": action_type, "new_name": (new_name or "").strip()}
             }
         elif action_type == ExecutionActionType.CREATE_ARCHIVE:
+            destination = (
+                self._archive_destination(archive_folder_id, ordered_files)
+                if archive_folder_id
+                else None
+            )
             planned_change_by_file_id = {
-                file.id: {"action": action_type, "remove_originals": remove_originals}
+                file.id: {
+                    "action": action_type,
+                    "remove_originals": remove_originals,
+                    # Keeps a chosen folder's structure inside the archive.
+                    "archive_path": archive_paths.get(file.id, file.name),
+                    "archive_name": clean_name,
+                    "archive_folder_id": str(destination.id) if destination else None,
+                }
                 for file in ordered_files
             }
         elif action_type == ExecutionActionType.MOVE_FILE:
@@ -331,7 +403,30 @@ class ExecutionPlanService:
             audit_metadata={"ad_hoc_action": action_type, "requested_file_count": len(file_ids)},
             planned_change_by_file_id=planned_change_by_file_id,
             require_approval=require_approval,
+            connector_id=connector_id,
+            allow_protected=allow_protected,
         )
+
+    def _files_in_folders(
+        self, folder_ids: list[uuid.UUID], *, organization_id: uuid.UUID
+    ) -> dict[uuid.UUID, str]:
+        """Every file below the chosen folders, each with its path inside the
+        archive: the folder's own name, then the path below it — so nested
+        folders and identically named files in different folders stay
+        apart."""
+        paths: dict[uuid.UUID, str] = {}
+        for folder_id in folder_ids:
+            folder = self._folders.get_by_id(folder_id)
+            source = self._sources.get_by_id(folder.storage_source_id) if folder else None
+            connector = self._connectors.get_by_id(source.connector_id) if source else None
+            if folder is None or connector is None or connector.organization_id != organization_id:
+                raise NotFoundError("Folder not found.")
+            base = folder.path.rstrip("/")
+            for file in self._files.list_under_folder(folder.storage_source_id, base):
+                paths.setdefault(file.id, f"{folder.name}/{file.path[len(base) + 1 :]}")
+        if len(paths) > _MAX_ARCHIVE_FILES:
+            raise ValidationError(f"Archive at most {_MAX_ARCHIVE_FILES:,} files at a time.")
+        return paths
 
     def create_permanent_delete_plan(
         self,
@@ -339,7 +434,10 @@ class ExecutionPlanService:
         *,
         organization_id: uuid.UUID,
         user_id: uuid.UUID,
+        confirmation: str | None = None,
         require_approval: bool = True,
+        connector_id: uuid.UUID | None = None,
+        allow_protected: bool = False,
     ) -> ExecutionPlan:
         """Real, unrecoverable Drive deletion (`files.delete`) — everything
         else this class builds is Drive-Trash-reversible. Deliberately kept
@@ -368,6 +466,11 @@ class ExecutionPlanService:
             raise ValidationError("Select at least one file.")
         if len(file_ids) > _MAX_AD_HOC_FILES:
             raise ValidationError(f"Select at most {_MAX_AD_HOC_FILES} files at a time.")
+        expected = permanent_delete_confirmation(len(file_ids))
+        if confirmation != expected:
+            raise ValidationError(
+                f"Permanent deletion needs its own confirmation — type “{expected}” to confirm."
+            )
 
         candidates = self._files.list_owned_by_organization_including_trashed(
             file_ids, organization_id=organization_id
@@ -398,20 +501,42 @@ class ExecutionPlanService:
             },
             rollback_available=False,
             require_approval=require_approval,
+            connector_id=connector_id,
+            allow_protected=allow_protected,
         )
 
-    def _provider_of(self, files: list[File]) -> str:
+    def _provider_of(self, files: list[File], *, connector_id: uuid.UUID | None) -> str:
         """The storage provider all of a plan's files live in. One action
-        works on one storage, so a mix is refused."""
-        providers: set[str] = set()
+        works on one storage, so a mix is refused — and when the caller
+        names the storage workspace the user is in (`connector_id`), every
+        file must be in that storage, or nothing is planned."""
+        connectors: dict[uuid.UUID, str] = {}
         for source_id in {file.storage_source_id for file in files}:
             source = self._sources.get_by_id(source_id)
             connector = self._connectors.get_by_id(source.connector_id) if source else None
             if connector is not None:
-                providers.add(connector.provider)
-        if len(providers) != 1:
+                connectors[connector.id] = connector.provider
+        if len(connectors) != 1:
             raise ValidationError("Choose files from one storage at a time.")
-        return providers.pop()
+        [(found_id, provider)] = connectors.items()
+        if connector_id is not None and found_id != connector_id:
+            raise ValidationError(
+                "These files are in a different storage from the one you're working in — "
+                "nothing was changed."
+            )
+        return provider
+
+    def _archive_destination(self, folder_id: uuid.UUID, files: list[File]) -> Folder:
+        """The folder the user chose for the archive: it must be in the
+        same storage as every file going into it — an archive never crosses
+        from one storage into another."""
+        folder = self._folders.get_by_id(folder_id)
+        sources = {file.storage_source_id for file in files}
+        if folder is None or sources != {folder.storage_source_id}:
+            raise ValidationError(
+                "Choose a destination folder in the same storage as the files being archived."
+            )
+        return folder
 
     def _finalize_plan(
         self,
@@ -426,9 +551,22 @@ class ExecutionPlanService:
         require_approval: bool,
         planned_change_by_file_id: dict[uuid.UUID, dict] | None = None,
         rollback_available: bool = True,
+        allow_protected: bool = False,
+        skip_protected: bool = False,
+        connector_id: uuid.UUID | None = None,
     ) -> ExecutionPlan:
+        planned_change_by_file_id = dict(planned_change_by_file_id or {})
+        ordered_files, protection_metadata = self._apply_protection(
+            ordered_files,
+            action_type=action_type,
+            planned_change_by_file_id=planned_change_by_file_id,
+            user_id=user_id,
+            allow_protected=allow_protected,
+            skip_protected=skip_protected,
+        )
+        audit_metadata = {**audit_metadata, **protection_metadata}
         total_bytes = sum(f.size_bytes or 0 for f in ordered_files)
-        provider = self._provider_of(ordered_files)
+        provider = self._provider_of(ordered_files, connector_id=connector_id)
         plan = self._plans.create(
             organization_id=organization_id,
             recommendation_id=recommendation_id,
@@ -442,7 +580,7 @@ class ExecutionPlanService:
             required_permissions=[f"{provider}:write"],
         )
         for index, file in enumerate(ordered_files):
-            planned_change = (planned_change_by_file_id or {}).get(file.id, {"action": action_type})
+            planned_change = planned_change_by_file_id.get(file.id, {"action": action_type})
             self._steps.create(
                 execution_plan_id=plan.id,
                 step_order=index,
@@ -520,6 +658,56 @@ class ExecutionPlanService:
         self._db.commit()
         self._enqueue_execution_job(job.id)
         return plan
+
+    def _apply_protection(
+        self,
+        ordered_files: list[File],
+        *,
+        action_type: str,
+        planned_change_by_file_id: dict[uuid.UUID, dict],
+        user_id: uuid.UUID,
+        allow_protected: bool,
+        skip_protected: bool,
+    ) -> tuple[list[File], dict]:
+        """Protected files (source code, project files, program files — see
+        `vault_shared.protection`) never ride along in a plan by
+        accident. A set the system assembled (a duplicate group, a
+        recommendation) leaves them out and records which; a set the user
+        picked is refused outright unless they acknowledged the protection,
+        in which case that acknowledgment is written onto each step for the
+        Execution Engine to see."""
+        if not ordered_files:
+            return ordered_files, {}
+        if not guards(action_type, planned_change_by_file_id.get(ordered_files[0].id)):
+            return ordered_files, {}
+        free, protected = AssetProtection(self._db).split(ordered_files)
+        if not protected:
+            return ordered_files, {}
+        recorded = [
+            {"file_id": str(entry.file.id), "path": entry.file.path, "reasons": entry.reasons}
+            for entry in protected[:_MAX_RECORDED_PROTECTED]
+        ]
+        if allow_protected:
+            for entry in protected:
+                change = planned_change_by_file_id.get(entry.file.id, {"action": action_type})
+                planned_change_by_file_id[entry.file.id] = {
+                    **change,
+                    "protection_override": {
+                        "confirmed_by_user_id": str(user_id),
+                        "reasons": entry.reasons,
+                    },
+                }
+            return ordered_files, {
+                "protected_included_count": len(protected),
+                "protected_included": recorded,
+            }
+        if not skip_protected or not free:
+            raise ValidationError(
+                f"{len(protected)} of the selected files are protected, so nothing was changed: "
+                f"{describe(protected)}. Protected files are only changed when you pick them "
+                "yourself and confirm that they are protected."
+            )
+        return free, {"protected_skipped_count": len(protected), "protected_skipped": recorded}
 
     def get_detail(
         self, execution_plan_id: uuid.UUID, *, organization_id: uuid.UUID
@@ -609,6 +797,12 @@ class ExecutionPlanService:
         edited after the plan was made)."""
         return {
             "parent_folder_id": str(file.parent_folder_id) if file.parent_folder_id else None,
+            "provider_parent_id": file.provider_parent_id,
+            "provider_file_id": file.provider_file_id,
+            "storage_source_id": str(file.storage_source_id),
+            "path": file.path,
+            "size_bytes": file.size_bytes,
+            "checksum": file.checksum,
             "name": file.name,
             "revision": Revision(
                 token=file.version_id, modified_at=file.provider_modified_at

@@ -5,6 +5,7 @@ FROM python:3.13-slim
 WORKDIR /workspace
 
 RUN apt-get update \
+    && apt-get upgrade -y --no-install-recommends \
     && apt-get install -y --no-install-recommends build-essential \
     && rm -rf /var/lib/apt/lists/*
 
@@ -15,7 +16,9 @@ COPY apps/worker/requirements.txt ./apps/worker/requirements.txt
 # relative to the *current working directory*, not the requirements file's
 # location — so this install must run with apps/worker as cwd.
 WORKDIR /workspace/apps/worker
-RUN pip install --no-cache-dir -r requirements.txt
+# The base image's pip bundles vulnerable msgpack and urllib3 copies.
+RUN pip install --no-cache-dir --upgrade "pip>=26.3" \
+    && pip install --no-cache-dir -r requirements.txt
 
 WORKDIR /workspace
 COPY apps/worker ./apps/worker
@@ -25,7 +28,8 @@ COPY apps/worker ./apps/worker
 # /tmp/prometheus_multiproc_dir — world-writable) if metrics are enabled;
 # no extra chown needed for that path specifically.
 RUN useradd --create-home --uid 1000 vault_app \
-    && chown -R vault_app:vault_app /workspace
+    && mkdir -p /home/vault_app/gensim-data /archive-tmp \
+    && chown -R vault_app:vault_app /workspace /home/vault_app/gensim-data /archive-tmp
 USER vault_app
 
 WORKDIR /workspace/apps/worker

@@ -24,6 +24,7 @@ import { formatBytes } from "@/lib/format-bytes";
 import { formatRelativeTime } from "@/lib/format-relative-time";
 import { cn } from "@/lib/utils";
 import { useAuthStore } from "@/stores/auth-store";
+import { useCopilotPage } from "@/stores/copilot-store";
 
 const searchParamsSchema = z.object({
   q: z.string().optional(),
@@ -96,6 +97,11 @@ function SearchPage() {
 
   const data = searchMutation.data;
   const results = data?.results ?? [];
+  useCopilotPage({
+    page: "search",
+    label: "Search results",
+    fileIds: results.map((result) => result.file_id),
+  });
 
   return (
     <AppShell title="Search">

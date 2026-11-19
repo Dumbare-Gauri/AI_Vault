@@ -13,8 +13,10 @@ from vault_shared.db.models import (
 )
 
 
-def _organization_files(organization_id: uuid.UUID) -> Select[uuid.UUID]:
-    return (
+def _organization_files(
+    organization_id: uuid.UUID, connector_id: uuid.UUID | None = None
+) -> Select[uuid.UUID]:
+    query = (
         select(File.id)
         .join(StorageSource, StorageSource.id == File.storage_source_id)
         .join(StorageConnector, StorageConnector.id == StorageSource.connector_id)
@@ -24,6 +26,9 @@ def _organization_files(organization_id: uuid.UUID) -> Select[uuid.UUID]:
             File.permanently_deleted_at.is_(None),
         )
     )
+    if connector_id is not None:
+        query = query.where(StorageConnector.id == connector_id)
+    return query
 
 
 class FileIntelligenceRepository:
@@ -81,12 +86,14 @@ class FileIntelligenceRepository:
         ).all()
         return [(file, intelligence) for file, intelligence in rows]
 
-    def count_analyzed_for_organization(self, organization_id: uuid.UUID) -> int:
+    def count_analyzed_for_organization(
+        self, organization_id: uuid.UUID, *, connector_id: uuid.UUID | None = None
+    ) -> int:
         return self._session.execute(
             select(func.count())
             .select_from(FileIntelligence)
             .where(
-                FileIntelligence.file_id.in_(_organization_files(organization_id)),
+                FileIntelligence.file_id.in_(_organization_files(organization_id, connector_id)),
                 FileIntelligence.status == IntelligenceStatus.SUCCESS,
             )
         ).scalar_one()

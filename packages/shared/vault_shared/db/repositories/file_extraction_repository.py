@@ -24,10 +24,16 @@ class FileExtractionRepository:
         error: str | None,
         extracted_at: datetime,
     ) -> FileExtraction:
+        """`extracted_at` only moves when what was extracted changed — every
+        analysis downstream (AI intelligence, entities) re-runs when it
+        moves, and re-reading an unchanged file on a rescan is no reason to
+        pay for that again."""
         extraction = self.get_by_file_id(file_id)
         if extraction is None:
             extraction = FileExtraction(file_id=file_id)
             self._session.add(extraction)
+        elif extraction.status == status and extraction.extracted_text == extracted_text:
+            extracted_at = extraction.extracted_at or extracted_at
 
         extraction.status = status
         extraction.extractor_name = extractor_name

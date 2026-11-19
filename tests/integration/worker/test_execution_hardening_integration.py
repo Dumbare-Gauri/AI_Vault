@@ -799,21 +799,12 @@ class TestRollbackIsRetryableAndDoesNotClobber:
         assert job.status == ExecutionJobStatus.COMPLETED
 
 
-class TestKnownIssues:
-    """Documented, unfixed behavior — kept as strict expected-failures so the
-    day it is fixed the suite says so and this marker gets removed."""
+class TestHistoryOutlivesTheFileRow:
+    """A file leaving the index (a rescan, a local folder removed from the
+    agent) must not erase what was done to it or the way to undo it —
+    `execution_steps.target_file_id` is ON DELETE SET NULL (migration 0029)."""
 
     @requires_infra
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "KNOWN ISSUE (Phase 0 report): execution_steps.target_file_id and "
-            "rollback_records/execution_results reference files with ON DELETE CASCADE, and the "
-            "incremental sync hard-deletes a File row when Drive reports the item trashed "
-            "(ScannerService._remove_item). A completed step, its result and its rollback record "
-            "therefore vanish at the next incremental sync after the engine trashes a file."
-        ),
-    )
     def test_a_completed_steps_rollback_record_survives_the_file_row_being_removed(
         self, db: Session
     ) -> None:

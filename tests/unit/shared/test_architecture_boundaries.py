@@ -18,6 +18,7 @@ from pathlib import Path
 import pytest
 
 from vault_shared.storage import MUTATING_METHODS
+from vault_shared.storage.native_archive import NATIVE_ARCHIVE_METHODS
 
 ROOT = Path(__file__).resolve().parents[3]
 SOURCE_ROOTS = [
@@ -178,7 +179,7 @@ class TestOnlyTheExecutionEngineMutatesStorage:
             for root in _existing_roots()
             for path in _python_files(root)
             if "packages/shared/vault_shared/storage/" not in _relative(path)
-            and _receiver_calls(_parse(path), MUTATING_METHODS)
+            and _receiver_calls(_parse(path), MUTATING_METHODS | NATIVE_ARCHIVE_METHODS)
         }
 
         assert callers == {EXECUTION_SERVICE}

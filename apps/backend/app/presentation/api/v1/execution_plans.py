@@ -17,8 +17,9 @@ from app.presentation.dependencies.services import (
     get_execution_job_service,
     get_execution_plan_service,
 )
+from app.presentation.dependencies.workspace import get_workspace
 from vault_shared import ValidationError
-from vault_shared.db.models import RoleName, User
+from vault_shared.db.models import RoleName, StorageConnector, User
 
 execution_plans_router = APIRouter(tags=["execution-plans"])
 
@@ -34,6 +35,7 @@ _create_plan_rate_limit = rate_limiter("execution-plan-create", limit=30, window
 )
 def create_execution_plan(
     request: CreateExecutionPlanRequest,
+    workspace: StorageConnector = Depends(get_workspace),
     user: User = Depends(_require_owner_or_admin),
     service: ExecutionPlanService = Depends(get_execution_plan_service),
 ) -> ExecutionPlanResponse:
@@ -45,7 +47,7 @@ def create_execution_plan(
     a review nobody will ever perform."""
     has_recommendation = request.recommendation_id is not None
     has_duplicate_group = request.duplicate_group_id is not None
-    has_ad_hoc = bool(request.file_ids)
+    has_ad_hoc = bool(request.file_ids or request.folder_ids)
     if sum([has_recommendation, has_duplicate_group, has_ad_hoc]) != 1:
         raise ValidationError(
             "Provide exactly one of recommendation_id, duplicate_group_id, "
@@ -58,6 +60,7 @@ def create_execution_plan(
             organization_id=user.organization_id,
             user_id=user.id,
             require_approval=False,
+            connector_id=workspace.id,
         )
     elif has_duplicate_group:
         plan = service.create_plan_from_duplicate_group(
@@ -65,19 +68,25 @@ def create_execution_plan(
             organization_id=user.organization_id,
             user_id=user.id,
             require_approval=False,
+            connector_id=workspace.id,
         )
     else:
-        if not request.action_type or not request.file_ids:
+        if not request.action_type:
             raise ValidationError("action_type is required when providing file_ids.")
         plan = service.create_ad_hoc_plan(
-            [uuid.UUID(fid) for fid in request.file_ids],
+            [uuid.UUID(fid) for fid in request.file_ids or []],
             action_type=request.action_type,
             organization_id=user.organization_id,
             user_id=user.id,
             new_name=request.new_name,
             new_parent_id=request.new_parent_id,
             remove_originals=request.remove_originals,
+            folder_ids=[uuid.UUID(fid) for fid in request.folder_ids or []],
+            archive_name=request.archive_name,
+            archive_folder_id=request.archive_folder_id,
             require_approval=False,
+            connector_id=workspace.id,
+            allow_protected=request.include_protected,
         )
     return ExecutionPlanResponse.from_model(plan)
 
@@ -90,20 +99,23 @@ def create_execution_plan(
 )
 def create_permanent_delete_plan(
     request: PermanentDeleteRequest,
+    workspace: StorageConnector = Depends(get_workspace),
     user: User = Depends(_require_owner_or_admin),
     service: ExecutionPlanService = Depends(get_execution_plan_service),
 ) -> ExecutionPlanResponse:
-    """Runs immediately, same as every other plan (ADR-026) — the one
-    safety gate for this irreversible action is the frontend's own
-    confirmation dialog before this endpoint is ever called; there is no
-    server-side approval step to additionally wait on."""
+    """Runs immediately once confirmed. The confirmation is checked here,
+    on the server, not only in the dialog: the request must carry the exact
+    phrase naming how many files are deleted."""
     if not request.file_ids:
         raise ValidationError("Select at least one file.")
     plan = service.create_permanent_delete_plan(
         [uuid.UUID(fid) for fid in request.file_ids],
         organization_id=user.organization_id,
         user_id=user.id,
+        confirmation=request.confirmation,
         require_approval=False,
+        allow_protected=request.include_protected,
+        connector_id=workspace.id,
     )
     return ExecutionPlanResponse.from_model(plan)
 

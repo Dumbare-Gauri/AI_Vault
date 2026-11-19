@@ -174,6 +174,7 @@ class _Storage:
             user_id=self.user.id,
             conversation_id=conversation_id,
             question=question,
+            workspace=self.computer,
         )
 
 
@@ -305,6 +306,7 @@ def test_confirming_creates_the_folder_then_moves_the_files_into_it(
         _block(turn, "action_proposal")["action_id"],
         organization_id=storage.org.id,
         user_id=storage.user.id,
+        workspace_id=storage.computer.id,
     )
 
     created = FolderRepository(db).search_for_connector(
@@ -326,12 +328,20 @@ def test_a_confirmed_proposal_cannot_run_twice(storage: _Storage, db: Session) -
     action_id = _block(turn, "action_proposal")["action_id"]
     service = VaultActionService(db, plans=_RecordingPlans(), operations=_FolderMaker(storage))
     service.confirm(
-        turn.conversation.id, action_id, organization_id=storage.org.id, user_id=storage.user.id
+        turn.conversation.id,
+        action_id,
+        organization_id=storage.org.id,
+        user_id=storage.user.id,
+        workspace_id=storage.computer.id,
     )
 
     with pytest.raises(Exception, match="already handled"):
         service.confirm(
-            turn.conversation.id, action_id, organization_id=storage.org.id, user_id=storage.user.id
+            turn.conversation.id,
+            action_id,
+            organization_id=storage.org.id,
+            user_id=storage.user.id,
+            workspace_id=storage.computer.id,
         )
 
 
@@ -353,7 +363,11 @@ def test_a_file_id_from_another_organization_is_never_acted_on(
     plans = _RecordingPlans()
 
     VaultActionService(db, plans=plans, operations=_FolderMaker(storage)).confirm(
-        turn.conversation.id, action_id, organization_id=storage.org.id, user_id=storage.user.id
+        turn.conversation.id,
+        action_id,
+        organization_id=storage.org.id,
+        user_id=storage.user.id,
+        workspace_id=storage.computer.id,
     )
 
     assert plans.calls == []
@@ -462,7 +476,9 @@ def test_a_conversation_reads_back_in_the_order_it_was_had(storage: _Storage, db
         storage.ask(question, first.conversation.id)
 
     detail = ConversationService(db, ai_gateway=_gateway()).get_detail(
-        first.conversation.id, organization_id=storage.org.id, user_id=storage.user.id
+        first.conversation.id,
+        organization_id=storage.org.id,
+        user_id=storage.user.id,
     )
 
     roles = [m.role for m in detail.messages]

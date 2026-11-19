@@ -1,0 +1,100 @@
+name: Release
+
+# Records what is running in production: tag vX.Y.Z on the deployed commit
+# and a GitHub Release listing the changes since the previous one.
+#   - automatically, after Deploy — Production succeeds; the version comes
+#     from the merged release PR's title ("release: v1.2.0")
+#   - by hand (Run workflow), with a version, for the commit production
+#     is on — only if that commit's production deploy succeeded
+# A deploy that was skipped (PRODUCTION_DEPLOY_ENABLED off) or failed is
+# never tagged.
+on:
+  workflow_run:
+    workflows: ["Deploy — Production"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version to tag, e.g. v1.2.0
+        required: true
+
+permissions:
+  contents: write
+  pull-requests: read
+  actions: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Tag and publish release
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      EVENT: ${{ github.event_name }}
+      RUN_SHA: ${{ github.event.workflow_run.head_sha }}
+      TRIGGER_RUN_ID: ${{ github.event.workflow_run.id }}
+      INPUT_VERSION: ${{ inputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Find the deployed commit and its version
+        id: resolve
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" = workflow_run ]; then
+            sha="$RUN_SHA"
+            run_id="$TRIGGER_RUN_ID"
+            title="$(gh api "repos/$REPO/commits/$sha/pulls" \
+              --jq '[.[] | select(.base.ref == "production" and .merged_at != null)][0].title // ""')"
+            version="${title#release: }"
+          else
+            sha="$(git rev-parse origin/production)"
+            run_id="$(gh run list --repo "$REPO" --workflow deploy-production.yml --commit "$sha" \
+              --status success --limit 1 --json databaseId --jq '.[0].databaseId // ""')"
+            version="$INPUT_VERSION"
+          fi
+          [ -n "$run_id" ] || { echo "::error::No successful Deploy — Production run for $sha"; exit 1; }
+          deployed="$(gh api "repos/$REPO/actions/runs/$run_id/jobs" \
+            --jq '[.jobs[] | select(.name | endswith("Deploy production"))][0].conclusion // ""')"
+          if [ "$deployed" != success ]; then
+            echo "Production deploy for $sha was '${deployed:-not run}' — nothing to release."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          [[ "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] \
+            || { echo "::error::No valid version (got '$version'); title the release PR \"release: vX.Y.Z\""; exit 1; }
+          if git rev-parse -q --verify "refs/tags/$version" >/dev/null; then
+            echo "::error::$version is already tagged"; exit 1
+          fi
+          {
+            echo "sha=$sha"
+            echo "version=$version"
+            echo "skip=false"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Create the tag and GitHub Release
+        if: steps.resolve.outputs.skip == 'false'
+        env:
+          SHA: ${{ steps.resolve.outputs.sha }}
+          VERSION: ${{ steps.resolve.outputs.version }}
+        run: |
+          set -euo pipefail
+          previous="$(git tag --merged "$SHA" --list 'v*' --sort=-v:refname | head -n 1)"
+          range="${previous:+$previous..}$SHA"
+          {
+            echo "## Changes${previous:+ since $previous}"
+            echo
+            git log "$range" --no-merges --pretty='- %s (%h)' | head -n 200
+            echo
+            echo "Deployed to production from \`${SHA:0:12}\`."
+          } > notes.md
+          gh release create "$VERSION" --repo "$REPO" --target "$SHA" \
+            --title "AI Vault $VERSION" --notes-file notes.md
+          echo "### Released $VERSION (\`${SHA:0:12}\`)" >> "$GITHUB_STEP_SUMMARY"

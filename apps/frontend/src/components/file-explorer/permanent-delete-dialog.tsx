@@ -16,11 +16,17 @@ import { toast } from "@/components/ui/toaster";
 import { ApiError, apiClient } from "@/lib/api-client";
 import { pluralFiles, trackAction } from "@/lib/storage-action";
 
-const CONFIRM_PHRASE = "DELETE";
+/** The server checks this exact phrase too — it names the count, so a
+ * confirmation for one file can't be replayed for many. */
+function confirmPhrase(count: number): string {
+  return `DELETE ${count} FILE${count === 1 ? "" : "S"}`;
+}
 
 interface PermanentDeleteDialogProps {
   onOpenChange: (open: boolean) => void;
   fileIds: string[];
+  /** Names of the files being deleted, shown so the user sees exactly what goes. */
+  fileNames?: string[];
   onDeleted?: () => void;
 }
 
@@ -31,13 +37,17 @@ interface PermanentDeleteDialogProps {
  * Trash/Archive one. Mounted only while open (see call site), same
  * conditional-mount pattern as RenameDialog/MoveDialog — resets
  * `confirmText` for free on each open. */
-export function PermanentDeleteDialog({ onOpenChange, fileIds, onDeleted }: PermanentDeleteDialogProps) {
+export function PermanentDeleteDialog({ onOpenChange, fileIds, fileNames = [], onDeleted }: PermanentDeleteDialogProps) {
   const [confirmText, setConfirmText] = useState("");
+  const phrase = confirmPhrase(fileIds.length);
   const queryClient = useQueryClient();
 
   const deleteMutation = useMutation({
     mutationFn: () =>
-      apiClient.post<ExecutionPlan>("/v1/execution-plans/permanent-delete", { file_ids: fileIds }),
+      apiClient.post<ExecutionPlan>("/v1/execution-plans/permanent-delete", {
+        file_ids: fileIds,
+        confirmation: confirmText.trim(),
+      }),
     onSuccess: (plan) => {
       void queryClient.invalidateQueries({ queryKey: ["trash"] });
       void trackAction(plan.id, `Permanently deleting ${pluralFiles(fileIds.length)}…`);
@@ -49,7 +59,7 @@ export function PermanentDeleteDialog({ onOpenChange, fileIds, onDeleted }: Perm
     },
   });
 
-  const canSubmit = confirmText.trim().toUpperCase() === CONFIRM_PHRASE;
+  const canSubmit = confirmText.trim() === phrase;
 
   return (
     <Dialog open onOpenChange={onOpenChange}>
@@ -66,14 +76,24 @@ export function PermanentDeleteDialog({ onOpenChange, fileIds, onDeleted }: Perm
             entirely — not to Trash, gone for good. There is no undo, no rollback, and Vault has no
             way to recover it once this completes.
           </p>
+          {fileNames.length > 0 && (
+            <ul className="max-h-48 divide-y divide-border overflow-y-auto rounded-lg border border-border">
+              {fileNames.map((name, index) => (
+                <li key={`${name}-${index}`} className="truncate px-3 py-1.5">
+                  {name}
+                </li>
+              ))}
+            </ul>
+          )}
           <p className="text-muted-foreground">
-            Type <strong className="text-foreground">{CONFIRM_PHRASE}</strong> to continue.
+            Type <strong className="text-foreground">{phrase}</strong> to continue.
           </p>
           <Input
             autoFocus
             value={confirmText}
             onChange={(e) => setConfirmText(e.target.value)}
-            placeholder={CONFIRM_PHRASE}
+            placeholder={phrase}
+            aria-label="Confirmation phrase"
           />
         </div>
         <DialogFooter>

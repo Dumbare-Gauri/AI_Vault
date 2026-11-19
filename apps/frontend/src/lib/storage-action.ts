@@ -86,13 +86,34 @@ export async function trackAction(actionId: string, progress: string): Promise<A
   return null;
 }
 
+/** Starts an action on files the user picked themselves. If the server
+ * refuses because some are protected (source code, project or program
+ * files), the user is told which and asked once whether to include them —
+ * only a yes sends the acknowledgment. AI-suggested and heuristic lists
+ * never come through here. */
+export async function createUserPickedPlan(request: CreateExecutionPlanRequest): Promise<ExecutionPlan> {
+  try {
+    return await apiClient.post<ExecutionPlan>("/v1/execution-plans", request);
+  } catch (error) {
+    const isProtected = error instanceof ApiError && error.status === 422 && error.message.includes("protected");
+    if (!isProtected) throw error;
+    const include = window.confirm(
+      `${error.message}
+
+You picked these yourself. Include the protected files anyway?`,
+    );
+    if (!include) throw error;
+    return apiClient.post<ExecutionPlan>("/v1/execution-plans", { ...request, include_protected: true });
+  }
+}
+
 export async function runStorageAction(
   request: CreateExecutionPlanRequest,
   progress: string,
 ): Promise<Action | null> {
   let plan: ExecutionPlan;
   try {
-    plan = await apiClient.post<ExecutionPlan>("/v1/execution-plans", request);
+    plan = await createUserPickedPlan(request);
   } catch (error) {
     toast.error(error instanceof ApiError ? error.message : "Couldn't start that — try again.");
     return null;

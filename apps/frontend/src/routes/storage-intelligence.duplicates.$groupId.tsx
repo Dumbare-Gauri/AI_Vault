@@ -1,7 +1,7 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Link, createFileRoute, redirect } from "@tanstack/react-router";
 import type { DuplicateGroupDetail, ExecutionPlan } from "@vault/types";
-import { CheckCircle2, ChevronLeft, Sparkles, Trash2 } from "lucide-react";
+import { CheckCircle2, Sparkles, Trash2 } from "lucide-react";
 
 import { AppShell } from "@/components/app-shell/app-shell";
 import { Badge } from "@/components/ui/badge";
@@ -17,6 +17,8 @@ import { formatBytes } from "@/lib/format-bytes";
 import { formatRelativeTime } from "@/lib/format-relative-time";
 import { confidenceLabel } from "@/lib/storage-intelligence-style";
 import { useAuthStore } from "@/stores/auth-store";
+import { useCopilotPage } from "@/stores/copilot-store";
+import { BackLink } from "@/components/ui/back-link";
 
 export const Route = createFileRoute("/storage-intelligence/duplicates/$groupId")({
   beforeLoad: () => {
@@ -35,6 +37,11 @@ function DuplicateGroupDetailPage() {
   const groupQuery = useQuery({
     queryKey: ["storage-intelligence", "duplicates", groupId],
     queryFn: () => apiClient.get<DuplicateGroupDetail>(`/v1/storage/duplicates/${groupId}`),
+  });
+  useCopilotPage({
+    page: "duplicate-group",
+    label: "Duplicate group",
+    fileIds: groupQuery.data?.members.map((member) => member.file.id) ?? [],
   });
 
   const removeDuplicatesMutation = useMutation({
@@ -57,12 +64,7 @@ function DuplicateGroupDetailPage() {
   return (
     <AppShell title="Duplicate group">
       <div className="mx-auto flex max-w-3xl flex-col gap-4">
-        <Link
-          to="/storage-intelligence/duplicates"
-          className="flex w-fit items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
-        >
-          <ChevronLeft className="size-4" /> Back to duplicate files
-        </Link>
+        <BackLink to="/storage-intelligence/duplicates">Back to duplicate files</BackLink>
 
         {groupQuery.isLoading && (
           <div className="flex flex-col gap-4">

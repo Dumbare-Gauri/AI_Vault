@@ -33,7 +33,7 @@ def test_emptying_the_trash_deletes_only_trashed_items(agent: AgentService, tmp_
 
     result = agent.handle({"op": "empty_trash", "params": {"confirm": True}})
 
-    assert result == {"ok": True, "deleted_count": 1}
+    assert result == {"ok": True, "deleted_count": 1, "failed": []}
     assert agent.handle({"op": "trash_contents", "params": {}})["files"] == []
     assert (tmp_path / "work" / "keep.txt").exists()
 
@@ -45,3 +45,24 @@ def test_emptying_needs_confirmation(agent: AgentService) -> None:
 
     assert result["ok"] is False
     assert len(agent.handle({"op": "trash_contents", "params": {}})["files"]) == 1
+
+
+def test_one_item_that_cannot_be_deleted_does_not_stop_the_rest(
+    agent: AgentService, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    agent.handle({"op": "trash", "params": {"id": _id(agent, "old.txt")}})
+    agent.handle({"op": "trash", "params": {"id": _id(agent, "keep.txt")}})
+    real_delete = agent.ops.permanent_delete
+
+    def locked_old(root, trash_id, *, confirm):  # noqa: ANN001, ANN202
+        item = next(i for i in agent.ops.list_trash(root) if i.trash_id == trash_id)
+        if item.name == "old.txt":
+            raise PermissionError("The file is open in another program")
+        return real_delete(root, trash_id, confirm=confirm)
+
+    monkeypatch.setattr(agent.ops, "permanent_delete", locked_old)
+
+    result = agent.handle({"op": "empty_trash", "params": {"confirm": True}})
+
+    assert result["deleted_count"] == 1
+    assert [item["name"] for item in result["failed"]] == ["old.txt"]

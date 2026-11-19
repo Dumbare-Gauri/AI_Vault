@@ -28,6 +28,10 @@ class InsightRecord(Base):
     organization_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True
     )
+    # The storage this insight was computed from.
+    connector_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("storage_connectors.id", ondelete="CASCADE"), nullable=True, index=True
+    )
     recommendation_job_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("recommendation_jobs.id", ondelete="SET NULL"), nullable=True
     )

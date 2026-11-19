@@ -94,4 +94,64 @@ describe("AnswerBlocks", () => {
 
     await waitFor(() => expect(post).toHaveBeenCalledWith("/v1/conversations/conv-1/actions/a1/confirm"));
   });
+
+  it("lists every file a removal affects and holds a large one until it's reviewed", () => {
+    post.mockClear();
+    const items = Array.from({ length: 25 }, (_, n) => file(n));
+    renderBlocks(
+      message([
+        {
+          type: "action_proposal",
+          action_id: "a2",
+          kind: "trash",
+          title: "Move the files to Trash",
+          description: "Moves 40 files to Trash.",
+          risk: "high",
+          confirm_label: "Move 40 files to Trash",
+          affected_count: 40,
+          items,
+          preview: null,
+          status: "pending",
+        },
+      ]),
+    );
+
+    expect(screen.getByText("Blarrow 0.pdf")).toBeInTheDocument();
+    expect(screen.getByText(/Show 15 more of 15/)).toBeInTheDocument();
+    const confirm = screen.getByRole("button", { name: "Move 40 files to Trash" });
+    expect(confirm).toBeDisabled();
+
+    fireEvent.click(screen.getByRole("checkbox"));
+
+    expect(confirm).toBeEnabled();
+  });
+
+  it("names the protected files a proposal leaves alone, with the reason", () => {
+    renderBlocks(
+      message([
+        {
+          type: "action_proposal",
+          action_id: "a3",
+          kind: "trash",
+          title: "Remove 1 duplicate copy",
+          description: "",
+          risk: "medium",
+          confirm_label: "Move copies to Trash",
+          affected_count: 1,
+          items: [file(1)],
+          protected_count: 1,
+          protected_items: [
+            { ...file(9), name: "__init__.py", reasons: ["Source code (.py)", "Part of the software project in /AI_Vault"] },
+          ],
+          preview: null,
+          status: "pending",
+        },
+      ]),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /1 protected file left untouched/ }));
+
+    expect(screen.getByText("__init__.py")).toBeInTheDocument();
+    expect(screen.getByText(/Source code \(\.py\) · Part of the software project/)).toBeInTheDocument();
+  });
 });

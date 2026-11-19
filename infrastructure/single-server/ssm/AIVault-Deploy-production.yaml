@@ -1,0 +1,17 @@
+# SSM Command document: the only thing the production deploy role may run
+# on the server. It deploys one commit to production and can do nothing
+# else.
+schemaVersion: "2.2"
+description: Deploy one commit of AI Vault to the production environment.
+parameters:
+  CommitSha:
+    type: String
+    description: Full 40-character git commit SHA.
+    allowedPattern: "^[0-9a-f]{40}$"
+mainSteps:
+  - action: aws:runShellScript
+    name: deploy
+    inputs:
+      timeoutSeconds: "1800"
+      runCommand:
+        - /opt/aivault/production/src/infrastructure/single-server/deploy.sh production {{ CommitSha }}

@@ -118,9 +118,11 @@ def test_run_due_fires_a_due_scheduled_trigger_and_reschedules_it(db: Session) -
     )
     db.commit()
 
+    # Other due triggers left in a shared database may fire too; only this
+    # workflow's outcome is asserted.
     fired = SchedulerService(db).run_due()
 
-    assert fired == 1
+    assert fired >= 1
     executions = WorkflowExecutionRepository(db).list_for_workflow(workflow.id)
     assert len(executions) == 1
     assert executions[0].trigger_type == WorkflowTriggerType.SCHEDULED
@@ -208,3 +210,29 @@ def test_run_due_skips_a_trigger_with_no_published_version(db: Session) -> None:
 
     assert fired == 0
     assert WorkflowExecutionRepository(db).list_for_workflow(workflow.id) == []
+
+
+@requires_infra
+def test_each_scheduled_run_belongs_to_its_own_organization(db: Session) -> None:
+    workflows = []
+    for _ in range(2):
+        user = _provision_user(db)
+        workflow, _version = _provision_published_workflow(
+            db, organization_id=user.organization_id, user_id=user.id
+        )
+        trigger = WorkflowTriggerRepository(db).create(
+            workflow_id=workflow.id,
+            trigger_type=WorkflowTriggerType.SCHEDULED,
+            config={"cron": "* * * * *"},
+        )
+        SchedulerJobRepository(db).upsert_for_trigger(
+            trigger.id, next_run_at=datetime.now(UTC) - timedelta(minutes=1)
+        )
+        workflows.append(workflow)
+    db.commit()
+
+    SchedulerService(db).run_due()
+
+    for workflow in workflows:
+        [execution] = WorkflowExecutionRepository(db).list_for_workflow(workflow.id)
+        assert execution.organization_id == workflow.organization_id

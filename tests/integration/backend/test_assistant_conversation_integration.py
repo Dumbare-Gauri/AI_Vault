@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 from urllib.parse import urlparse
 
 import pytest
+from workspace_testing import workspace_of
 from sqlalchemy.orm import Session
 
 from app.application.conversation_service import _DEGRADED_NOTICE, ConversationService
@@ -166,6 +167,7 @@ def test_a_storage_question_is_answered_from_figures_without_asking_the_model(
 
     turn = service.ask(
         organization_id=org.id,
+        workspace=workspace_of(db, org.id),
         user_id=user.id,
         conversation_id=None,
         question="How much storage am I using?",
@@ -188,6 +190,7 @@ def test_a_storage_question_never_runs_a_content_search(db: Session) -> None:
 
     service.ask(
         organization_id=org.id,
+        workspace=workspace_of(db, org.id),
         user_id=user.id,
         conversation_id=None,
         question="How much storage am I using?",
@@ -265,6 +268,7 @@ def test_a_rag_turn_also_gets_the_persona_prompt(db: Session) -> None:
 
     service.ask(
         organization_id=org.id,
+        workspace=workspace_of(db, org.id),
         user_id=user.id,
         conversation_id=None,
         question="What does the payroll file say?",
@@ -283,6 +287,7 @@ def test_storage_figures_are_exact_with_no_model_configured(db: Session) -> None
 
     turn = service.ask(
         organization_id=org.id,
+        workspace=workspace_of(db, org.id),
         user_id=user.id,
         conversation_id=None,
         question="How much storage am I using?",
@@ -319,6 +324,7 @@ def test_storage_figures_are_still_given_when_the_ai_is_unavailable(
 
     turn = service.ask(
         organization_id=org.id,
+        workspace=workspace_of(db, org.id),
         user_id=user.id,
         conversation_id=None,
         question="How much storage am I using?",
@@ -338,6 +344,7 @@ def test_a_search_turn_is_answered_and_persisted_when_the_ai_is_unavailable(db: 
 
     turn = service.ask(
         organization_id=org.id,
+        workspace=workspace_of(db, org.id),
         user_id=user.id,
         conversation_id=None,
         question="What does the payroll file say?",
@@ -357,6 +364,7 @@ def test_the_conversation_can_continue_after_an_ai_outage(db: Session) -> None:
     )
     first = service.ask(
         organization_id=org.id,
+        workspace=workspace_of(db, org.id),
         user_id=user.id,
         conversation_id=None,
         question="How much storage am I using?",
@@ -364,6 +372,7 @@ def test_the_conversation_can_continue_after_an_ai_outage(db: Session) -> None:
 
     second = service.ask(
         organization_id=org.id,
+        workspace=workspace_of(db, org.id),
         user_id=user.id,
         conversation_id=first.conversation.id,
         question="How much storage am I using now?",
@@ -396,6 +405,7 @@ def test_a_question_about_a_file_is_answered_from_the_page_that_contains_it(db: 
 
     turn = service.ask(
         organization_id=org.id,
+        workspace=workspace_of(db, org.id),
         user_id=user.id,
         conversation_id=None,
         question="What was the payment amount in the Blarrow contract?",
@@ -417,6 +427,7 @@ def test_with_no_matching_files_the_model_is_never_asked(db: Session) -> None:
 
     turn = service.ask(
         organization_id=org.id,
+        workspace=workspace_of(db, org.id),
         user_id=user.id,
         conversation_id=None,
         question="What is the payment amount in the Zephyr agreement?",
@@ -443,6 +454,7 @@ def test_instructions_inside_a_file_reach_the_model_only_as_data(db: Session) ->
 
     service.ask(
         organization_id=org.id,
+        workspace=workspace_of(db, org.id),
         user_id=user.id,
         conversation_id=None,
         question="What do the meeting notes say?",

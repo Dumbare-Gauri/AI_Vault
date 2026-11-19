@@ -19,13 +19,14 @@ from sqlalchemy.orm import Session
 
 from app.application.execution_plan_service import ExecutionPlanService
 from app.application.storage_operation_service import StorageOperationService
-from vault_shared import NotFoundError, VaultError
+from vault_shared import ConflictError, NotFoundError, VaultError
 from vault_shared.db.models import ConversationMessage, ExecutionActionType, File, MessageRole
 from vault_shared.db.repositories import (
     ConversationMessageRepository,
     ConversationRepository,
     FileRepository,
     FolderRepository,
+    StorageSourceRepository,
 )
 
 _MAX_FILES_PER_PLAN = 500
@@ -51,6 +52,7 @@ class VaultActionService:
         self._messages = ConversationMessageRepository(db)
         self._files = FileRepository(db)
         self._folders = FolderRepository(db)
+        self._sources = StorageSourceRepository(db)
 
     # -- public ------------------------------------------------------------------------
 
@@ -61,11 +63,28 @@ class VaultActionService:
         *,
         organization_id: uuid.UUID,
         user_id: uuid.UUID,
+        workspace_id: uuid.UUID,
     ) -> ConversationMessage:
+        """`workspace_id` is the storage the user confirms from. It must be
+        the conversation's own storage: a proposal made in Google Drive is
+        never carried out while the user is in the computer workspace, or
+        the reverse. Every file id and folder in the proposal is checked
+        again against that storage."""
         conversation, state, proposal = self._pending(
             conversation_id, action_id, organization_id=organization_id, user_id=user_id
         )
+        if conversation.connector_id is None or conversation.connector_id != workspace_id:
+            raise ConflictError(
+                "This proposal belongs to another storage workspace — switch to it to confirm."
+            )
+        connector_id = proposal.get("connector_id")
+        if connector_id is not None and uuid.UUID(connector_id) != workspace_id:
+            raise ConflictError("This proposal names a different storage — nothing was changed.")
         self._org, self._user = organization_id, user_id
+        self._workspace_id = workspace_id
+        self._sources_in_workspace = {
+            source.id for source in self._sources.list_for_connector(workspace_id)
+        }
         steps: list[dict[str, Any]] = []
         handler = getattr(self, f"_do_{proposal['kind']}")
         handler(proposal, state, steps)
@@ -157,12 +176,22 @@ class VaultActionService:
                 ]
 
     def _owned(self, ids: list[str], *, trashed: bool = False) -> list[File]:
+        """Only this organization's files in the conversation's storage — an
+        id from another storage is dropped, never acted on."""
         parsed = [uuid.UUID(i) for i in ids]
         if trashed:
-            return self._files.list_owned_by_organization_including_trashed(
+            files = self._files.list_owned_by_organization_including_trashed(
                 parsed, organization_id=self._org
             )
-        return self._files.list_owned_by_organization(parsed, organization_id=self._org)
+        else:
+            files = self._files.list_owned_by_organization(parsed, organization_id=self._org)
+        return [file for file in files if file.storage_source_id in self._sources_in_workspace]
+
+    def _folder_in_workspace(self, folder_id: uuid.UUID) -> Any:
+        folder = self._folders.get_by_id(folder_id)
+        if folder is None or folder.storage_source_id not in self._sources_in_workspace:
+            return None
+        return folder
 
     def _by_storage(self, files: list[File]) -> dict[uuid.UUID, list[uuid.UUID]]:
         groups: dict[uuid.UUID, list[uuid.UUID]] = defaultdict(list)
@@ -188,6 +217,7 @@ class VaultActionService:
                     organization_id=self._org,
                     user_id=self._user,
                     require_approval=False,
+                    connector_id=self._workspace_id,
                     **kwargs,
                 )
             except VaultError as error:
@@ -220,7 +250,7 @@ class VaultActionService:
                 "message": f"Created {created.get('path') or name} — confirmed by the storage.",
             }
         )
-        return self._folders.get_by_id(uuid.UUID(created["id"]))
+        return self._folder_in_workspace(uuid.UUID(created["id"]))
 
     def _do_create_folder(self, proposal: dict, state: dict, steps: list) -> None:
         folder = self._create_folder(steps, proposal["connector_id"], proposal["name"])
@@ -236,7 +266,7 @@ class VaultActionService:
         if "create" in destination:
             folder = self._create_folder(steps, proposal["connector_id"], destination["create"])
         else:
-            folder = self._folders.get_by_id(uuid.UUID(destination["folder_id"]))
+            folder = self._folder_in_workspace(uuid.UUID(destination["folder_id"]))
         if folder is None:
             if not steps:
                 steps.append(
@@ -306,7 +336,13 @@ class VaultActionService:
             )
 
     def _do_organize(self, proposal: dict, state: dict, steps: list) -> None:
-        root = self._create_folder(steps, proposal["connector_id"], proposal["root"])
+        parent = proposal.get("parent_folder_id")
+        root = self._create_folder(
+            steps,
+            proposal["connector_id"],
+            proposal["root"],
+            uuid.UUID(parent) if parent else None,
+        )
         if root is None:
             return
         state["last_folder"] = {

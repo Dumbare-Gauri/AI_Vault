@@ -8,6 +8,7 @@ from app.presentation.dependencies.auth import get_current_user
 from app.presentation.dependencies.services import get_recommendation_service
 from fastapi.testclient import TestClient
 from vault_shared import ConflictError, ForbiddenError, NotFoundError
+from conftest import WORKSPACE
 
 client = TestClient(app)
 
@@ -88,6 +89,7 @@ def test_list_recommendations_returns_items(as_member, fake_recommendation_servi
         category=None,
         status="active",
         search=None,
+        connector_id=WORKSPACE.id,
     )
 
 
@@ -105,6 +107,7 @@ def test_list_recommendations_passes_filters_through(
         category="security",
         status="resolved",
         search="invoice",
+        connector_id=WORKSPACE.id,
     )
 
 

@@ -47,6 +47,7 @@ from vault_shared.storage.models import (
     StoragePermission,
     StorageQuota,
 )
+from vault_shared.storage.native_archive import NativeArchive, NativeExtraction
 
 PROVIDER = "local_agent"
 # An agent that hasn't reported in for this long is treated as offline.
@@ -54,6 +55,17 @@ _ONLINE_WINDOW = timedelta(seconds=90)
 _POLL_SECONDS = 0.4
 _DEFAULT_TIMEOUT_SECONDS = 60
 _MAX_CREATED_FILE_BYTES = 1024 * 1024
+# Zipping is disk-bound: allow for a slow disk (~5 MB/s) before giving up
+# on the agent, so a multi-gigabyte archive isn't reported as failed while
+# the agent is still writing it.
+_SLOWEST_ARCHIVE_BYTES_PER_SECOND = 5 * 1024 * 1024
+_MAX_ARCHIVE_TIMEOUT_SECONDS = 12 * 60 * 60
+
+
+def _archive_timeout(base: int, expected_bytes: int) -> int:
+    return min(
+        base + expected_bytes // _SLOWEST_ARCHIVE_BYTES_PER_SECOND, _MAX_ARCHIVE_TIMEOUT_SECONDS
+    )
 
 
 def _parse_time(value: str | None) -> datetime | None:
@@ -264,16 +276,62 @@ class LocalAgentAdapter:
             self._call("create_file", {"name": name, "content": text, **self._parent(parent_id)})
         )
 
+    def create_archive(
+        self,
+        items: list[tuple[ProviderFileId, str]],
+        *,
+        parent_id: ProviderFileId,
+        name: str,
+        expected_bytes: int = 0,
+    ) -> NativeArchive:
+        result = self._call(
+            "create_archive",
+            {
+                "items": [{"id": file_id, "arcname": arcname} for file_id, arcname in items],
+                "parent_id": parent_id,
+                "name": name,
+            },
+            timeout=_archive_timeout(self._timeout, expected_bytes),
+        )
+        return NativeArchive(
+            file=self._file(result), entries=result["entries"], skipped=result["skipped"]
+        )
+
+    def archive_contents(self, file_id: ProviderFileId, *, expected_bytes: int = 0) -> dict:
+        result = self._call(
+            "archive_contents",
+            {"id": file_id},
+            timeout=_archive_timeout(self._timeout, expected_bytes // 100),
+        )
+        return {key: value for key, value in result.items() if key != "ok"}
+
+    def extract_archive(
+        self, file_id: ProviderFileId, *, parent_id: ProviderFileId, expected_bytes: int = 0
+    ) -> NativeExtraction:
+        result = self._call(
+            "extract_archive",
+            {"id": file_id, "parent_id": parent_id},
+            timeout=_archive_timeout(self._timeout, expected_bytes),
+        )
+        return NativeExtraction(
+            folder=self._file(result),
+            created=[
+                to_storage_file(item, connection_id=self._connector_id)
+                for item in result["created"]
+            ],
+            skipped=result["skipped"],
+        )
+
     # -- the command round trip --------------------------------------------------
 
-    def _call(self, op: str, params: dict) -> dict:
+    def _call(self, op: str, params: dict, *, timeout: int | None = None) -> dict:
         with self._session_factory() as session:
             command = AgentCommandRepository(session).enqueue(
                 connector_id=self._connector_id, op=op, params=params
             )
             session.commit()
             command_id = command.id
-        deadline = time.monotonic() + self._timeout
+        deadline = time.monotonic() + (timeout or self._timeout)
         while time.monotonic() < deadline:
             time.sleep(_POLL_SECONDS)
             with self._session_factory() as session:

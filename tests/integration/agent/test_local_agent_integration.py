@@ -5,6 +5,7 @@ each change checked on disk and in AI Vault's index."""
 
 import os
 import socket
+import zipfile
 import sys
 import threading
 import uuid
@@ -314,3 +315,89 @@ def test_a_finished_scan_starts_reading_the_files_and_refreshes_storage_intellig
 
     assert len(enrichment) == 1
     assert len(analysis) == 1
+
+
+@pytest.fixture
+def project(db: Session, tmp_path: Path):
+    """A small project on disk: nested folders, a name used twice, a photo."""
+    root = tmp_path / "Laptop Projects"
+    (root / "Site" / "docs").mkdir(parents=True)
+    (root / "Site" / "assets").mkdir()
+    (root / "Site" / "docs" / "notes.txt").write_text("site notes " * 200, encoding="utf-8")
+    (root / "Site" / "assets" / "notes.txt").write_text("asset notes", encoding="utf-8")
+    (root / "Site" / "assets" / "logo.png").write_bytes(bytes(range(256)) * 20)
+    machine = _Machine(db, root)
+    machine.report_in_and_scan(db)
+    with machine:
+        yield machine
+
+
+def _folder(db: Session, machine: _Machine, name: str):  # noqa: ANN202
+    return next(
+        folder
+        for source in db.query(StorageSource).filter_by(connector_id=machine.connector.id)
+        for folder in FolderRepository(db).list_for_source(source.id)
+        if folder.name == name
+    )
+
+
+def _engine(db: Session) -> ExecutionService:
+    return ExecutionService(
+        db,
+        storage=build_storage_registry(db, oauth_client=MagicMock()),
+        object_storage_client=MagicMock(),
+    )
+
+
+@requires_infra
+def test_archiving_a_folder_builds_a_checked_zip_on_this_computer(
+    db: Session, project: _Machine
+) -> None:
+    site = _folder(db, project, "Site")
+
+    _run_action(
+        db, project, [], action_type=ExecutionActionType.CREATE_ARCHIVE, folder_ids=[site.id]
+    )
+
+    [zip_path] = list((project.root / "AI Vault Archive").rglob("*.zip"))
+    with zipfile.ZipFile(zip_path) as archive:
+        assert archive.testzip() is None
+        assert sorted(archive.namelist()) == [
+            "Site/assets/logo.png",
+            "Site/assets/notes.txt",
+            "Site/docs/notes.txt",
+        ]
+    # Originals stay, and the archive shows in Files where it was saved.
+    assert (project.root / "Site" / "docs" / "notes.txt").exists()
+    recorded = _indexed(db, project, zip_path.name)
+    assert recorded.path.endswith(f"/{zip_path.name}")
+    assert recorded.path.startswith("/AI Vault Archive/")
+
+
+@requires_infra
+def test_extracting_an_archive_recreates_its_folders_and_indexes_them(
+    db: Session, project: _Machine
+) -> None:
+    site = _folder(db, project, "Site")
+    _run_action(
+        db, project, [], action_type=ExecutionActionType.CREATE_ARCHIVE, folder_ids=[site.id]
+    )
+    [zip_path] = list((project.root / "AI Vault Archive").rglob("*.zip"))
+    archive = _indexed(db, project, zip_path.name)
+
+    summary = _engine(db).extract_archive(
+        organization_id=project.user.organization_id, file_id=archive.id
+    )
+
+    unpacked = zip_path.parent / zip_path.name[:-4]
+    assert (unpacked / "Site" / "assets" / "notes.txt").read_text() == "asset notes"
+    assert summary.file_count == 3
+    db.expire_all()
+    names = {
+        file.path
+        for file in FileRepository(db).list_under_folder(
+            summary.folder.storage_source_id, summary.folder.path
+        )
+    }
+    assert f"{summary.folder.path}/Site/docs/notes.txt" in names
+    assert f"{summary.folder.path}/Site/assets/notes.txt" in names

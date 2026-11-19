@@ -1,0 +1,12 @@
+# Each exception names one exact package version and expires, so it can't
+# hide a different or future finding.
+vulnerabilities:
+  - id: CVE-2025-47273
+    purls:
+      - pkg:pypi/setuptools@70.3.0
+    statement: >-
+      Reported from pip's own SBOM (pip/_vendor/bom.cdx.json). pip vendors
+      only pkg_resources from setuptools 70.3.0; the vulnerable
+      setuptools/package_index.py is not in the image. The installed
+      setuptools in site-packages is >=78.1.1 (requirements.txt).
+    expired_at: 2027-05-19

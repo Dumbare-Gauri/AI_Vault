@@ -3,7 +3,7 @@ import uuid
 from sqlalchemy.orm import Session
 
 from vault_shared import get_logger
-from vault_shared.db.models import RecommendationJob
+from vault_shared.db.models import RecommendationJob, StorageConnector
 from vault_shared.db.repositories import (
     DashboardSnapshotRepository,
     EmbeddingRepository,
@@ -16,6 +16,7 @@ from vault_shared.db.repositories import (
     RecommendationJobRepository,
     RecommendationRepository,
     StorageConnectorRepository,
+    StorageSourceRepository,
 )
 from worker.recommendation.context import FileRow, RuleContext
 from worker.recommendation.insights import INSIGHTS
@@ -51,6 +52,7 @@ class RecommendationService:
     def __init__(self, db: Session) -> None:
         self._db = db
         self._connectors = StorageConnectorRepository(db)
+        self._sources = StorageSourceRepository(db)
         self._files = FileRepository(db)
         self._folders = FolderRepository(db)
         self._relationships = FileRelationshipRepository(db)
@@ -98,13 +100,46 @@ class RecommendationService:
         self._db.commit()
 
     def _generate(self, job: RecommendationJob) -> int:
+        """Rules, insights and the dashboard snapshot run once per connected
+        storage, over that storage's files only — Google Drive and local
+        storage are separate workspaces, and no recommendation, insight or
+        total ever combines them."""
         organization_id = job.organization_id
-        connectors = self._connectors.list_for_organization(organization_id)
         detail_rows = self._files.list_for_organization_with_details(organization_id)
         relationships = self._relationships.list_for_organization(organization_id)
         embeddings = self._embeddings.list_for_organization(organization_id)
-        folder_count = self._folders.count_for_organization(organization_id)
+        active = 0
+        for connector in self._connectors.list_for_organization(organization_id):
+            source_ids = {source.id for source in self._sources.list_for_connector(connector.id)}
+            rows = [row for row in detail_rows if row[0].storage_source_id in source_ids]
+            file_ids = {row[0].id for row in rows}
+            active += self._generate_for_storage(
+                job,
+                connector,
+                rows,
+                relationships=[
+                    relationship
+                    for relationship in relationships
+                    if relationship.file_id in file_ids and relationship.related_file_id in file_ids
+                ],
+                embedded_file_ids={
+                    embedding.file_id
+                    for _, embedding in embeddings
+                    if embedding.file_id in file_ids
+                },
+            )
+        return active
 
+    def _generate_for_storage(
+        self,
+        job: RecommendationJob,
+        connector: StorageConnector,
+        detail_rows: list,
+        *,
+        relationships: list,
+        embedded_file_ids: set[uuid.UUID],
+    ) -> int:
+        organization_id = job.organization_id
         rows = [
             FileRow(
                 file=file,
@@ -132,8 +167,8 @@ class RecommendationService:
             rows=rows,
             owned_rows=owned_rows,
             relationships=relationships,
-            connector_count=len(connectors),
-            embedded_file_ids={embedding.file_id for _, embedding in embeddings},
+            connector_count=1,
+            embedded_file_ids=embedded_file_ids,
         )
 
         fired: dict[str, tuple] = {}
@@ -171,6 +206,7 @@ class RecommendationService:
             )
             self._recommendations.upsert(
                 organization_id=organization_id,
+                connector_id=connector.id,
                 recommendation_job_id=job.id,
                 rule_name=rule.name,
                 category=rule.category,
@@ -186,7 +222,7 @@ class RecommendationService:
                 priority_score=priority,
             )
         self._recommendations.resolve_stale(
-            organization_id=organization_id, seen_rule_names=set(fired)
+            organization_id=organization_id, connector_id=connector.id, seen_rule_names=set(fired)
         )
 
         if len(rows) >= _MIN_FILES_FOR_RULES:
@@ -201,6 +237,7 @@ class RecommendationService:
                 if insight_result is not None:
                     self._insights.create(
                         organization_id=organization_id,
+                        connector_id=connector.id,
                         recommendation_job_id=job.id,
                         insight_type=insight.insight_type,
                         title=insight_result.title,
@@ -209,7 +246,9 @@ class RecommendationService:
                         related_file_ids=insight_result.related_file_ids,
                     )
 
-        active_count = self._recommendations.count_active_for_organization(organization_id)
+        active_count = self._recommendations.count_active_for_organization(
+            organization_id, connector_id=connector.id
+        )
         # Scoped to owned_rows, not all of `rows` — everything in this
         # snapshot is now consistently "your own files" (total_files,
         # classified/unclassified, completeness score all share the same
@@ -219,10 +258,11 @@ class RecommendationService:
         pending_enrichment_count = sum(1 for row in owned_rows if row.metadata is None)
         self._snapshots.create(
             organization_id=organization_id,
+            connector_id=connector.id,
             recommendation_job_id=job.id,
-            connected_providers=len(connectors),
+            connected_providers=1,
             total_files=len(owned_rows),
-            total_folders=folder_count,
+            total_folders=self._folders.count_for_connector(connector.id),
             total_storage_bytes=sum(row.file.size_bytes or 0 for row in owned_rows),
             classified_files=classified_count,
             unclassified_files=len(owned_rows) - classified_count,

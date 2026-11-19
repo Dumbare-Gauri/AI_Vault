@@ -8,6 +8,7 @@ from app.main import app
 from app.presentation.dependencies.auth import get_current_user
 from app.presentation.dependencies.services import get_dashboard_service
 from fastapi.testclient import TestClient
+from conftest import WORKSPACE
 
 client = TestClient(app)
 
@@ -76,7 +77,7 @@ def test_get_dashboard_returns_the_overview(as_member, fake_dashboard_service) -
     assert body["latest_snapshot"]["total_files"] == 100
     assert body["latest_scan_status"] == "completed"
     assert body["intelligence"]["entities_by_type"] == {"project": 3}
-    fake_dashboard_service.get_overview.assert_called_once_with(as_member.organization_id)
+    fake_dashboard_service.get_overview.assert_called_once_with(as_member.organization_id, connector_id=WORKSPACE.id)
 
 
 def test_get_dashboard_serves_the_second_request_from_cache(
@@ -106,7 +107,7 @@ def test_get_dashboard_serves_the_second_request_from_cache(
     assert first.status_code == 200
     assert second.status_code == 200
     assert first.json() == second.json()
-    fake_dashboard_service.get_overview.assert_called_once_with(as_member.organization_id)
+    fake_dashboard_service.get_overview.assert_called_once_with(as_member.organization_id, connector_id=WORKSPACE.id)
 
     get_redis().delete(f"dashboard:{as_member.organization_id}")
 

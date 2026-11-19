@@ -8,6 +8,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Table, TableBody, TableCell, TableRow } from "@/components/ui/table";
+import { toast } from "@/components/ui/toaster";
 import { ApiError, apiClient } from "@/lib/api-client";
 import { trackAction } from "@/lib/storage-action";
 import { assistantToolLabel } from "@/lib/assistant-tool";
@@ -48,6 +49,9 @@ export function AIFileResultList({
       setSelected(new Set());
       void trackAction(plan.id, "Moving to Trash…");
     },
+    onError: (error) => {
+      toast.error(error instanceof ApiError ? error.message : "Couldn't start that — nothing was changed.");
+    },
   });
 
   const createArchiveMutation = useMutation({
@@ -59,6 +63,9 @@ export function AIFileResultList({
     onSuccess: (plan) => {
       setSelected(new Set());
       void trackAction(plan.id, "Creating archive…");
+    },
+    onError: (error) => {
+      toast.error(error instanceof ApiError ? error.message : "Couldn't start that — nothing was changed.");
     },
   });
 

@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, createFileRoute, redirect } from "@tanstack/react-router";
 import type { OrganizationRecommendation } from "@vault/types";
-import { ChevronLeft, FolderTree } from "lucide-react";
+import { FolderTree } from "lucide-react";
 
 import { AppShell } from "@/components/app-shell/app-shell";
 import { Badge } from "@/components/ui/badge";
@@ -15,6 +15,8 @@ import { formatBytes } from "@/lib/format-bytes";
 import { formatRelativeTime } from "@/lib/format-relative-time";
 import { recommendationKindLabel } from "@/lib/organization-style";
 import { useAuthStore } from "@/stores/auth-store";
+import { useCopilotPage } from "@/stores/copilot-store";
+import { BackLink } from "@/components/ui/back-link";
 
 export const Route = createFileRoute("/organization-recommendations/$recommendationId")({
   beforeLoad: () => {
@@ -73,6 +75,11 @@ function OrganizationRecommendationDetailPage() {
   });
 
   const recommendation = recommendationQuery.data;
+  useCopilotPage({
+    page: "organization-recommendation",
+    label: recommendation?.title ?? "Organization suggestion",
+    fileIds: recommendation?.affected_file_ids ?? [],
+  });
   const shownFiles = recommendation?.affected_file_ids.slice(0, MAX_FILES_SHOWN) ?? [];
   const remainingCount = recommendation
     ? recommendation.affected_file_ids.length - shownFiles.length
@@ -81,12 +88,7 @@ function OrganizationRecommendationDetailPage() {
   return (
     <AppShell title="Organization Recommendation">
       <div className="mx-auto flex max-w-3xl flex-col gap-4">
-        <Link
-          to="/recommendations"
-          className="flex w-fit items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
-        >
-          <ChevronLeft className="size-4" /> Back to organization recommendations
-        </Link>
+        <BackLink to="/recommendations">Back to recommendations</BackLink>
 
         {recommendationQuery.isLoading && <Skeleton className="h-64 rounded-2xl" />}
         {recommendationQuery.isError && (

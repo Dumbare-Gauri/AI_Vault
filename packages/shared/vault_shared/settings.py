@@ -172,12 +172,14 @@ class Settings(BaseSettings):
     object_storage_secret_key: str = "vault-minio-secret"
     object_storage_bucket: str = "vault-archives"
     object_storage_secure: bool = False
-    # Bounds per-file worker memory while building an archive zip — reads are
-    # streamed from the storage adapter but still collected into `bytes` here
-    # (`read_bounded`) since `zipfile.writestr` needs the whole file at once.
-    # A file over this size is skipped (its step fails individually) rather
-    # than risking the whole worker process.
-    archive_max_file_size_bytes: int = 2 * 1024**3
+    # Where a Google Drive archive is assembled before upload (and an archive
+    # is spooled before extraction): files stream through it chunk by chunk,
+    # so archive size is bounded by this disk's free space, never by memory.
+    # Defaults to the system temp directory.
+    archive_temp_dir: str | None = None
+    # Left free on that disk while archiving; a file that would eat into it
+    # is refused up front with how much space it needs.
+    archive_free_space_reserve_bytes: int = 512 * 1024**2
 
     @property
     def cors_origins_list(self) -> list[str]:

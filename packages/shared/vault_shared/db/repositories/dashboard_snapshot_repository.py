@@ -18,6 +18,7 @@ class DashboardSnapshotRepository:
         self,
         *,
         organization_id: uuid.UUID,
+        connector_id: uuid.UUID | None = None,
         recommendation_job_id: uuid.UUID | None,
         connected_providers: int,
         total_files: int,
@@ -33,6 +34,7 @@ class DashboardSnapshotRepository:
     ) -> DashboardSnapshot:
         snapshot = DashboardSnapshot(
             organization_id=organization_id,
+            connector_id=connector_id,
             recommendation_job_id=recommendation_job_id,
             connected_providers=connected_providers,
             total_files=total_files,
@@ -59,14 +61,12 @@ class DashboardSnapshotRepository:
         )
 
     def list_recent_for_organization(
-        self, organization_id: uuid.UUID, *, limit: int = 30
+        self, organization_id: uuid.UUID, *, limit: int = 30, connector_id: uuid.UUID | None = None
     ) -> list[DashboardSnapshot]:
         """Newest-first — callers that render a trend chart should reverse
-        this to chronological order themselves."""
-        return (
-            self._session.query(DashboardSnapshot)
-            .filter_by(organization_id=organization_id)
-            .order_by(DashboardSnapshot.created_at.desc())
-            .limit(limit)
-            .all()
-        )
+        this to chronological order themselves. With `connector_id`, only
+        that storage's snapshots."""
+        query = self._session.query(DashboardSnapshot).filter_by(organization_id=organization_id)
+        if connector_id is not None:
+            query = query.filter(DashboardSnapshot.connector_id == connector_id)
+        return query.order_by(DashboardSnapshot.created_at.desc()).limit(limit).all()

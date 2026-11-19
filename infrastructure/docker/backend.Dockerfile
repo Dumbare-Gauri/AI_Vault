@@ -7,6 +7,7 @@ FROM python:3.13-slim
 WORKDIR /workspace
 
 RUN apt-get update \
+    && apt-get upgrade -y --no-install-recommends \
     && apt-get install -y --no-install-recommends build-essential libpq-dev curl \
     && rm -rf /var/lib/apt/lists/*
 
@@ -17,7 +18,9 @@ COPY apps/backend/requirements.txt ./apps/backend/requirements.txt
 # relative to the *current working directory*, not the requirements file's
 # location — so this install must run with apps/backend as cwd.
 WORKDIR /workspace/apps/backend
-RUN pip install --no-cache-dir -r requirements.txt
+# The base image's pip bundles vulnerable msgpack and urllib3 copies.
+RUN pip install --no-cache-dir --upgrade "pip>=26.3" \
+    && pip install --no-cache-dir -r requirements.txt
 
 WORKDIR /workspace
 COPY apps/backend ./apps/backend
@@ -28,7 +31,8 @@ COPY apps/backend ./apps/backend
 # OAuth scopes (Handbook §13). `/workspace` must be writable by this user
 # for local dev's bind-mounted hot-reload (docker-compose.yml) to work.
 RUN useradd --create-home --uid 1000 vault_app \
-    && chown -R vault_app:vault_app /workspace
+    && mkdir -p /home/vault_app/gensim-data \
+    && chown -R vault_app:vault_app /workspace /home/vault_app/gensim-data
 USER vault_app
 
 WORKDIR /workspace/apps/backend

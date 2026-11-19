@@ -5,7 +5,7 @@ import { ChevronLeft, ChevronRight, Copy } from "lucide-react";
 import { useState } from "react";
 
 import { AppShell } from "@/components/app-shell/app-shell";
-import { StorageScopeSwitcher, useStorageScope } from "@/components/storage-intelligence/storage-scope-switcher";
+import { useStorageScope } from "@/components/storage-intelligence/storage-scope-switcher";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -14,6 +14,8 @@ import { apiClient } from "@/lib/api-client";
 import { formatBytes } from "@/lib/format-bytes";
 import { useAuthStore } from "@/stores/auth-store";
 import { scopedPath } from "@/stores/storage-scope-store";
+import { useCopilotPage } from "@/stores/copilot-store";
+import { BackLink } from "@/components/ui/back-link";
 
 export const Route = createFileRoute("/storage-intelligence/duplicates/")({
   beforeLoad: () => {
@@ -27,6 +29,7 @@ export const Route = createFileRoute("/storage-intelligence/duplicates/")({
 const PAGE_SIZE = 20;
 
 function DuplicateGroupsPage() {
+  useCopilotPage({ page: "duplicates", label: "Duplicate files" });
   const [page, setPage] = useState(0);
   const { connectorId } = useStorageScope();
 
@@ -44,12 +47,7 @@ function DuplicateGroupsPage() {
     <AppShell title="Duplicate files">
       <div className="mx-auto flex max-w-4xl flex-col gap-4">
         <div>
-          <Link
-            to="/storage-intelligence"
-            className="flex w-fit items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
-          >
-            <ChevronLeft className="size-4" /> Back to Storage Intelligence
-          </Link>
+          <BackLink to="/storage-intelligence">Back to Storage Intelligence</BackLink>
           <h1 className="mt-2 text-xl font-semibold tracking-tight">Duplicate files</h1>
           <p className="text-sm text-muted-foreground">
             {total > 0
@@ -57,7 +55,6 @@ function DuplicateGroupsPage() {
               : "Exact-duplicate groups, based on real content checksums."}
           </p>
         </div>
-        <StorageScopeSwitcher />
 
         {groupsQuery.isLoading && (
           <div className="flex flex-col gap-2">

@@ -8,6 +8,7 @@ from app.presentation.dependencies.auth import get_current_user
 from app.presentation.dependencies.services import get_storage_intelligence_service
 from fastapi.testclient import TestClient
 from vault_shared import ConflictError, NotFoundError
+from conftest import WORKSPACE
 
 client = TestClient(app)
 
@@ -27,6 +28,7 @@ class _FakeStorageAnalysisJob:
 class _FakeDuplicateGroup:
     def __init__(self) -> None:
         self.id = uuid.uuid4()
+        self.connector_id = WORKSPACE.id
         self.checksum = "abc123"
         self.file_count = 2
         self.total_size_bytes = 2000
@@ -112,7 +114,7 @@ def test_list_duplicates_passes_pagination_params(as_member, fake_storage_servic
 
     assert response.status_code == 200
     fake_storage_service.list_duplicate_groups.assert_called_once_with(
-        as_member.organization_id, limit=10, offset=20, connector_id=None
+        as_member.organization_id, limit=10, offset=20, connector_id=WORKSPACE.id
     )
 
 

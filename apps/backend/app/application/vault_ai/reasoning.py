@@ -26,6 +26,9 @@ from vault_shared.formatting import human_bytes
 
 logger = get_logger("app.application.vault_ai.reasoning")
 
+_REMOVAL_KINDS = frozenset({"trash", "clean_duplicates"})
+# A folder the model itself is unsure of is not a reason to move anything.
+_MIN_FOLDER_CONFIDENCE = 0.5
 _MAX_FILES_FOR_MODEL = 150
 _MAX_OUTPUT_TOKENS = 2048
 _SUMMARY_CHARS = 140
@@ -137,20 +140,28 @@ class ModelReasoning:
             name = _safe_name(folder.get("name"))
             if not name:
                 continue
+            confidence = folder.get("confidence")
+            if (
+                not isinstance(confidence, bool)
+                and isinstance(confidence, (int, float))
+                and confidence < _MIN_FOLDER_CONFIDENCE
+            ):
+                continue
             ids = []
             for ref in folder.get("files") or []:
                 if isinstance(ref, str) and ref in refs and ref not in used:
                     used.add(ref)
                     ids.append(str(refs[ref].id))
             if name and ids:
-                confidence = folder.get("confidence")
                 folders.append(
                     {
                         "name": name,
                         "file_ids": ids,
                         "reason": str(folder.get("reason") or "")[:300] or None,
                         "confidence": float(confidence)
-                        if isinstance(confidence, (int, float)) and 0 <= confidence <= 1
+                        if not isinstance(confidence, bool)
+                        and isinstance(confidence, (int, float))
+                        and 0 <= confidence <= 1
                         else None,
                     }
                 )
@@ -185,9 +196,12 @@ class ModelReasoning:
         return renames
 
     def classify(self, question: str, fallback: Request) -> Request:
-        prompt = _CLASSIFY_PROMPT % (sorted(KINDS), sorted(_FILE_TYPES))
+        """A model may only ever *read* a request as a removal if the fixed
+        rules already did: what to delete is never the model's call."""
+        kinds = sorted(KINDS - _REMOVAL_KINDS)
+        prompt = _CLASSIFY_PROMPT % (kinds, sorted(_FILE_TYPES))
         answer = self._ask(prompt, f"Request: {question[:500]}")
-        if answer is None or answer.get("kind") not in KINDS:
+        if answer is None or answer.get("kind") not in kinds:
             return fallback
         scope = answer.get("scope") if answer.get("scope") in ("local", "drive") else None
         file_type = answer.get("file_type") if answer.get("file_type") in _FILE_TYPES else None

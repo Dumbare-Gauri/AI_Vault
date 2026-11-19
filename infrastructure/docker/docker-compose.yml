@@ -113,6 +113,33 @@ services:
       - ../../apps/worker:/workspace/apps/worker
       - ../../packages/shared:/workspace/packages/shared
 
+  # Celery Beat: only enqueues scheduled tasks; the worker runs them. Exactly
+  # one per environment — never scale this service. A second one would still
+  # not double-fire a workflow (each due job is claimed atomically), but it
+  # would double the sweeps.
+  scheduler:
+    build:
+      context: ../..
+      dockerfile: infrastructure/docker/worker.Dockerfile
+    env_file:
+      - ../../.env
+    environment:
+      DATABASE_URL: postgresql+psycopg://vault:vault@postgres:5432/vault
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      redis:
+        condition: service_healthy
+    volumes:
+      - ../../apps/worker:/workspace/apps/worker
+      - ../../packages/shared:/workspace/packages/shared
+    command:
+      [
+        "celery", "-A", "worker.celery_app", "beat", "--loglevel=info",
+        "--schedule", "/tmp/celerybeat-schedule",
+      ]
+    healthcheck:
+      disable: true
+
   frontend:
     build:
       context: ../..

@@ -9,7 +9,7 @@ from app.application.storage_operation_service import StorageOperationService
 from app.main import app
 from app.presentation.dependencies.auth import get_current_user
 from app.presentation.dependencies.services import get_storage_operation_service
-from vault_shared import ValidationError
+from vault_shared import NotFoundError, ValidationError
 
 client = TestClient(app)
 
@@ -29,36 +29,104 @@ def _service_owning_the_connector() -> StorageOperationService:
     return service
 
 
-def test_a_wrong_confirmation_never_reaches_the_provider() -> None:
+class _FakeRedis:
+    def __init__(self) -> None:
+        self.values: dict[str, str] = {}
+
+    def get(self, key: str) -> str | None:
+        return self.values.get(key)
+
+    def set(self, key: str, value: str, *, nx: bool = False, ex: int | None = None) -> bool:
+        if nx and key in self.values:
+            return False
+        self.values[key] = value
+        return True
+
+    def delete(self, key: str) -> None:
+        self.values.pop(key, None)
+
+
+@pytest.fixture
+def redis(monkeypatch: pytest.MonkeyPatch) -> _FakeRedis:
+    fake = _FakeRedis()
+    monkeypatch.setattr(service_module, "get_redis", lambda: fake)
+    return fake
+
+
+def _start(service: StorageOperationService, connector_id: uuid.UUID, *, confirmed: bool) -> str:
+    return service.start_empty_trash(
+        connector_id,
+        organization_id=uuid.uuid4(),
+        user_id=uuid.uuid4(),
+        expected_count=2,
+        confirmed=confirmed,
+    )
+
+
+def test_without_the_acknowledgement_nothing_reaches_the_provider(redis: _FakeRedis) -> None:
     service = _service_owning_the_connector()
 
-    with patch.object(service_module, "run_storage_operation") as run:
+    with patch.object(service_module, "start_storage_operation") as start:
         with pytest.raises(ValidationError):
-            service.empty_trash(
-                uuid.uuid4(),
-                organization_id=uuid.uuid4(),
-                user_id=uuid.uuid4(),
-                expected_count=2,
-                confirmation="yes",
-            )
+            _start(service, uuid.uuid4(), confirmed=False)
 
-    run.assert_not_called()
+    start.assert_not_called()
 
 
-def test_the_typed_confirmation_and_reviewed_count_are_sent_to_the_worker() -> None:
+def test_the_acknowledged_reviewed_count_is_sent_to_the_worker(redis: _FakeRedis) -> None:
     service = _service_owning_the_connector()
     connector_id = uuid.uuid4()
 
-    with patch.object(service_module, "run_storage_operation", return_value=_SUMMARY) as run:
-        service.empty_trash(
-            connector_id,
-            organization_id=uuid.uuid4(),
-            user_id=uuid.uuid4(),
-            expected_count=2,
-            confirmation="empty trash",
-        )
+    with patch.object(service_module, "start_storage_operation", return_value="op-1") as start:
+        operation_id = _start(service, connector_id, confirmed=True)
 
-    assert run.call_args.kwargs["args"][1:] == [str(connector_id), 2]
+    assert operation_id == "op-1"
+    assert start.call_args.kwargs["args"][1:] == [str(connector_id), 2]
+
+
+def test_a_repeated_submit_joins_the_run_already_in_progress(redis: _FakeRedis) -> None:
+    service = _service_owning_the_connector()
+    connector_id = uuid.uuid4()
+
+    with patch.object(service_module, "start_storage_operation", return_value="op-1") as start:
+        first = _start(service, connector_id, confirmed=True)
+        second = _start(service, connector_id, confirmed=True)
+
+    assert first == second
+    start.assert_called_once()
+
+
+def test_a_running_operation_reports_running(redis: _FakeRedis) -> None:
+    service = _service_owning_the_connector()
+
+    with patch.object(service_module, "storage_operation_result", return_value=None):
+        status = service.empty_trash_status(uuid.uuid4(), "op-1", organization_id=uuid.uuid4())
+
+    assert status == {"status": "running"}
+
+
+def test_a_finished_operation_reports_what_was_not_deleted(redis: _FakeRedis) -> None:
+    service = _service_owning_the_connector()
+    connector_id = uuid.uuid4()
+    outcome = {
+        **_SUMMARY,
+        "connector_id": str(connector_id),
+        "not_deleted": [{"name": "Locked.db", "size_bytes": 5, "backed_up": False}],
+    }
+
+    with patch.object(service_module, "storage_operation_result", return_value=outcome):
+        status = service.empty_trash_status(connector_id, "op-1", organization_id=uuid.uuid4())
+
+    assert status["summary"]["not_deleted"][0]["name"] == "Locked.db"
+
+
+def test_another_connections_operation_cannot_be_read(redis: _FakeRedis) -> None:
+    service = _service_owning_the_connector()
+    outcome = {**_SUMMARY, "connector_id": str(uuid.uuid4())}
+
+    with patch.object(service_module, "storage_operation_result", return_value=outcome):
+        with pytest.raises(NotFoundError):
+            service.empty_trash_status(uuid.uuid4(), "op-1", organization_id=uuid.uuid4())
 
 
 def test_a_member_cannot_empty_the_trash(member_user) -> None:
@@ -68,14 +136,14 @@ def test_a_member_cannot_empty_the_trash(member_user) -> None:
     try:
         response = client.post(
             f"/v1/connectors/{uuid.uuid4()}/provider-trash/empty",
-            json={"expected_count": 1, "confirmation": "EMPTY TRASH"},
+            json={"expected_count": 1, "confirmed": True},
         )
     finally:
         app.dependency_overrides.pop(get_current_user, None)
         app.dependency_overrides.pop(get_storage_operation_service, None)
 
     assert response.status_code == 403
-    fake_service.empty_trash.assert_not_called()
+    fake_service.start_empty_trash.assert_not_called()
 
 
 def test_the_preview_reports_what_would_be_deleted(owner_user) -> None:
@@ -91,18 +159,3 @@ def test_the_preview_reports_what_would_be_deleted(owner_user) -> None:
 
     assert response.status_code == 200
     assert response.json()["not_backed_up_count"] == 1
-
-
-def test_spacing_in_the_confirmation_does_not_matter() -> None:
-    service = _service_owning_the_connector()
-
-    with patch.object(service_module, "run_storage_operation", return_value=_SUMMARY) as run:
-        service.empty_trash(
-            uuid.uuid4(),
-            organization_id=uuid.uuid4(),
-            user_id=uuid.uuid4(),
-            expected_count=2,
-            confirmation=" Empty  trash ",
-        )
-
-    run.assert_called_once()

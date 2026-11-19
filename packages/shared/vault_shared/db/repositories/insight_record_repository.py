@@ -17,6 +17,7 @@ class InsightRecordRepository:
         self,
         *,
         organization_id: uuid.UUID,
+        connector_id: uuid.UUID | None = None,
         recommendation_job_id: uuid.UUID | None,
         insight_type: str,
         title: str,
@@ -26,6 +27,7 @@ class InsightRecordRepository:
     ) -> InsightRecord:
         insight = InsightRecord(
             organization_id=organization_id,
+            connector_id=connector_id,
             recommendation_job_id=recommendation_job_id,
             insight_type=insight_type,
             title=title,
@@ -38,12 +40,10 @@ class InsightRecordRepository:
         return insight
 
     def list_recent_for_organization(
-        self, organization_id: uuid.UUID, *, limit: int = 20
+        self, organization_id: uuid.UUID, *, limit: int = 20, connector_id: uuid.UUID | None = None
     ) -> list[InsightRecord]:
-        return (
-            self._session.query(InsightRecord)
-            .filter_by(organization_id=organization_id)
-            .order_by(InsightRecord.created_at.desc())
-            .limit(limit)
-            .all()
-        )
+        """With `connector_id`, only that storage's insights."""
+        query = self._session.query(InsightRecord).filter_by(organization_id=organization_id)
+        if connector_id is not None:
+            query = query.filter(InsightRecord.connector_id == connector_id)
+        return query.order_by(InsightRecord.created_at.desc()).limit(limit).all()

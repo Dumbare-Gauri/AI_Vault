@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, createFileRoute, redirect } from "@tanstack/react-router";
-import type { Connector, EmbeddingJob, EnrichmentJob, IntelligenceJob, ScanJob } from "@vault/types";
+import type { EmbeddingJob, EnrichmentJob, IntelligenceJob, ScanJob } from "@vault/types";
 import { Cloud } from "lucide-react";
 
 import { AppShell } from "@/components/app-shell/app-shell";
@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Skeleton } from "@/components/ui/skeleton";
+import { fetchConnectors } from "@/lib/connectors";
 import { apiClient } from "@/lib/api-client";
 import { embeddingStatusBadgeVariant, isActiveEmbeddingStatus } from "@/lib/embedding-status";
 import { enrichmentStatusBadgeVariant, isActiveEnrichmentStatus } from "@/lib/enrichment-status";
@@ -33,7 +34,7 @@ function ScansPage() {
 
   const connectorsQuery = useQuery({
     queryKey: ["connectors"],
-    queryFn: () => apiClient.get<Connector[]>("/v1/connectors"),
+    queryFn: fetchConnectors,
   });
 
   const connector = connectorsQuery.data?.find(

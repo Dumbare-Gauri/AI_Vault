@@ -16,7 +16,13 @@ from pathlib import Path
 
 from aivault_agent.agent_service import AgentService
 from aivault_agent.background import main as run_in_background
-from aivault_agent.install import WindowsRegistry, install, start_now, uninstall, windowless_python
+from aivault_agent.install import (
+    WindowsRegistry,
+    install,
+    start_now,
+    uninstall,
+    windowless_python,
+)
 from aivault_agent.safety import PathRefused
 from aivault_agent.settings import default_roots_file, settings_folder
 

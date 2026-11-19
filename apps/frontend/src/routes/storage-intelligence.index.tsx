@@ -25,7 +25,6 @@ import type { LucideIcon } from "lucide-react";
 import { AppShell } from "@/components/app-shell/app-shell";
 import {
   StorageScopeNote,
-  StorageScopeSwitcher,
   useStorageScope,
 } from "@/components/storage-intelligence/storage-scope-switcher";
 import { Badge } from "@/components/ui/badge";
@@ -41,6 +40,7 @@ import { entityTypeLabel } from "@/lib/organization-style";
 import { analysisStatusBadgeVariant, analysisStatusLabel } from "@/lib/storage-intelligence-style";
 import { useAuthStore } from "@/stores/auth-store";
 import { scopedPath } from "@/stores/storage-scope-store";
+import { useCopilotPage } from "@/stores/copilot-store";
 
 export const Route = createFileRoute("/storage-intelligence/")({
   beforeLoad: () => {
@@ -77,6 +77,7 @@ function StatCard({
 }
 
 function StorageIntelligencePage() {
+  useCopilotPage({ page: "storage-intelligence", label: "Storage Intelligence" });
   const queryClient = useQueryClient();
   const user = useAuthStore((state) => state.user);
   const canManage = user?.role === "owner" || user?.role === "admin";
@@ -172,7 +173,6 @@ function StorageIntelligencePage() {
         </div>
 
         <div className="flex flex-col gap-2">
-          <StorageScopeSwitcher />
           <StorageScopeNote connector={connector} />
         </div>
 

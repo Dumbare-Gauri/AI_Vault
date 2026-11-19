@@ -18,7 +18,8 @@ from app.presentation.dependencies.services import (
     get_conversation_service,
     get_vault_action_service,
 )
-from vault_shared.db.models import RoleName, User
+from app.presentation.dependencies.workspace import get_workspace
+from vault_shared.db.models import RoleName, StorageConnector, User
 
 conversations_router = APIRouter(tags=["conversations"])
 
@@ -30,10 +31,14 @@ _require_owner_or_admin = require_role(RoleName.OWNER, RoleName.ADMIN)
 
 @conversations_router.get("/conversations", response_model=list[ConversationResponse])
 def list_conversations(
+    workspace: StorageConnector = Depends(get_workspace),
     user: User = Depends(get_current_user),
     service: ConversationService = Depends(get_conversation_service),
 ) -> list[ConversationResponse]:
-    conversations = service.list_for_user(organization_id=user.organization_id, user_id=user.id)
+    """The signed-in user's conversations in this storage workspace."""
+    conversations = service.list_for_user(
+        organization_id=user.organization_id, user_id=user.id, connector_id=workspace.id
+    )
     return [ConversationResponse.from_model(c) for c in conversations]
 
 
@@ -59,6 +64,7 @@ def get_conversation(
 )
 def start_conversation(
     request: AskRequest,
+    workspace: StorageConnector = Depends(get_workspace),
     user: User = Depends(get_current_user),
     service: ConversationService = Depends(get_conversation_service),
 ) -> AskResponse:
@@ -67,6 +73,8 @@ def start_conversation(
         user_id=user.id,
         conversation_id=None,
         question=request.question,
+        workspace=workspace,
+        page=request.page_context(),
     )
     return AskResponse.from_turn(turn)
 
@@ -80,6 +88,7 @@ def start_conversation(
 def send_message(
     conversation_id: uuid.UUID,
     request: AskRequest,
+    workspace: StorageConnector = Depends(get_workspace),
     user: User = Depends(get_current_user),
     service: ConversationService = Depends(get_conversation_service),
 ) -> AskResponse:
@@ -88,6 +97,8 @@ def send_message(
         user_id=user.id,
         conversation_id=conversation_id,
         question=request.question,
+        workspace=workspace,
+        page=request.page_context(),
     )
     return AskResponse.from_turn(turn)
 
@@ -126,13 +137,19 @@ def get_result_page(
 def confirm_action(
     conversation_id: uuid.UUID,
     action_id: str,
+    workspace: StorageConnector = Depends(get_workspace),
     user: User = Depends(_require_owner_or_admin),
     service: VaultActionService = Depends(get_vault_action_service),
 ) -> ConversationMessageResponse:
     """Carries out a change Ask Vault proposed — only ever after this
-    explicit confirmation, and only through the Execution Engine."""
+    explicit confirmation, only in the storage workspace the proposal was
+    made in, and only through the Execution Engine."""
     message = service.confirm(
-        conversation_id, action_id, organization_id=user.organization_id, user_id=user.id
+        conversation_id,
+        action_id,
+        organization_id=user.organization_id,
+        user_id=user.id,
+        workspace_id=workspace.id,
     )
     return ConversationMessageResponse.from_model(message)
 

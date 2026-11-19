@@ -49,11 +49,24 @@ export interface TrashSummary {
   largest: TrashItem[];
   /** Accepted by the provider but still being removed when last checked. */
   still_deleting_count: number;
+  /** After emptying: the files still there when AI Vault last checked. */
+  not_deleted?: TrashItem[];
 }
 
 export interface EmptyTrashRequest {
   expected_count: number;
-  confirmation: string;
+  /** The user ticked "I understand these files will be permanently deleted". */
+  confirmed: boolean;
+}
+
+export interface EmptyTrashStarted {
+  operation_id: string;
+}
+
+export interface EmptyTrashStatus {
+  status: "running" | "done" | "failed";
+  summary: TrashSummary | null;
+  error: string | null;
 }
 
 export interface AgentVolume {

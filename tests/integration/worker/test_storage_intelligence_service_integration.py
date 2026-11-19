@@ -218,7 +218,9 @@ def test_files_with_no_checksum_are_never_treated_as_duplicates(db: Session) -> 
 
 
 @requires_infra
-def test_zero_byte_files_with_matching_checksum_are_still_grouped(db: Session) -> None:
+def test_zero_byte_files_are_never_grouped_as_duplicates(db: Session) -> None:
+    """Every empty file shares one checksum — an empty `__init__.py` is not a
+    redundant copy of another project's."""
     user = _provision_user(db)
     connector = _provision_connector(db, organization_id=user.organization_id, user_id=user.id)
     _provision_file(
@@ -236,9 +238,8 @@ def test_zero_byte_files_with_matching_checksum_are_still_grouped(db: Session) -
     groups, total = DuplicateGroupRepository(db).list_for_organization(
         user.organization_id, limit=10, offset=0
     )
-    assert total == 1
-    assert groups[0].total_size_bytes == 0
-    assert groups[0].recoverable_size_bytes == 0
+    assert total == 0
+    assert groups == []
 
 
 @requires_infra

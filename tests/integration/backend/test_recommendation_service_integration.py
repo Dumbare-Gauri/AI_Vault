@@ -3,6 +3,7 @@ import uuid
 from urllib.parse import urlparse
 
 import pytest
+from workspace_testing import workspace_of
 from app.application.auth_service import AuthService
 from app.application.recommendation_service import RecommendationService
 from app.infrastructure.auth.google_identity import GoogleUserInfo
@@ -70,7 +71,7 @@ def _provision_recommendation(
         organization_id=organization_id, triggered_by="manual", triggered_by_user_id=None
     )
     recommendation = RecommendationRepository(db).upsert(
-        organization_id=organization_id,
+        organization_id=organization_id, connector_id=workspace_of(db, organization_id).id,
         recommendation_job_id=job.id,
         rule_name=rule_name,
         category=category,

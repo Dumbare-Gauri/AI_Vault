@@ -40,10 +40,10 @@ class GoogleIdentityVerifier:
             ) from exc
 
         try:
-            return GoogleUserInfo(
+            user = GoogleUserInfo(
                 sub=claims["sub"],
                 email=claims["email"],
-                email_verified=bool(claims.get("email_verified", False)),
+                email_verified=_is_verified(claims.get("email_verified")),
                 name=claims.get("name", claims["email"]),
                 picture=claims.get("picture"),
             )
@@ -51,6 +51,20 @@ class GoogleIdentityVerifier:
             raise UnauthorizedError(
                 "Google sign-in failed — incomplete profile information."
             ) from exc
+        if not user.email_verified:
+            # An unverified address isn't proof of who owns it; the account
+            # is never created or signed into on its strength.
+            logger.warning("google_sign_in_unverified_email")
+            raise UnauthorizedError(
+                "Google sign-in failed — verify this account's email address with Google first."
+            )
+        return user
+
+
+def _is_verified(claim: object) -> bool:
+    # Google sends a boolean, or the string "true" in some older tokens;
+    # nothing else (not even 1, which equals True in Python) counts.
+    return claim is True or claim == "true"
 
 
 def get_google_identity_verifier() -> GoogleIdentityVerifier:

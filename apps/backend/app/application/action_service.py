@@ -13,6 +13,7 @@ from vault_shared.db.models import (
     ExecutionPlanStatus,
     ExecutionResultStatus,
     ExecutionStepStatus,
+    StorageConnector,
     VerificationStatus,
     provider_display_name,
     provider_location,
@@ -25,6 +26,8 @@ from vault_shared.db.repositories import (
     ExecutionResultRepository,
     ExecutionStepRepository,
     FileRepository,
+    FolderRepository,
+    StorageSourceRepository,
 )
 
 # How a finished action reads to a user — the noun phrase for the file
@@ -124,6 +127,8 @@ class ActionService:
         self._archives = ArchiveJobRepository(db)
         self._audits = ExecutionAuditRepository(db)
         self._files = FileRepository(db)
+        self._folders = FolderRepository(db)
+        self._sources = StorageSourceRepository(db)
         self._job_service = job_service
 
     def get(self, action_id: uuid.UUID, *, organization_id: uuid.UUID) -> ActionResult:
@@ -140,7 +145,13 @@ class ActionService:
         )
         return self.get(action_id, organization_id=organization_id)
 
-    def recent_activity(self, organization_id: uuid.UUID) -> list[ActivityItem]:
+    def recent_activity(
+        self, organization_id: uuid.UUID, *, workspace: StorageConnector
+    ) -> list[ActivityItem]:
+        """What happened in one storage workspace. A folder, file or Trash
+        event that can't be tied to this storage is left out rather than
+        shown in the wrong place."""
+        in_workspace = {source.id for source in self._sources.list_for_connector(workspace.id)}
         items = [
             ActivityItem(
                 id=str(result.id),
@@ -152,7 +163,7 @@ class ActionService:
             for result in (
                 self._describe(plan)
                 for plan in self._plans.list_for_organization(
-                    organization_id, limit=_ACTIVITY_LIMIT
+                    organization_id, limit=_ACTIVITY_LIMIT, provider=workspace.provider
                 )
             )
             # An action whose files were all later deleted from storage has
@@ -164,6 +175,8 @@ class ActionService:
             event_types=["folder_created", "file_created", "file_copied", "trash_emptied"],
             limit=_ACTIVITY_LIMIT,
         ):
+            if not self._audit_in_workspace(audit.metadata_, workspace, in_workspace):
+                continue
             items.append(
                 ActivityItem(
                     id=str(audit.id),
@@ -175,6 +188,19 @@ class ActionService:
             )
         items.sort(key=lambda item: item.at, reverse=True)
         return items[:_ACTIVITY_LIMIT]
+
+    def _audit_in_workspace(
+        self, metadata: dict, workspace: StorageConnector, sources: set[uuid.UUID]
+    ) -> bool:
+        if metadata.get("connector_id"):
+            return metadata["connector_id"] == str(workspace.id)
+        if metadata.get("folder_id"):
+            folder = self._folders.get_by_id(uuid.UUID(metadata["folder_id"]))
+            return folder is not None and folder.storage_source_id in sources
+        if metadata.get("file_id"):
+            file = self._files.get_by_id(uuid.UUID(metadata["file_id"]))
+            return file is not None and file.storage_source_id in sources
+        return False
 
     def _describe(self, plan: ExecutionPlan) -> ActionResult:
         steps = self._steps.list_for_plan(plan.id)
@@ -212,11 +238,15 @@ class ActionService:
         }
         names = {
             file.id: file.name
-            for file in self._files.list_by_ids([step.target_file_id for step in steps])
+            for file in self._files.list_by_ids(
+                [step.target_file_id for step in steps if step.target_file_id]
+            )
         }
         problems = [
             ActionProblem(
-                file_name=names.get(step.target_file_id, "A file"),
+                file_name=(names.get(step.target_file_id) if step.target_file_id else None)
+                or step.pre_state.get("name")
+                or "A file",
                 reason=failed_step_ids.get(step.id) or "It could not be completed.",
             )
             for step in steps
@@ -244,7 +274,15 @@ class ActionService:
             message = f"Nothing was {verb} — {failed} of {total} {files} failed"
         else:
             message = f"{succeeded} of {total} {files} {verb} {where}"
-            if verified == succeeded:
+            unconfirmed = succeeded - verified
+            if unconfirmed > 0 and status == "done":
+                # Done but not confirmed by the storage is not "done".
+                status = "partial"
+            if unconfirmed > 0:
+                message += (
+                    f" — {unconfirmed} could not be confirmed by the storage; rescan to check"
+                )
+            else:
                 message += " — confirmed"
             if kind in (ExecutionActionType.ARCHIVE, ExecutionActionType.REMOVE_DUPLICATE):
                 message += ". The space comes back once the Trash is emptied"
@@ -262,9 +300,12 @@ class ActionService:
                     verified=archive_job.verified_at is not None,
                 )
                 if status in ("done", "partial") and archive_job.destination_path:
-                    folder = archive_job.destination_path.rsplit("/", 1)[0].lstrip("/")
+                    folder, _, name = archive_job.destination_path.rpartition("/")
                     kept = archive_job.originals_removed_count == 0
-                    message = f"{succeeded} {files} zipped into '{folder}' {where} — " + (
+                    message = (
+                        f"{succeeded} {files} zipped into '{name}' in "
+                        f"'{folder.lstrip('/') or 'the top folder'}' {where} — verified, "
+                    ) + (
                         "originals kept where they were"
                         if kept
                         else f"{archive_job.originals_removed_count} originals moved to Trash"

@@ -14,7 +14,8 @@ requests>=2.32,<3
 # (a PKCS7 decrypt timing/error oracle) that pip-audit found against 49.0.0 —
 # not reachable through this codebase's Fernet-only usage, but fixed anyway.
 cryptography>=50,<51
-celery[redis]>=5.4,<6
+# <5.7: celery 5.4 + kombu 5.7 fails to publish tasks; 5.7 is untested here.
+celery[redis]>=5.6,<5.7
 
 # Observability (Phase 10, ADR-022) — auto-instruments every FastAPI route
 # and SQLAlchemy query with a span, a no-op until vault_shared's

@@ -4,6 +4,7 @@ from datetime import UTC, datetime, timedelta
 from urllib.parse import urlparse
 
 import pytest
+from workspace_testing import workspace_of
 from app.application.approval_service import ApprovalService
 from app.application.auth_service import AuthService
 from app.application.execution_job_service import ExecutionJobService
@@ -38,6 +39,7 @@ from vault_shared.db.repositories import (
 )
 from vault_shared.db.session import get_session_factory
 from vault_shared.execution import DRIVE_WRITE_SCOPE
+from vault_shared.execution.plan_service import permanent_delete_confirmation
 from vault_shared.security.encryption import encrypt_token
 
 
@@ -153,7 +155,7 @@ def _provision_recommendation(
         organization_id=organization_id, triggered_by="manual", triggered_by_user_id=None
     )
     recommendation = RecommendationRepository(db).upsert(
-        organization_id=organization_id,
+        organization_id=organization_id, connector_id=workspace_of(db, organization_id).id,
         recommendation_job_id=job.id,
         rule_name=rule_name,
         category="storage_optimization",
@@ -338,7 +340,7 @@ def test_create_plan_computes_high_risk_for_many_files(db: Session) -> None:
     recommendation = _provision_recommendation(
         db,
         organization_id=user.organization_id,
-        rule_name="archive_candidates",
+        rule_name="duplicate_files",
         affected_file_ids=[f.id for f in files],
     )
     service = ExecutionPlanService(db)
@@ -359,6 +361,7 @@ def _provision_duplicate_group(
     db.commit()
     group = DuplicateGroupRepository(db).upsert_group(
         organization_id=organization_id,
+        connector_id=workspace_of(db, organization_id).id,
         storage_analysis_job_id=analysis_job.id,
         checksum="test-checksum",
         file_count=1 + len(other_files),
@@ -745,7 +748,10 @@ def test_create_permanent_delete_plan_targets_only_trashed_and_archived_files(db
     service = ExecutionPlanService(db)
 
     plan = service.create_permanent_delete_plan(
-        [trashed.id, active.id], organization_id=user.organization_id, user_id=user.id
+        [trashed.id, active.id],
+        organization_id=user.organization_id,
+        user_id=user.id,
+        confirmation=permanent_delete_confirmation(2),
     )
 
     detail = service.get_detail(plan.id, organization_id=user.organization_id)
@@ -767,7 +773,10 @@ def test_create_permanent_delete_plan_rejects_when_nothing_is_eligible(db: Sessi
 
     with pytest.raises(ValidationError):
         service.create_permanent_delete_plan(
-            [active.id], organization_id=user.organization_id, user_id=user.id
+            [active.id],
+            organization_id=user.organization_id,
+            user_id=user.id,
+            confirmation=permanent_delete_confirmation(1),
         )
 
 
@@ -791,7 +800,10 @@ def test_create_permanent_delete_plan_rejects_a_trashed_file_with_no_archive_bac
 
     with pytest.raises(ValidationError):
         service.create_permanent_delete_plan(
-            [trashed.id], organization_id=user.organization_id, user_id=user.id
+            [trashed.id],
+            organization_id=user.organization_id,
+            user_id=user.id,
+            confirmation=permanent_delete_confirmation(1),
         )
 
 
@@ -818,7 +830,10 @@ def test_create_permanent_delete_plan_rejects_a_file_whose_backing_archive_was_d
 
     with pytest.raises(ValidationError):
         service.create_permanent_delete_plan(
-            [trashed.id], organization_id=user.organization_id, user_id=user.id
+            [trashed.id],
+            organization_id=user.organization_id,
+            user_id=user.id,
+            confirmation=permanent_delete_confirmation(1),
         )
 
 
@@ -838,7 +853,10 @@ def test_create_permanent_delete_plan_excludes_already_permanently_deleted_files
 
     with pytest.raises(ValidationError):
         service.create_permanent_delete_plan(
-            [gone.id], organization_id=user.organization_id, user_id=user.id
+            [gone.id],
+            organization_id=user.organization_id,
+            user_id=user.id,
+            confirmation=permanent_delete_confirmation(1),
         )
 
 

@@ -1,5 +1,7 @@
 import type { ApiErrorResponse } from "@vault/types";
 
+import { withWorkspace } from "@/stores/storage-scope-store";
+
 import { getAccessToken, setAccessToken, tryRefreshAccessToken } from "./session";
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000";
@@ -50,9 +52,11 @@ function buildHeaders(init?: RequestInit): HeadersInit {
  * reaches /auth/refresh and /auth/logout — harmless on endpoints that don't
  * need it. On a 401 from anything *other* than the auth endpoints
  * themselves, attempts exactly one silent refresh-and-retry before giving up
- * (session recovery after an expired access token, not just on cold load). */
+ * (session recovery after an expired access token, not just on cold load).
+ * Workspace-scoped APIs get the current storage workspace attached here, in
+ * one place, so no page can forget it. */
 async function request<T>(path: string, init?: RequestInit, _isRetry = false): Promise<T> {
-  const response = await fetch(`${API_BASE_URL}${path}`, {
+  const response = await fetch(`${API_BASE_URL}${withWorkspace(path)}`, {
     ...init,
     credentials: "include",
     headers: buildHeaders(init),
@@ -80,7 +84,7 @@ async function request<T>(path: string, init?: RequestInit, _isRetry = false): P
 
 /** A file's bytes, with the same auth and refresh handling as JSON calls. */
 async function requestBlob(path: string, _isRetry = false): Promise<Blob> {
-  const response = await fetch(`${API_BASE_URL}${path}`, {
+  const response = await fetch(`${API_BASE_URL}${withWorkspace(path)}`, {
     method: "GET",
     credentials: "include",
     headers: buildHeaders(),

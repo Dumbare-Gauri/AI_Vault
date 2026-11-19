@@ -87,7 +87,11 @@ def _execution_service(session: Session) -> ExecutionService:
 
 
 def _resolve_source_id(
-    session: Session, *, connector_id: uuid.UUID, parent_folder_id: uuid.UUID | None
+    session: Session,
+    *,
+    connector_id: uuid.UUID,
+    parent_folder_id: uuid.UUID | None,
+    source_id: uuid.UUID | None = None,
 ) -> uuid.UUID:
     if parent_folder_id is not None:
         folder = FolderRepository(session).get_by_id(parent_folder_id)
@@ -95,6 +99,10 @@ def _resolve_source_id(
             raise NotFoundError("Parent folder not found.")
         return folder.storage_source_id
     sources = StorageSourceRepository(session).list_for_connector(connector_id)
+    if source_id is not None:
+        if source_id not in {source.id for source in sources}:
+            raise NotFoundError("That folder isn't part of this storage.")
+        return source_id
     primary = [s for s in sources if s.drive_type in (DriveType.MY_DRIVE, DriveType.LOCAL_FOLDER)]
     if not primary:
         raise NotFoundError("This connection hasn't been scanned yet — scan it first.")
@@ -105,7 +113,11 @@ def _resolve_source_id(
 
 @celery_app.task(name="worker.storage.create_folder")
 def create_folder(
-    organization_id: str, connector_id: str, name: str, parent_folder_id: str | None
+    organization_id: str,
+    connector_id: str,
+    name: str,
+    parent_folder_id: str | None,
+    source_id: str | None = None,
 ) -> dict:
     """Request/response task for the API's "New folder": returns the created,
     provider-confirmed folder, or a user-facing error — never a fake
@@ -116,7 +128,10 @@ def create_folder(
         folder = _execution_service(session).create_folder(
             organization_id=uuid.UUID(organization_id),
             storage_source_id=_resolve_source_id(
-                session, connector_id=uuid.UUID(connector_id), parent_folder_id=parent
+                session,
+                connector_id=uuid.UUID(connector_id),
+                parent_folder_id=parent,
+                source_id=uuid.UUID(source_id) if source_id else None,
             ),
             name=name,
             parent_folder_id=parent,
@@ -142,6 +157,7 @@ def create_text_file(
     content: str,
     mime_type: str,
     parent_folder_id: str | None,
+    source_id: str | None = None,
 ) -> dict:
     session = get_session_factory()()
     try:
@@ -149,7 +165,10 @@ def create_text_file(
         file = _execution_service(session).create_text_file(
             organization_id=uuid.UUID(organization_id),
             storage_source_id=_resolve_source_id(
-                session, connector_id=uuid.UUID(connector_id), parent_folder_id=parent
+                session,
+                connector_id=uuid.UUID(connector_id),
+                parent_folder_id=parent,
+                source_id=uuid.UUID(source_id) if source_id else None,
             ),
             name=name,
             content=content,
@@ -191,6 +210,50 @@ def make_copy(organization_id: str, file_id: str, new_name: str | None) -> dict:
         session.close()
 
 
+@celery_app.task(name="worker.storage.extract_archive")
+def extract_archive(
+    organization_id: str, file_id: str, destination_folder_id: str | None = None
+) -> dict:
+    """Unpacks an archive in the user's storage and answers with what the
+    storage confirmed creating, or a user-facing error."""
+    session = get_session_factory()()
+    try:
+        summary = _execution_service(session).extract_archive(
+            organization_id=uuid.UUID(organization_id),
+            file_id=uuid.UUID(file_id),
+            destination_folder_id=(
+                uuid.UUID(destination_folder_id) if destination_folder_id else None
+            ),
+        )
+        return {
+            "ok": True,
+            "id": str(summary.folder.id),
+            "name": summary.folder.name,
+            "path": summary.folder.path,
+            "file_count": summary.file_count,
+            "skipped": summary.skipped,
+        }
+    except VaultError as exc:
+        return {"ok": False, "error": exc.message}
+    finally:
+        session.close()
+
+
+@celery_app.task(name="worker.storage.inspect_archive")
+def inspect_archive(organization_id: str, file_id: str) -> dict:
+    """Lists what a zip holds, read only."""
+    session = get_session_factory()()
+    try:
+        contents = _execution_service(session).inspect_archive(
+            organization_id=uuid.UUID(organization_id), file_id=uuid.UUID(file_id)
+        )
+        return {"ok": True, **contents}
+    except VaultError as exc:
+        return {"ok": False, "error": exc.message}
+    finally:
+        session.close()
+
+
 def _trash_payload(summary: TrashSummary) -> dict:
     return {
         "ok": True,
@@ -201,6 +264,10 @@ def _trash_payload(summary: TrashSummary) -> dict:
         "largest": [
             {"name": item.name, "size_bytes": item.size_bytes, "backed_up": item.backed_up}
             for item in summary.largest
+        ],
+        "not_deleted": [
+            {"name": item.name, "size_bytes": item.size_bytes, "backed_up": False}
+            for item in summary.not_deleted
         ],
     }
 
@@ -230,8 +297,9 @@ def empty_trash(organization_id: str, connector_id: str, expected_count: int) ->
             connector_id=uuid.UUID(connector_id),
             expected_count=expected_count,
         )
-        return _trash_payload(summary)
+        # The backend checks this against the connection it is polling for.
+        return {**_trash_payload(summary), "connector_id": connector_id}
     except VaultError as exc:
-        return {"ok": False, "error": exc.message}
+        return {"ok": False, "error": exc.message, "connector_id": connector_id}
     finally:
         session.close()

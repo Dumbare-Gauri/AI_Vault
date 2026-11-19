@@ -1,11 +1,10 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, createFileRoute, redirect } from "@tanstack/react-router";
-import type { Connector, CreatedItem, FileDetail } from "@vault/types";
+import type { CreatedItem, FileDetail } from "@vault/types";
 import {
   Archive,
   BrainCircuit,
   Copy,
-  ChevronLeft,
   Download,
   ExternalLink,
   FileWarning,
@@ -23,11 +22,14 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { EmptyState } from "@/components/ui/empty-state";
+import { ArchiveContents } from "@/components/file-explorer/archive-contents";
 import { ArchiveDialog } from "@/components/file-explorer/archive-dialog";
+import { suggestArchiveName } from "@/lib/archive-name";
 import { MoveDialog } from "@/components/file-explorer/move-dialog";
 import { RenameDialog } from "@/components/file-explorer/rename-dialog";
 import { Skeleton } from "@/components/ui/skeleton";
 import { toast } from "@/components/ui/toaster";
+import { fetchConnectors } from "@/lib/connectors";
 import { ApiError, apiClient } from "@/lib/api-client";
 import { downloadFile } from "@/lib/download-file";
 import { fileTypeIconElement, fileTypeLabel } from "@/lib/file-icon";
@@ -36,6 +38,8 @@ import { formatRelativeTime } from "@/lib/format-relative-time";
 import { runStorageAction } from "@/lib/storage-action";
 import { entityTypeLabel, lifecycleBadgeVariant, lifecycleLabel } from "@/lib/organization-style";
 import { useAuthStore } from "@/stores/auth-store";
+import { useCopilotPage } from "@/stores/copilot-store";
+import { BackLink } from "@/components/ui/back-link";
 
 export const Route = createFileRoute("/files/$fileId")({
   beforeLoad: () => {
@@ -71,7 +75,7 @@ function FileDetailPage() {
 
   const connectorsQuery = useQuery({
     queryKey: ["connectors"],
-    queryFn: () => apiClient.get<Connector[]>("/v1/connectors"),
+    queryFn: fetchConnectors,
     enabled: canManage,
   });
   const connector = connectorsQuery.data?.find(
@@ -80,6 +84,7 @@ function FileDetailPage() {
   );
 
   const file = fileQuery.data;
+  useCopilotPage({ page: "file", label: file?.name ?? "This file", fileIds: [fileId] });
   // A connection with no account (a local disk) has no files owned by others.
   const isOwned =
     file !== undefined &&
@@ -113,12 +118,7 @@ function FileDetailPage() {
   return (
     <AppShell title="File details">
       <div className="mx-auto flex max-w-4xl flex-col gap-4">
-        <Link
-          to="/files"
-          className="flex w-fit items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
-        >
-          <ChevronLeft className="size-4" /> Back to files
-        </Link>
+        <BackLink to="/files">Back to files</BackLink>
 
         {fileQuery.isLoading && (
           <div className="flex flex-col gap-4">
@@ -229,6 +229,7 @@ function FileDetailPage() {
 
             <div className="grid gap-4 lg:grid-cols-3">
               <div className="flex flex-col gap-4 lg:col-span-2">
+                {file.name.toLowerCase().endsWith(".zip") && <ArchiveContents fileId={file.id} />}
                 <Card>
                   <CardHeader>
                     <CardTitle className="flex items-center gap-2">
@@ -487,7 +488,16 @@ function FileDetailPage() {
           onMoved={refreshAfterFileOp}
         />
       )}
-      {file && archiving && <ArchiveDialog onOpenChange={setArchiving} fileIds={[file.id]} />}
+      {file && connector && archiving && (
+        <ArchiveDialog
+          onOpenChange={setArchiving}
+          connectorId={connector.id}
+          storage={connector.provider === "local_agent" ? "this computer" : "Google Drive"}
+          fileIds={[file.id]}
+          subject={`“${file.name}”`}
+          suggestedName={suggestArchiveName(file.name)}
+        />
+      )}
     </AppShell>
   );
 }

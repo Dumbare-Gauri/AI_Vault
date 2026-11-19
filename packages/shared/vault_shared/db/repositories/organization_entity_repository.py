@@ -3,7 +3,13 @@ import uuid
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from vault_shared.db.models import EntityStatus, FileEntityLink, OrganizationEntity
+from vault_shared.db.models import (
+    EntityStatus,
+    File,
+    FileEntityLink,
+    OrganizationEntity,
+    StorageSource,
+)
 
 
 class OrganizationEntityRepository:
@@ -82,15 +88,23 @@ class OrganizationEntityRepository:
             query = query.filter(OrganizationEntity.status == status)
         return query.order_by(OrganizationEntity.name).all()
 
-    def count_active_by_type(self, organization_id: uuid.UUID) -> dict[str, int]:
-        rows = self._session.execute(
-            select(OrganizationEntity.entity_type, func.count())
-            .where(
-                OrganizationEntity.organization_id == organization_id,
-                OrganizationEntity.status == EntityStatus.ACTIVE,
+    def count_active_by_type(
+        self, organization_id: uuid.UUID, *, connector_id: uuid.UUID | None = None
+    ) -> dict[str, int]:
+        """With `connector_id`, only entities with a file in that storage."""
+        query = select(OrganizationEntity.entity_type, func.count()).where(
+            OrganizationEntity.organization_id == organization_id,
+            OrganizationEntity.status == EntityStatus.ACTIVE,
+        )
+        if connector_id is not None:
+            in_storage = (
+                select(FileEntityLink.entity_id)
+                .join(File, File.id == FileEntityLink.file_id)
+                .join(StorageSource, StorageSource.id == File.storage_source_id)
+                .where(StorageSource.connector_id == connector_id)
             )
-            .group_by(OrganizationEntity.entity_type)
-        ).all()
+            query = query.where(OrganizationEntity.id.in_(in_storage))
+        rows = self._session.execute(query.group_by(OrganizationEntity.entity_type)).all()
         return {entity_type: count for entity_type, count in rows}
 
 

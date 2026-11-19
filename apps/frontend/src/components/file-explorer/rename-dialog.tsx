@@ -1,5 +1,4 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import type { ExecutionPlan } from "@vault/types";
 import { useState } from "react";
 
 import { Button } from "@/components/ui/button";
@@ -12,8 +11,8 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { toast } from "@/components/ui/toaster";
-import { ApiError, apiClient } from "@/lib/api-client";
-import { trackAction } from "@/lib/storage-action";
+import { ApiError } from "@/lib/api-client";
+import { createUserPickedPlan, trackAction } from "@/lib/storage-action";
 
 interface RenameDialogProps {
   onOpenChange: (open: boolean) => void;
@@ -33,7 +32,7 @@ export function RenameDialog({ onOpenChange, fileId, currentName, onRenamed }: R
 
   const renameMutation = useMutation({
     mutationFn: () =>
-      apiClient.post<ExecutionPlan>("/v1/execution-plans", {
+      createUserPickedPlan({
         file_ids: [fileId],
         action_type: "rename",
         new_name: name.trim(),

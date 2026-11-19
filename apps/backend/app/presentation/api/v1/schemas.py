@@ -4,11 +4,11 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from app.application.conversation_service import AssistantTurn, ConversationDetail
+from app.application.conversation_service import AssistantTurn, ConversationDetail, PageContext
 from app.application.dashboard_service import DashboardOverview
 from app.application.execution_job_service import ExecutionJobDetail
 from app.application.execution_plan_service import ExecutionPlanDetail
-from app.application.file_service import FileDetail
+from app.application.file_service import FileDetail, FolderListing
 from app.application.organization_entity_service import OrganizationEntityDetail
 from app.application.search_service import SearchResult
 from app.application.vault_ai.blocks import public as public_blocks
@@ -352,9 +352,124 @@ class FolderSummaryResponse(BaseModel):
         )
 
 
+class BrowseCrumbResponse(BaseModel):
+    label: str
+    source_id: str | None
+    folder_id: str | None
+
+
+class BrowseFolderResponse(BaseModel):
+    """A folder inside the one being browsed. A top-level storage folder
+    (an authorized folder on this computer) has `source_id` and no `id`."""
+
+    id: str | None
+    source_id: str
+    provider_file_id: str | None
+    name: str
+    path: str
+    provider_modified_at: datetime | None = None
+
+
+class FolderListingResponse(BaseModel):
+    breadcrumbs: list[BrowseCrumbResponse]
+    folders: list[BrowseFolderResponse]
+    files: list[FileSummaryResponse]
+    total_files: int
+    source_id: str | None
+    folder_id: str | None
+
+    @classmethod
+    def from_listing(cls, listing: FolderListing) -> "FolderListingResponse":
+        folders = [
+            BrowseFolderResponse(
+                id=None,
+                source_id=str(source.id),
+                provider_file_id=None,
+                name=source.name,
+                path="/",
+            )
+            for source in listing.sources
+        ] + [
+            BrowseFolderResponse(
+                id=str(folder.id),
+                source_id=str(folder.storage_source_id),
+                provider_file_id=folder.provider_file_id,
+                name=folder.name,
+                path=folder.path,
+                provider_modified_at=folder.provider_modified_at,
+            )
+            for folder in listing.folders
+        ]
+        return cls(
+            breadcrumbs=[
+                BrowseCrumbResponse(
+                    label=crumb.label,
+                    source_id=str(crumb.source_id) if crumb.source_id else None,
+                    folder_id=str(crumb.folder_id) if crumb.folder_id else None,
+                )
+                for crumb in listing.breadcrumbs
+            ],
+            folders=folders,
+            files=[FileSummaryResponse.from_model(f) for f in listing.files],
+            total_files=listing.total_files,
+            source_id=str(listing.source_id) if listing.source_id else None,
+            folder_id=str(listing.folder_id) if listing.folder_id else None,
+        )
+
+
+class ExtractArchiveRequest(BaseModel):
+    # The folder to unpack into; the archive's own folder when omitted.
+    destination_folder_id: str | None = None
+
+
+class ExtractedArchiveResponse(BaseModel):
+    """The new folder holding the unpacked files, as the storage confirmed."""
+
+    id: str
+    name: str
+    path: str
+    file_count: int
+    skipped: list[dict]
+
+
+class DeleteAccountRequest(BaseModel):
+    # The account's email, typed by the person: deletion can't be undone.
+    confirm_email: str = Field(min_length=3, max_length=320)
+
+
+class AccountDeletionResponse(BaseModel):
+    connections_removed: int
+    tokens_revoked: int
+    files_unindexed: int
+    cached_archives_deleted: int
+
+
+class ArchiveEntryResponse(BaseModel):
+    name: str
+    size_bytes: int
+    compressed_bytes: int
+    is_folder: bool
+    # False when the entry's path would land outside its folder on extraction.
+    safe: bool
+
+
+class ArchiveContentsResponse(BaseModel):
+    """What a zip holds, read from its index. `entries` lists at most 5,000;
+    the counts cover all of them."""
+
+    entries: list[ArchiveEntryResponse]
+    entry_count: int
+    file_count: int
+    total_bytes: int
+    unsafe_count: int
+
+
 class CreateFolderRequest(BaseModel):
     name: str = Field(min_length=1, max_length=255)
     parent_folder_id: str | None = None
+    # The top-level folder to create in when there's no parent folder (one
+    # authorized folder on this computer).
+    source_id: str | None = None
 
 
 class CreateTextFileRequest(BaseModel):
@@ -362,6 +477,7 @@ class CreateTextFileRequest(BaseModel):
     content: str = Field(max_length=1_000_000)
     format: Literal["text", "markdown"] = "text"
     parent_folder_id: str | None = None
+    source_id: str | None = None
 
 
 class TrashItemResponse(BaseModel):
@@ -378,11 +494,24 @@ class TrashSummaryResponse(BaseModel):
     not_backed_up_count: int
     largest: list[TrashItemResponse]
     still_deleting_count: int = 0
+    # After emptying: the files still there when AI Vault last checked.
+    not_deleted: list[TrashItemResponse] = Field(default_factory=list)
 
 
 class EmptyTrashRequest(BaseModel):
     expected_count: int = Field(ge=0)
-    confirmation: str = Field(max_length=50)
+    # The user ticked "I understand these files will be permanently deleted".
+    confirmed: bool = False
+
+
+class EmptyTrashStartedResponse(BaseModel):
+    operation_id: str
+
+
+class EmptyTrashStatusResponse(BaseModel):
+    status: Literal["running", "done", "failed"]
+    summary: TrashSummaryResponse | None = None
+    error: str | None = None
 
 
 class CopyFileRequest(BaseModel):
@@ -924,6 +1053,9 @@ class ConversationMessageResponse(BaseModel):
 class ConversationResponse(BaseModel):
     id: str
     title: str | None
+    # The storage workspace this conversation works in; null = from before
+    # workspaces (read-only).
+    connector_id: str | None
     created_at: datetime
     updated_at: datetime
 
@@ -932,6 +1064,7 @@ class ConversationResponse(BaseModel):
         return cls(
             id=str(conversation.id),
             title=conversation.title,
+            connector_id=str(conversation.connector_id) if conversation.connector_id else None,
             created_at=conversation.created_at,
             updated_at=conversation.updated_at,
         )
@@ -945,6 +1078,9 @@ class ConversationDetailResponse(ConversationResponse):
         return cls(
             id=str(detail.conversation.id),
             title=detail.conversation.title,
+            connector_id=(
+                str(detail.conversation.connector_id) if detail.conversation.connector_id else None
+            ),
             created_at=detail.conversation.created_at,
             updated_at=detail.conversation.updated_at,
             messages=[
@@ -964,8 +1100,35 @@ class ResultPageResponse(BaseModel):
     groups: list[dict] = []
 
 
+class AskPageContext(BaseModel):
+    """What is on the user's screen: the page, and the ids of the files on
+    it or selected. Only ids that belong to the workspace are used."""
+
+    page: str = Field(min_length=1, max_length=100)
+    label: str | None = Field(default=None, max_length=200)
+    # Visible on the page.
+    file_ids: list[str] = Field(default_factory=list, max_length=5000)
+    # The folder being browsed, or a whole connected folder/drive.
+    folder_id: str | None = Field(default=None, max_length=64)
+    source_id: str | None = Field(default=None, max_length=64)
+    selected_file_ids: list[str] = Field(default_factory=list, max_length=5000)
+
+
 class AskRequest(BaseModel):
     question: str = Field(min_length=1, max_length=4096)
+    context: AskPageContext | None = None
+
+    def page_context(self) -> PageContext | None:
+        if self.context is None:
+            return None
+        return PageContext(
+            page=self.context.page,
+            label=self.context.label,
+            file_ids=tuple(self.context.file_ids),
+            folder_id=self.context.folder_id,
+            source_id=self.context.source_id,
+            selected_file_ids=tuple(self.context.selected_file_ids),
+        )
 
 
 class AskResponse(BaseModel):
@@ -1169,7 +1332,7 @@ class ExecutionStepResponse(BaseModel):
     id: str
     step_order: int
     action_type: str
-    target_file_id: str
+    target_file_id: str | None
     pre_state: dict
     planned_change: dict
     status: str
@@ -1180,7 +1343,7 @@ class ExecutionStepResponse(BaseModel):
             id=str(step.id),
             step_order=step.step_order,
             action_type=step.action_type,
-            target_file_id=str(step.target_file_id),
+            target_file_id=str(step.target_file_id) if step.target_file_id else None,
             pre_state=step.pre_state,
             planned_change=step.planned_change,
             status=step.status,
@@ -1318,15 +1481,28 @@ class CreateExecutionPlanRequest(BaseModel):
     new_parent_id: str | None = None
     # CREATE_ARCHIVE only: move originals to Trash once the archive is verified.
     remove_originals: bool = False
+    # CREATE_ARCHIVE only: whole folders, archived with their structure.
+    folder_ids: list[str] | None = None
+    # CREATE_ARCHIVE only: the name the user chose, and the folder (same
+    # storage) to save it in. Without them the archive gets a dated name in
+    # `AI Vault Archive/<year>/`.
+    archive_name: str | None = Field(default=None, max_length=255)
+    archive_folder_id: uuid.UUID | None = None
+    # The user saw that some picked files are protected (source code, project
+    # or program files) and still wants them included. Never set by AI paths.
+    include_protected: bool = False
 
 
 class PermanentDeleteRequest(BaseModel):
     """Its own request shape, its own endpoint — never folded into
     `CreateExecutionPlanRequest`'s `action_type` allowlist, so a
     real, unrecoverable Drive deletion can never be reached through the
-    generic ad-hoc plan path."""
+    generic ad-hoc plan path. `confirmation` is what the user typed — it
+    must read exactly `DELETE <n> FILES` for the `n` files sent."""
 
     file_ids: list[str]
+    confirmation: str = ""
+    include_protected: bool = False
 
 
 class ApprovalRequestResponse(BaseModel):

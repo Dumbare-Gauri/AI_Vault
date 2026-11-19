@@ -1,0 +1,10 @@
+[Unit]
+Description=AI Vault %i database backup
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/aivault/%i/src/infrastructure/single-server/backup.sh %i
+Nice=10
+IOSchedulingClass=idle

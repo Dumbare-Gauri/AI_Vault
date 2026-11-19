@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 from urllib.parse import urlparse
 
 import pytest
+from workspace_testing import workspace_of
 from app.application.auth_service import AuthService
 from app.application.dashboard_service import DashboardService
 from app.infrastructure.auth.google_identity import GoogleUserInfo
@@ -12,6 +13,7 @@ from vault_shared import get_settings
 from vault_shared.db.models import ConnectorProvider, DriveType
 from vault_shared.db.repositories import (
     FileLifecycleRepository,
+    FileEntityLinkRepository,
     FileRepository,
     OrganizationEntityRepository,
     StorageConnectorRepository,
@@ -82,9 +84,11 @@ def test_get_overview_returns_no_snapshot_for_a_brand_new_organization(db: Sessi
     user = _provision_user(db)
     service = DashboardService(db)
 
-    overview = service.get_overview(user.organization_id)
+    workspace = workspace_of(db, user.organization_id)
 
-    assert overview.connectors == []
+    overview = service.get_overview(user.organization_id, connector_id=workspace.id)
+
+    assert [c.id for c in overview.connectors] == [workspace.id]
     assert overview.latest_snapshot is None
     assert overview.snapshot_history == []
     assert overview.latest_scan_status is None
@@ -96,7 +100,9 @@ def test_get_overview_lists_connected_providers(db: Session) -> None:
     _provision_connector(db, organization_id=user.organization_id, user_id=user.id)
     service = DashboardService(db)
 
-    overview = service.get_overview(user.organization_id)
+    overview = service.get_overview(
+        user.organization_id, connector_id=workspace_of(db, user.organization_id).id
+    )
 
     assert len(overview.connectors) == 1
 
@@ -105,12 +111,16 @@ def test_get_overview_lists_connected_providers(db: Session) -> None:
 def test_get_overview_never_leaks_another_organizations_connector(db: Session) -> None:
     user = _provision_user(db)
     other_user = _provision_user(db)
-    _provision_connector(db, organization_id=other_user.organization_id, user_id=other_user.id)
+    other = _provision_connector(
+        db, organization_id=other_user.organization_id, user_id=other_user.id
+    )
     service = DashboardService(db)
 
-    overview = service.get_overview(user.organization_id)
+    overview = service.get_overview(
+        user.organization_id, connector_id=workspace_of(db, user.organization_id).id
+    )
 
-    assert overview.connectors == []
+    assert other.id not in {c.id for c in overview.connectors}
 
 
 def _provision_file(db: Session, *, connector_id: uuid.UUID, name: str, trashed: bool = False):
@@ -162,10 +172,12 @@ def _score(db: Session, file_id: uuid.UUID, state: str) -> None:
 def test_get_overview_counts_lifecycle_states_and_entities(db: Session) -> None:
     user = _provision_user(db)
     connector = _provision_connector(db, organization_id=user.organization_id, user_id=user.id)
-    _score(db, _provision_file(db, connector_id=connector.id, name="a.txt").id, "archive_candidate")
+    linked = _provision_file(db, connector_id=connector.id, name="a.txt")
+    _score(db, linked.id, "archive_candidate")
     _score(db, _provision_file(db, connector_id=connector.id, name="b.txt").id, "archive_candidate")
     _score(db, _provision_file(db, connector_id=connector.id, name="c.txt").id, "review_required")
-    OrganizationEntityRepository(db).upsert(
+    # Only an entity with a file in this storage counts in its dashboard.
+    phoenix = OrganizationEntityRepository(db).upsert(
         organization_id=user.organization_id,
         entity_type="project",
         name="Phoenix",
@@ -173,8 +185,29 @@ def test_get_overview_counts_lifecycle_states_and_entities(db: Session) -> None:
         confidence=0.9,
         evidence=[],
     )
+    OrganizationEntityRepository(db).upsert(
+        organization_id=user.organization_id,
+        entity_type="client",
+        name="Elsewhere",
+        normalized_name="elsewhere",
+        confidence=0.9,
+        evidence=[],
+    )
+    FileEntityLinkRepository(db).upsert(
+        file_id=linked.id,
+        entity_id=phoenix.id,
+        confidence=0.9,
+        evidence=[],
+        source="test",
+        inference_version="v1",
+    )
+    db.commit()
 
-    intelligence = DashboardService(db).get_overview(user.organization_id).intelligence
+    intelligence = (
+        DashboardService(db)
+        .get_overview(user.organization_id, connector_id=workspace_of(db, user.organization_id).id)
+        .intelligence
+    )
 
     assert intelligence.lifecycle_by_state == {"archive_candidate": 2, "review_required": 1}
     assert intelligence.entities_by_type == {"project": 1}
@@ -187,6 +220,10 @@ def test_get_overview_lifecycle_counts_exclude_trashed_files(db: Session) -> Non
     trashed = _provision_file(db, connector_id=connector.id, name="gone.txt", trashed=True)
     _score(db, trashed.id, "archive_candidate")
 
-    intelligence = DashboardService(db).get_overview(user.organization_id).intelligence
+    intelligence = (
+        DashboardService(db)
+        .get_overview(user.organization_id, connector_id=workspace_of(db, user.organization_id).id)
+        .intelligence
+    )
 
     assert intelligence.lifecycle_by_state == {}
