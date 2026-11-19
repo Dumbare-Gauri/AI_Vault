@@ -12,14 +12,16 @@ REPO="${REPO:-Dumbare-Gauri/AI_Vault}"
 PRODUCTION_REVIEWERS="${PRODUCTION_REVIEWERS:-Dumbare-Gauri Env1sage}"
 API=(gh api -H "Accept: application/vnd.github+json")
 
+command -v jq >/dev/null || { echo "Install jq first" >&2; exit 1; }
+
 [ "$("${API[@]}" "repos/$REPO" --jq .permissions.admin)" = "true" ] \
   || { echo "You need admin rights on $REPO" >&2; exit 1; }
 
 echo "==> Branches"
 main_sha="$("${API[@]}" "repos/$REPO/git/ref/heads/main" --jq .object.sha)"
-if ! "${API[@]}" "repos/$REPO/git/ref/heads/develop" >/dev/null 2>&1; then
-  "${API[@]}" -X POST "repos/$REPO/git/refs" -f ref=refs/heads/develop -f sha="$main_sha" >/dev/null
-  echo "    created develop from main"
+if ! "${API[@]}" "repos/$REPO/git/ref/heads/production" >/dev/null 2>&1; then
+  "${API[@]}" -X POST "repos/$REPO/git/refs" -f ref=refs/heads/production -f sha="$main_sha" >/dev/null
+  echo "    created production from main"
 fi
 
 echo "==> Merge settings"
@@ -49,8 +51,8 @@ environment() {
   echo "    $name: deploys from $branch only"
 }
 branch_policy='"deployment_branch_policy": {"protected_branches": false, "custom_branch_policies": true}'
-environment staging develop "{$branch_policy}"
-environment production main \
+environment staging main "{$branch_policy}"
+environment production production \
   "{$branch_policy, \"reviewers\": $reviewers_json, \"prevent_self_review\": true}"
 
 echo "==> Branch rulesets"
@@ -74,8 +76,7 @@ ruleset() {
       {type: "required_status_checks", parameters: {
         strict_required_status_checks_policy: $strict,
         required_status_checks: [
-          {context: "All checks passed"},
-          {context: "PR title format"}]}}
+          {context: "PR validation passed"}]}}
     ]}')"
   local id
   id="$("${API[@]}" "repos/$REPO/rulesets" --jq ".[] | select(.name == \"protect-$branch\") | .id")"
@@ -86,10 +87,10 @@ ruleset() {
   fi
   echo "    $branch: PR + $approvals approval(s) + CI required, no force-push, no deletion"
 }
-# develop must be up to date before a merge; main is not, because each
-# develop -> main merge commit would otherwise force a main -> develop sync.
-ruleset develop 1 false true
-ruleset main 1 true false
+# main must be up to date before a merge; production is not, because each
+# main -> production merge commit would otherwise force a production -> main sync.
+ruleset main 1 false true
+ruleset production 1 true false
 
 echo "==> Deployment switches (left off)"
 for name in STAGING_DEPLOY_ENABLED PRODUCTION_DEPLOY_ENABLED; do
@@ -107,6 +108,7 @@ label "type: bug"         d73a4a "Something is broken"
 label "type: feature"     a2eeef "New capability"
 label "type: security"    ee0701 "Security fix or hardening"
 label "type: hotfix"      b60205 "Urgent production fix"
+label "release"           5319e7 "Release PR: main -> production"
 label "area: deployment"  000000 "Docker, CI/CD, AWS"
 label "area: storage"     0075ca "Drive, Local Agent, archives, trash"
 label "area: ai"          7057ff "Ask Vault, recommendations, intelligence"

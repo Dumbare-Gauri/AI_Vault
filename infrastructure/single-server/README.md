@@ -26,7 +26,7 @@ S3 buckets, secrets and Google OAuth client. Only `web` has a port.
 | `systemd/` | Daily backup timer per environment |
 | `ssm/` | The only commands GitHub may run on the server, one per environment |
 | `iam/` | GitHub OIDC deploy roles (trust + permissions), one per environment |
-| `../../.github/workflows/deploy.yml` | `main` → staging; `production` → production after approval |
+| `../../.github/workflows/` | PR Validation; `main` → staging; `production` → production after approval; Release |
 
 ## The HTTPS limitation
 
@@ -216,29 +216,53 @@ without it, people must reconnect Google Drive.
 
 ### Branches
 
-- `main` → CI → **staging**, automatically.
-- `production` → CI → **production**, only after a required reviewer
-  approves the `production` environment in GitHub. Merge `main` into
-  `production` through a reviewed pull request; never push to it directly.
+```
+feature/* fix/*  --PR (squash)-->  main  --PR "release: vX.Y.Z" (merge commit)-->  production
+       |                            |                                                |
+  PR Validation              Deploy — Staging                  Deploy — Production (approval)
+                                                                         |
+                                                                      Release (tag vX.Y.Z)
+```
+
+| Workflow | Runs on | Does |
+|---|---|---|
+| PR Validation | PRs into `main` / `production` | CI + PR title format; PRs into `production` must come from `main` or `hotfix/*` and be titled `release: vX.Y.Z`. Required check: `PR validation passed` |
+| Deploy — Staging | push to `main` | CI → staging (if `STAGING_DEPLOY_ENABLED`) |
+| Deploy — Production | push to `production` | CI → approval → production (if `PRODUCTION_DEPLOY_ENABLED`) |
+| Release | after a successful production deploy | tags `vX.Y.Z` and publishes a GitHub Release with the changes |
+
+CI (`ci.yml`) and the server deploy (`deploy-to-server.yml`) are reusable
+pieces those call; neither runs on its own, so nothing runs twice.
+
+- Branch from `main`; name it `feature/…` or `fix/…`. PR titles say what
+  kind of change it is (`feat: …`, `fix: …`) — the squash commit uses it.
+- `main` is the integration branch: every merge runs CI and goes to
+  **staging**. A failing check means no deploy.
+- To release, open a PR from `main` into `production` titled
+  `release: vX.Y.Z`. After it merges, CI runs, a reviewer approves the
+  `production` environment, production deploys, and Release tags it.
+- Urgent fix: `hotfix/…` from `production`, PR into `production`
+  (titled `release: vX.Y.Z`), then merge `production` back into `main`.
+- Nobody pushes to `main` or `production` directly.
 
 ### One-time GitHub setup (repository admin only)
 
-1. Rulesets on `main` and `production`: pull request required (1
-   approval), these status checks required — `Frontend (lint, typecheck,
-   test, build)`, `Backend (lint, typecheck, migrate, test)`, `Worker (lint,
-   typecheck, test)`, `Security (dependency + secret scanning)`, `Docker
-   image build validation` — branch up to date, no force-push, no deletion.
-2. Environments: `staging` — deployment branches `main` only; `production`
-   — deployment branches `production` only, required reviewers, prevent
-   self-review.
-3. Environment variables (not secrets — nothing in them is secret):
-   `AWS_DEPLOY_ROLE_ARN` (that environment's role) and `AIVAULT_INSTANCE_ID`.
-   No GitHub secrets are needed.
-4. Repository variables `STAGING_DEPLOY_ENABLED` /
-   `PRODUCTION_DEPLOY_ENABLED`: set to `true` only once that environment's
-   AWS side exists. Until then a push builds and tests but deploys nothing.
-5. Actions → General: workflow permissions "Read repository contents";
-   fork pull requests from outside collaborators need approval.
+Run `bash .github/scripts/setup-github.sh` as the repository owner. It:
+
+1. Creates `production` from `main`.
+2. Rulesets on `main` and `production`: pull request with 1 approval
+   (`production` also needs a code owner), required check `PR validation
+   passed`, no force-push, no deletion.
+3. Environments: `staging` deploys from `main` only; `production` from
+   `production` only, with required reviewers and no self-review.
+4. Actions token read-only by default; outside contributors' PRs need
+   approval to run.
+5. `STAGING_DEPLOY_ENABLED` / `PRODUCTION_DEPLOY_ENABLED` set to `false`.
+
+Then, once that environment's AWS side exists, add its environment
+variables `AWS_DEPLOY_ROLE_ARN` and `AIVAULT_INSTANCE_ID` (not secrets —
+nothing in them is secret) and set its `*_DEPLOY_ENABLED` to `true`. No
+GitHub secrets are needed.
 
 **What isolates staging from production — and what doesn't.** Each AWS
 role can run only its own SSM document. But both environments share one

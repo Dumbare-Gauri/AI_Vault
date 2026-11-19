@@ -1,0 +1,20 @@
+# Review is requested automatically from these people for matching paths.
+# With "Require review from Code Owners" on, these paths can't merge without
+# one of them approving.
+
+*                                   @Dumbare-Gauri @Env1sage
+
+# Anything that runs on the server or decides what gets deployed. A merge
+# into main runs this as root on the machine that also hosts production.
+/.github/                           @Dumbare-Gauri @Env1sage
+/infrastructure/                    @Dumbare-Gauri @Env1sage
+/.dockerignore                      @Dumbare-Gauri @Env1sage
+/.trivyignore.yaml                  @Dumbare-Gauri @Env1sage
+
+# Sign-in, tokens, tenancy and destructive actions.
+/apps/backend/app/infrastructure/auth/           @Dumbare-Gauri @Env1sage
+/apps/backend/app/application/auth_service.py    @Dumbare-Gauri @Env1sage
+/apps/backend/app/application/account_deletion_service.py @Dumbare-Gauri @Env1sage
+/packages/shared/vault_shared/protection.py      @Dumbare-Gauri @Env1sage
+/packages/shared/vault_shared/settings.py        @Dumbare-Gauri @Env1sage
+/apps/backend/alembic/versions/                  @Dumbare-Gauri @Env1sage

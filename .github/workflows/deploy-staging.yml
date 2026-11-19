@@ -1,0 +1,31 @@
+name: Deploy — Staging
+
+# Every merge into main: full CI, then staging. A failed check means no
+# deploy. Off until the repository variable STAGING_DEPLOY_ENABLED is
+# `true`, so this runs CI only until the staging server exists.
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-staging
+  cancel-in-progress: false
+
+jobs:
+  ci:
+    name: CI
+    uses: ./.github/workflows/ci.yml
+
+  deploy:
+    name: Staging
+    needs: [ci]
+    if: vars.STAGING_DEPLOY_ENABLED == 'true'
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/deploy-to-server.yml
+    with:
+      environment: staging

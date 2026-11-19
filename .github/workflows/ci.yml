@@ -1,15 +1,15 @@
 name: CI
 
+# Never triggered on its own, so one push or PR runs it exactly once:
+#   PR Validation        (pull requests into main / production)
+#   Deploy — Staging     (push to main)
+#   Deploy — Production  (push to production)
+# Each of those deploys or merges only if `All checks passed` succeeds.
 on:
-  pull_request:
-    branches: [main, production]
-  # Pushes to main and production run CI through .github/workflows/deploy.yml,
-  # which deploys only if every job here passes.
   workflow_call:
 
-concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+permissions:
+  contents: read
 
 jobs:
   frontend:
@@ -271,3 +271,18 @@ jobs:
           ignore-unfixed: true
           exit-code: 1
           trivyignores: .trivyignore.yaml
+
+  # The one check branch rules require: it passes only if every job above
+  # passed, so adding a job here never needs a settings change.
+  ci-passed:
+    name: All checks passed
+    if: always()
+    needs: [frontend, backend, worker, security, docker-build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail unless every CI job succeeded
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "Job results: $RESULTS"
+          for result in $RESULTS; do [ "$result" = "success" ] || exit 1; done

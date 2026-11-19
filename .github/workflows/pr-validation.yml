@@ -1,0 +1,83 @@
+name: PR Validation
+
+# The checks a pull request must pass before it can merge. Branch rules
+# require the single `PR validation passed` check.
+on:
+  pull_request:
+    branches: [main, production]
+    types: [opened, edited, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    name: CI
+    uses: ./.github/workflows/ci.yml
+
+  # The title becomes the squash commit on main, and on a release PR it
+  # carries the version: "feat: add account deletion", "release: v1.2.0".
+  pr-title:
+    name: PR title format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: amannn/action-semantic-pull-request@v5
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          types: |
+            feat
+            fix
+            perf
+            refactor
+            security
+            test
+            docs
+            ci
+            chore
+            revert
+            release
+          requireScope: false
+
+  # production only takes releases from main, or an urgent hotfix/* branch,
+  # and every production PR names the version it releases.
+  release-pr:
+    name: Release PR rules
+    if: github.base_ref == 'production'
+    runs-on: ubuntu-latest
+    env:
+      HEAD_BRANCH: ${{ github.head_ref }}
+      TITLE: ${{ github.event.pull_request.title }}
+    steps:
+      - name: Source branch is main or hotfix/*
+        run: |
+          case "$HEAD_BRANCH" in
+            main|hotfix/*) echo "Source: $HEAD_BRANCH" ;;
+            *) echo "::error::production accepts PRs from main or hotfix/* only, not $HEAD_BRANCH"; exit 1 ;;
+          esac
+      - name: 'Title is "release: vX.Y.Z"'
+        run: |
+          [[ "$TITLE" =~ ^release:\ v[0-9]+\.[0-9]+\.[0-9]+$ ]] \
+            || { echo "::error::Title a production PR \"release: vX.Y.Z\""; exit 1; }
+
+  passed:
+    name: PR validation passed
+    if: always()
+    needs: [ci, pr-title, release-pr]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail unless every check succeeded
+        env:
+          CI_RESULT: ${{ needs.ci.result }}
+          TITLE_RESULT: ${{ needs.pr-title.result }}
+          RELEASE_RESULT: ${{ needs.release-pr.result }}
+          BASE: ${{ github.base_ref }}
+        run: |
+          echo "CI=$CI_RESULT title=$TITLE_RESULT release-rules=$RELEASE_RESULT"
+          [ "$CI_RESULT" = success ] && [ "$TITLE_RESULT" = success ] || exit 1
+          if [ "$BASE" = production ]; then [ "$RELEASE_RESULT" = success ]; fi

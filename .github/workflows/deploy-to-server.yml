@@ -1,0 +1,80 @@
+name: Deploy to server
+
+# Called by Deploy — Staging and Deploy — Production. Runs inside the target
+# GitHub environment, so it gets that environment's variables, branch
+# restriction and (for production) approval gate, and its OIDC token can
+# only assume that environment's IAM role. That role may run only
+# AIVault-Deploy-<environment> on the server — see infrastructure/single-server.
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: staging or production
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  deploy:
+    name: Deploy ${{ inputs.environment }}
+    runs-on: ubuntu-latest
+    environment:
+      name: ${{ inputs.environment }}
+      url: ${{ vars.PUBLIC_URL }}
+    timeout-minutes: 45
+    env:
+      TARGET: ${{ inputs.environment }}
+      COMMIT_SHA: ${{ github.sha }}
+      INSTANCE_ID: ${{ vars.AIVAULT_INSTANCE_ID }}
+    steps:
+      - name: Check the environment is configured
+        env:
+          ROLE: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+        run: |
+          case "$TARGET" in staging|production) ;; *) echo "::error::Unknown environment $TARGET"; exit 1 ;; esac
+          if [ -z "$ROLE" ] || [ -z "$INSTANCE_ID" ]; then
+            echo "::error::Set AWS_DEPLOY_ROLE_ARN and AIVAULT_INSTANCE_ID on the $TARGET environment"; exit 1
+          fi
+          [[ "$COMMIT_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::Bad commit SHA"; exit 1; }
+
+      - name: Get short-lived AWS credentials for this environment
+        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4.3.1
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ap-south-1
+          role-session-name: aivault-${{ inputs.environment }}-${{ github.run_id }}
+
+      - name: Deploy on the server and wait for the result
+        run: |
+          set -euo pipefail
+          command_id="$(aws ssm send-command \
+            --instance-ids "$INSTANCE_ID" \
+            --document-name "AIVault-Deploy-$TARGET" \
+            --parameters "CommitSha=$COMMIT_SHA" \
+            --comment "AI Vault $TARGET ${COMMIT_SHA:0:12}" \
+            --query Command.CommandId --output text)"
+          echo "SSM command: $command_id"
+          status=Pending
+          for _ in $(seq 1 180); do
+            status="$(aws ssm get-command-invocation --command-id "$command_id" \
+              --instance-id "$INSTANCE_ID" --query Status --output text 2>/dev/null || echo Pending)"
+            case "$status" in Pending|InProgress|Delayed) sleep 10 ;; *) break ;; esac
+          done
+          aws ssm get-command-invocation --command-id "$command_id" --instance-id "$INSTANCE_ID" \
+            --query '[StandardOutputContent, StandardErrorContent]' --output text || true
+          echo "Result: $status"
+          [ "$status" = "Success" ]
+
+      - name: Summary
+        if: success()
+        run: |
+          {
+            echo "### Deployed to $TARGET"
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Commit | \`$COMMIT_SHA\` |"
+            echo "| Triggered by | $GITHUB_ACTOR |"
+          } >> "$GITHUB_STEP_SUMMARY"
