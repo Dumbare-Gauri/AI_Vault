@@ -26,6 +26,12 @@ class _FakeConnector:
         self.last_error = None
         self.created_at = datetime.now(UTC)
         self.updated_at = datetime.now(UTC)
+        self.display_name = None
+        self.last_synced_at = None
+        self.storage_used_bytes = 5_000
+        self.storage_total_bytes = 15_000
+        self.storage_trash_bytes = 0
+        self.quota_checked_at = None
 
 
 @pytest.fixture

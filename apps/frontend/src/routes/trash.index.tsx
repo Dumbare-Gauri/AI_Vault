@@ -1,7 +1,15 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, createFileRoute, redirect } from "@tanstack/react-router";
 import type { Connector, ExecutionPlan, FileListResponse } from "@vault/types";
-import { ChevronLeft, ChevronRight, Cloud, FolderArchive, ShieldCheck, Trash2 } from "lucide-react";
+import {
+  ChevronLeft,
+  ChevronRight,
+  Cloud,
+  FolderArchive,
+  RotateCcw,
+  ShieldCheck,
+  Trash2,
+} from "lucide-react";
 import { useState } from "react";
 
 import { AppShell } from "@/components/app-shell/app-shell";
@@ -14,6 +22,7 @@ import { PermanentDeleteDialog } from "@/components/file-explorer/permanent-dele
 import { Skeleton } from "@/components/ui/skeleton";
 import { toast } from "@/components/ui/toaster";
 import { ApiError, apiClient } from "@/lib/api-client";
+import { runStorageAction, trackAction } from "@/lib/storage-action";
 import { fileTypeIconElement } from "@/lib/file-icon";
 import { formatBytes } from "@/lib/format-bytes";
 import { formatRelativeTime } from "@/lib/format-relative-time";
@@ -83,19 +92,10 @@ function TrashPage() {
       }),
     onSuccess: (plan) => {
       void queryClient.invalidateQueries({ queryKey: ["trash"] });
-      void queryClient.invalidateQueries({ queryKey: ["execution-plans"] });
-      toast.success("Creating a backup now", {
-        description: "Once it completes, this file becomes eligible for permanent deletion.",
-        action: {
-          label: "View progress",
-          onClick: () => {
-            window.location.href = `/execution-plans/${plan.id}`;
-          },
-        },
-      });
+      void trackAction(plan.id, "Creating a backup…");
     },
     onError: (error) => {
-      toast.error(error instanceof ApiError ? error.message : "Couldn't create an archive plan.");
+      toast.error(error instanceof ApiError ? error.message : "Couldn't start archiving — nothing was changed.");
     },
   });
 
@@ -225,6 +225,21 @@ function TrashPage() {
                           <p>Modified {formatRelativeTime(file.provider_modified_at)}</p>
                         )}
                       </div>
+                      {canManage && (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="shrink-0"
+                          onClick={() =>
+                            void runStorageAction(
+                              { file_ids: [file.id], action_type: "restore" },
+                              `Restoring "${file.name}"…`,
+                            )
+                          }
+                        >
+                          <RotateCcw className="size-4" /> Restore
+                        </Button>
+                      )}
                       {canManage &&
                         (file.is_archived ? (
                           <Button

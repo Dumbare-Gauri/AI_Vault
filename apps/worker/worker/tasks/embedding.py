@@ -2,6 +2,7 @@ import uuid
 
 from sqlalchemy.orm import Session
 
+from vault_shared import get_logger
 from vault_shared.ai_gateway import get_ai_gateway
 from vault_shared.db.models import EmbeddingJobStatus, RecommendationTrigger
 from vault_shared.db.repositories import (
@@ -12,7 +13,10 @@ from vault_shared.db.repositories import (
 from vault_shared.db.session import get_session_factory
 from worker.celery_app import celery_app
 from worker.embedding.embedding_service import EmbeddingService
+from worker.relationships.near_duplicate_service import NearDuplicateService
 from worker.tasks.recommendation import run_recommendation
+
+logger = get_logger("worker.tasks.embedding")
 
 
 @celery_app.task(name="worker.embedding.run")
@@ -25,9 +29,41 @@ def run_embedding(embedding_job_id: str) -> None:
     try:
         service = EmbeddingService(session, ai_gateway=get_ai_gateway())
         service.run(uuid.UUID(embedding_job_id))
+        _run_near_duplicate_discovery_if_embedding_completed(session, embedding_job_id)
         _enqueue_recommendation_if_embedding_completed(session, embedding_job_id)
     finally:
         session.close()
+
+
+def _run_near_duplicate_discovery_if_embedding_completed(
+    session: Session, embedding_job_id: str
+) -> None:
+    """Phase 2 — `NEAR_DUPLICATE` relationships need `Embedding` rows that
+    only exist once this job completes, so this runs here rather than
+    inside `RelationshipDiscoveryService.discover()` (which runs earlier,
+    during enrichment). Deterministic and cheap enough to run inline,
+    synchronously, like the recommendation-enqueue hook below — not its own
+    job/task."""
+    embedding_jobs = EmbeddingJobRepository(session)
+    embedding_job = embedding_jobs.get_by_id(uuid.UUID(embedding_job_id))
+    if embedding_job is None or embedding_job.status != EmbeddingJobStatus.COMPLETED:
+        return
+
+    try:
+        discovered = NearDuplicateService(session).discover_for_connector(
+            embedding_job.connector_id
+        )
+        session.commit()
+        logger.info(
+            "near_duplicate_discovery_completed",
+            extra={"connector_id": str(embedding_job.connector_id), "discovered": discovered},
+        )
+    except Exception:  # noqa: BLE001 - must never block the recommendation hook below
+        logger.exception(
+            "near_duplicate_discovery_failed",
+            extra={"connector_id": str(embedding_job.connector_id)},
+        )
+        session.rollback()
 
 
 def _enqueue_recommendation_if_embedding_completed(session: Session, embedding_job_id: str) -> None:

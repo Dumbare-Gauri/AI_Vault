@@ -47,6 +47,7 @@ def _context(rows: list[FileRow], relationships: list[FileRelationship]) -> Rule
     return RuleContext(
         organization_id=uuid.uuid4(),
         rows=rows,
+        owned_rows=rows,
         relationships=relationships,
         connector_count=1,
         embedded_file_ids=set(),

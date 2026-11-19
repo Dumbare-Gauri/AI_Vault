@@ -86,6 +86,7 @@ def test_returns_a_configured_provider_for_an_organization_with_a_key(
 ) -> None:
     org = _provision_org(db)
     AIProviderConfigRepository(db).upsert(
+        provider="openrouter",
         organization_id=org.id,
         api_key_encrypted=encrypt_token("sk-or-v1-test-key"),
         model_name="z-ai/glm-5.2:free",
@@ -104,6 +105,7 @@ def test_returns_none_gracefully_when_the_stored_key_cannot_be_decrypted(
 ) -> None:
     org = _provision_org(db)
     AIProviderConfigRepository(db).upsert(
+        provider="openrouter",
         organization_id=org.id,
         api_key_encrypted=encrypt_token("sk-or-v1-test-key"),
         model_name="z-ai/glm-5.2:free",

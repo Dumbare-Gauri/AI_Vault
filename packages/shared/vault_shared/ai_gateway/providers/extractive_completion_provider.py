@@ -34,7 +34,7 @@ class ExtractiveCompletionProvider:
         else:
             question = messages[-1].content if messages else ""
             text = (
-                f'No AI model is configured yet, so here is the most relevant '
+                f"No AI model is configured yet, so here is the most relevant "
                 f'retrieved content for "{question}":\n\n{context}'
             )
 

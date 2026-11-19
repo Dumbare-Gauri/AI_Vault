@@ -38,6 +38,19 @@ class EmbeddingRepository:
         self._session.flush()
         return embedding
 
+    def list_for_connector(self, connector_id: uuid.UUID) -> list[tuple[File, Embedding]]:
+        """Connector-scoped counterpart to `list_for_organization` — used
+        by `worker.relationships.near_duplicate_service`, which runs per
+        `EmbeddingJob` (connector-scoped) rather than per organization."""
+        rows = (
+            self._session.query(File, Embedding)
+            .join(Embedding, Embedding.file_id == File.id)
+            .join(StorageSource, File.storage_source_id == StorageSource.id)
+            .filter(StorageSource.connector_id == connector_id)
+            .all()
+        )
+        return [(file, embedding) for file, embedding in rows]
+
     def list_for_organization(self, organization_id: uuid.UUID) -> list[tuple[File, Embedding]]:
         """Returns every (File, Embedding) pair in the organization — the
         candidate set `SearchService` ranks by cosine similarity against a

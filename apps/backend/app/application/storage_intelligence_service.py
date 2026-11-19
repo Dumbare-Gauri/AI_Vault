@@ -40,18 +40,25 @@ class StorageIntelligenceService:
         self._audit_logs = AuditLogRepository(db)
 
     def get_latest_snapshot(
-        self, organization_id: uuid.UUID
+        self, organization_id: uuid.UUID, *, connector_id: uuid.UUID | None = None
     ) -> StorageAnalysisSnapshot | None:
-        return self._snapshots.get_latest_for_organization(organization_id)
+        return self._snapshots.get_latest_for_organization(
+            organization_id, connector_id=connector_id
+        )
 
     def get_latest_job(self, organization_id: uuid.UUID) -> StorageAnalysisJob | None:
         return self._jobs.get_latest_for_organization(organization_id)
 
     def list_duplicate_groups(
-        self, organization_id: uuid.UUID, *, limit: int, offset: int
+        self,
+        organization_id: uuid.UUID,
+        *,
+        limit: int,
+        offset: int,
+        connector_id: uuid.UUID | None = None,
     ) -> tuple[list[DuplicateGroup], int]:
         return self._duplicate_groups.list_for_organization(
-            organization_id, limit=limit, offset=offset
+            organization_id, limit=limit, offset=offset, connector_id=connector_id
         )
 
     def get_duplicate_group(
@@ -73,9 +80,14 @@ class StorageIntelligenceService:
         min_size_bytes: int = LARGE_FILE_BYTES_DEFAULT,
         limit: int,
         offset: int,
+        connector_id: uuid.UUID | None = None,
     ) -> tuple[list[File], int]:
         return self._files.list_large_for_organization(
-            organization_id, min_size_bytes=min_size_bytes, limit=limit, offset=offset
+            organization_id,
+            min_size_bytes=min_size_bytes,
+            limit=limit,
+            offset=offset,
+            connector_id=connector_id,
         )
 
     def list_old_files(
@@ -85,10 +97,15 @@ class StorageIntelligenceService:
         older_than_days: int = OLD_FILE_DAYS_DEFAULT,
         limit: int,
         offset: int,
+        connector_id: uuid.UUID | None = None,
     ) -> tuple[list[File], int]:
         cutoff = datetime.now(UTC) - timedelta(days=older_than_days)
         return self._files.list_old_for_organization(
-            organization_id, older_than=cutoff, limit=limit, offset=offset
+            organization_id,
+            older_than=cutoff,
+            limit=limit,
+            offset=offset,
+            connector_id=connector_id,
         )
 
     def list_inactive_files(
@@ -98,17 +115,27 @@ class StorageIntelligenceService:
         inactive_days: int = INACTIVE_FILE_DAYS_DEFAULT,
         limit: int,
         offset: int,
+        connector_id: uuid.UUID | None = None,
     ) -> tuple[list[File], int]:
         cutoff = datetime.now(UTC) - timedelta(days=inactive_days)
         return self._files.list_inactive_for_organization(
-            organization_id, inactive_since=cutoff, limit=limit, offset=offset
+            organization_id,
+            inactive_since=cutoff,
+            limit=limit,
+            offset=offset,
+            connector_id=connector_id,
         )
 
     def list_candidates(
-        self, organization_id: uuid.UUID, *, limit: int, offset: int
+        self,
+        organization_id: uuid.UUID,
+        *,
+        limit: int,
+        offset: int,
+        connector_id: uuid.UUID | None = None,
     ) -> tuple[list[File], int]:
         return self._files.list_temporary_candidates_for_organization(
-            organization_id, limit=limit, offset=offset
+            organization_id, limit=limit, offset=offset, connector_id=connector_id
         )
 
     def trigger_analysis(

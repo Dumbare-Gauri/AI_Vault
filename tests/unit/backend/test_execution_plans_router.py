@@ -6,7 +6,6 @@ import pytest
 from app.main import app
 from app.presentation.dependencies.auth import get_current_user
 from app.presentation.dependencies.services import (
-    get_approval_service,
     get_execution_job_service,
     get_execution_plan_service,
 )
@@ -85,19 +84,6 @@ def fake_job_service() -> MagicMock:
     app.dependency_overrides.pop(get_execution_job_service, None)
 
 
-@pytest.fixture(autouse=True)
-def fake_approval_service() -> MagicMock:
-    """Instant-execution mode: `create_execution_plan` always depends on
-    `ApprovalService` now (it auto-approves every plan right after
-    creation), so every test hitting this endpoint needs it overridden —
-    autouse, since even the error-path tests reach dependency resolution
-    before their handler-body exception is raised."""
-    service = MagicMock()
-    app.dependency_overrides[get_approval_service] = lambda: service
-    yield service
-    app.dependency_overrides.pop(get_approval_service, None)
-
-
 @pytest.fixture
 def as_owner(owner_user):
     app.dependency_overrides[get_current_user] = lambda: owner_user
@@ -120,50 +106,53 @@ def test_create_execution_plan_requires_authentication(fake_plan_service) -> Non
 
 
 def test_owner_can_create_an_execution_plan(as_owner, fake_plan_service) -> None:
-    fake_plan_service.create_plan.return_value = _FakeExecutionPlan()
+    fake_plan_service.create_plan.return_value = _FakeExecutionPlan(status="approved")
 
     response = client.post(
         "/v1/execution-plans", json={"recommendation_id": str(uuid.uuid4())}
     )
 
     assert response.status_code == 201
-    assert response.json()["status"] == "pending_approval"
+    assert response.json()["status"] == "approved"
 
 
-def test_create_execution_plan_auto_approves_immediately(
-    as_owner, fake_plan_service, fake_approval_service
+def test_create_execution_plan_runs_immediately_with_no_approval_step(
+    as_owner, fake_plan_service
 ) -> None:
-    """Instant-execution mode: no separate human-approval step — the
-    creator's own plan is auto-approved right after it's built."""
-    plan = _FakeExecutionPlan()
-    fake_plan_service.create_plan.return_value = plan
+    """ADR-026: no separate human-approval step exists for a
+    directly-triggered plan — `require_approval=False` is passed straight
+    through to the service, which approves and enqueues it in one call."""
+    recommendation_id = uuid.uuid4()
+    fake_plan_service.create_plan.return_value = _FakeExecutionPlan(status="approved")
 
     response = client.post(
-        "/v1/execution-plans", json={"recommendation_id": str(uuid.uuid4())}
+        "/v1/execution-plans", json={"recommendation_id": str(recommendation_id)}
     )
 
     assert response.status_code == 201
-    fake_approval_service.auto_decide_as_creator.assert_called_once_with(
-        plan.id, organization_id=as_owner.organization_id, user_id=as_owner.id
+    fake_plan_service.create_plan.assert_called_once_with(
+        recommendation_id,
+        organization_id=as_owner.organization_id,
+        user_id=as_owner.id,
+        require_approval=False,
     )
 
 
-def test_create_execution_plan_still_succeeds_when_auto_approval_fails(
-    as_owner, fake_plan_service, fake_approval_service
+def test_create_execution_plan_fails_the_request_when_the_service_cannot_start_it(
+    as_owner, fake_plan_service
 ) -> None:
-    """E.g. the connector still lacks write scope — plan creation itself
-    must not fail just because instant execution couldn't proceed; the
-    plan stays reviewable from the Approvals page instead."""
-    fake_plan_service.create_plan.return_value = _FakeExecutionPlan()
-    fake_approval_service.auto_decide_as_creator.side_effect = ValidationError(
-        "Cannot approve — execution permissions are not satisfied."
+    """There is no more silent 'left pending for later review' outcome
+    (ADR-026) — if the plan cannot be started (e.g. the connector lacks
+    write scope), creating it fails outright."""
+    fake_plan_service.create_plan.side_effect = ValidationError(
+        "Cannot start — execution permissions are not satisfied."
     )
 
     response = client.post(
         "/v1/execution-plans", json={"recommendation_id": str(uuid.uuid4())}
     )
 
-    assert response.status_code == 201
+    assert response.status_code == 422
 
 
 def test_member_cannot_create_an_execution_plan(as_member, fake_plan_service) -> None:
@@ -191,7 +180,12 @@ def test_owner_can_create_an_execution_plan_from_a_duplicate_group(
     body = response.json()
     assert body["duplicate_group_id"] == str(group_id)
     assert body["recommendation_id"] is None
-    fake_plan_service.create_plan_from_duplicate_group.assert_called_once()
+    fake_plan_service.create_plan_from_duplicate_group.assert_called_once_with(
+        group_id,
+        organization_id=as_owner.organization_id,
+        user_id=as_owner.id,
+        require_approval=False,
+    )
     fake_plan_service.create_plan.assert_not_called()
 
 
@@ -260,20 +254,26 @@ def test_owner_can_create_a_permanent_delete_plan(as_owner, fake_plan_service) -
     assert response.json()["rollback_available"] is False
 
 
-def test_create_permanent_delete_plan_never_auto_approves(
-    as_owner, fake_plan_service, fake_approval_service
+def test_create_permanent_delete_plan_runs_immediately_with_no_approval_step(
+    as_owner, fake_plan_service
 ) -> None:
-    """The one plan type that must never auto-execute — a real, human
-    approval is always required, unlike every other action this app
-    creates."""
+    """ADR-026: permanent delete runs immediately like every other plan —
+    the frontend's own type-to-confirm dialog is the only gate before this
+    endpoint is ever called; there is no server-side approval step."""
+    file_id = uuid.uuid4()
     fake_plan_service.create_permanent_delete_plan.return_value = _FakeExecutionPlan()
 
     response = client.post(
-        "/v1/execution-plans/permanent-delete", json={"file_ids": [str(uuid.uuid4())]}
+        "/v1/execution-plans/permanent-delete", json={"file_ids": [str(file_id)]}
     )
 
     assert response.status_code == 201
-    fake_approval_service.auto_decide_as_creator.assert_not_called()
+    fake_plan_service.create_permanent_delete_plan.assert_called_once_with(
+        [file_id],
+        organization_id=as_owner.organization_id,
+        user_id=as_owner.id,
+        require_approval=False,
+    )
 
 
 def test_member_cannot_create_a_permanent_delete_plan(as_member, fake_plan_service) -> None:

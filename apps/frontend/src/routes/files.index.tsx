@@ -11,6 +11,7 @@ import {
   LayoutGrid,
   List,
   PencilLine,
+  Plus,
   Users,
 } from "lucide-react";
 import { useMemo, useState } from "react";
@@ -19,7 +20,14 @@ import { AppShell } from "@/components/app-shell/app-shell";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { EmptyState } from "@/components/ui/empty-state";
+import { type CreateItemKind, CreateItemDialog } from "@/components/file-explorer/create-item-dialog";
 import { MoveDialog } from "@/components/file-explorer/move-dialog";
 import { RenameDialog } from "@/components/file-explorer/rename-dialog";
 import { Input } from "@/components/ui/input";
@@ -219,6 +227,7 @@ function FilesPage() {
   const [renamingFile, setRenamingFile] = useState<FileSummary | null>(null);
   const [movingFile, setMovingFile] = useState<FileSummary | null>(null);
   const [ownership, setOwnership] = useState<OwnershipFilter>("all");
+  const [creating, setCreating] = useState<CreateItemKind | null>(null);
   const user = useAuthStore((state) => state.user);
   const canManage = user?.role === "owner" || user?.role === "admin";
 
@@ -237,9 +246,12 @@ function FilesPage() {
     queryFn: () => apiClient.get<Connector[]>("/v1/connectors"),
   });
 
-  const connector = connectorsQuery.data?.find(
-    (candidate) => candidate.provider === "google_workspace" && candidate.status === "connected",
+  const connected = (connectorsQuery.data ?? []).filter(
+    (candidate) => candidate.status === "connected",
   );
+  const [chosenConnectorId, setChosenConnectorId] = useState<string | null>(null);
+  const connector =
+    connected.find((candidate) => candidate.id === chosenConnectorId) ?? connected[0];
 
   const filesQuery = useQuery({
     queryKey: ["files", connector?.id, page, ownership],
@@ -275,6 +287,22 @@ function FilesPage() {
               Everything Vault has scanned across your connected storage.
             </p>
           </div>
+          {connector && canManage && (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button size="sm">
+                  <Plus className="size-4" /> New
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem onSelect={() => setCreating("folder")}>Folder</DropdownMenuItem>
+                <DropdownMenuItem onSelect={() => setCreating("text")}>Text file</DropdownMenuItem>
+                <DropdownMenuItem onSelect={() => setCreating("markdown")}>
+                  Markdown note
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          )}
         </div>
 
         {connectorsQuery.isLoading && (
@@ -300,6 +328,29 @@ function FilesPage() {
 
         {connector && (
           <>
+            {connected.length > 1 && (
+              <div className="flex w-fit items-center gap-1 rounded-lg bg-secondary p-1">
+                {connected.map((candidate) => (
+                  <button
+                    key={candidate.id}
+                    type="button"
+                    onClick={() => {
+                      setChosenConnectorId(candidate.id);
+                      setPage(0);
+                    }}
+                    aria-pressed={candidate.id === connector.id}
+                    className={cn(
+                      "rounded-md px-3 py-1.5 text-sm transition-colors",
+                      candidate.id === connector.id
+                        ? "bg-card shadow-clay-sm"
+                        : "text-muted-foreground",
+                    )}
+                  >
+                    {candidate.display_name ?? candidate.provider_name}
+                  </button>
+                ))}
+              </div>
+            )}
             <div className="flex items-center gap-1 rounded-lg bg-secondary p-1 w-fit">
               {(
                 [
@@ -385,10 +436,18 @@ function FilesPage() {
             {filesQuery.isSuccess && files.length === 0 && ownership === "all" && (
               <EmptyState
                 title="No files yet"
-                description="Run a scan to let Vault index this connector's storage."
+                description={
+                  connector?.provider === "local_agent"
+                    ? "Add a folder or drive on this computer, or wait for the agent to finish scanning."
+                    : "Run a scan to let Vault index this connector's storage."
+                }
                 action={
                   <Button asChild variant="outline">
-                    <Link to="/scans">Go to Scans</Link>
+                    {connector?.provider === "local_agent" ? (
+                      <Link to="/storage-connections">Add a folder or drive</Link>
+                    ) : (
+                      <Link to="/scans">Go to Scans</Link>
+                    )}
                   </Button>
                 }
               />
@@ -412,7 +471,7 @@ function FilesPage() {
                     <FileRow
                       key={file.id}
                       file={file}
-                      isOwned={file.owner_email === connector.account_email}
+                      isOwned={connector.account_email === null || file.owner_email === connector.account_email}
                       canManage={canManage}
                       onRename={setRenamingFile}
                       onMove={setMovingFile}
@@ -425,7 +484,7 @@ function FilesPage() {
                     <FileGridCard
                       key={file.id}
                       file={file}
-                      isOwned={file.owner_email === connector.account_email}
+                      isOwned={connector.account_email === null || file.owner_email === connector.account_email}
                       canManage={canManage}
                       onRename={setRenamingFile}
                       onMove={setMovingFile}
@@ -472,6 +531,13 @@ function FilesPage() {
           onOpenChange={(open) => !open && setRenamingFile(null)}
           fileId={renamingFile.id}
           currentName={renamingFile.name}
+        />
+      )}
+      {creating && connector && (
+        <CreateItemDialog
+          kind={creating}
+          connectorId={connector.id}
+          onOpenChange={(open) => !open && setCreating(null)}
         />
       )}
       {movingFile && connector && (

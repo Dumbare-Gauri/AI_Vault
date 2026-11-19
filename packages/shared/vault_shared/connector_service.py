@@ -4,8 +4,8 @@ from sqlalchemy.orm import Session
 
 from vault_shared.connectors.google_workspace import GoogleWorkspaceOAuthClient
 from vault_shared.db.models import StorageConnector
-from vault_shared.db.repositories import ConnectorCredentialsRepository
-from vault_shared.errors import NotFoundError
+from vault_shared.db.repositories import ConnectorCredentialsRepository, StorageConnectorRepository
+from vault_shared.errors import NotFoundError, ReauthRequiredError
 from vault_shared.security.encryption import decrypt_token, encrypt_token
 
 # Refresh proactively if the stored access token expires within this window
@@ -44,7 +44,14 @@ class ConnectorTokenService:
 
         if credentials.expires_at <= datetime.now(UTC) + timedelta(seconds=_REFRESH_SKEW_SECONDS):
             refresh_token = decrypt_token(credentials.refresh_token_encrypted)
-            token_set = self._oauth_client.refresh_access_token(refresh_token=refresh_token)
+            try:
+                token_set = self._oauth_client.refresh_access_token(refresh_token=refresh_token)
+            except ReauthRequiredError as exc:
+                # Whatever hit this — a scan, an action, a preview — the
+                # connection itself now needs the user to reconnect, so say so.
+                StorageConnectorRepository(self._db).mark_reauth_required(connector, error=str(exc))
+                self._db.commit()
+                raise
             self._credentials.update_access_token(
                 credentials,
                 access_token_encrypted=encrypt_token(token_set.access_token),

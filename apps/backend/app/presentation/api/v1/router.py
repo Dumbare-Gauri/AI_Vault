@@ -1,5 +1,7 @@
 from fastapi import APIRouter
 
+from app.presentation.api.v1.actions import actions_router
+from app.presentation.api.v1.ai import ai_router
 from app.presentation.api.v1.approvals import approvals_router
 from app.presentation.api.v1.archives import archives_router
 from app.presentation.api.v1.auth import auth_router
@@ -13,7 +15,9 @@ from app.presentation.api.v1.execution_jobs import execution_jobs_router
 from app.presentation.api.v1.execution_plans import execution_plans_router
 from app.presentation.api.v1.files import files_router
 from app.presentation.api.v1.intelligence import intelligence_router
+from app.presentation.api.v1.local_agents import local_agents_router
 from app.presentation.api.v1.notifications import notifications_router
+from app.presentation.api.v1.organization import organization_router
 from app.presentation.api.v1.organizations import organizations_router
 from app.presentation.api.v1.recommendations import recommendations_router
 from app.presentation.api.v1.scans import scans_router
@@ -30,10 +34,12 @@ v1_router.include_router(version_router)
 v1_router.include_router(auth_router)
 v1_router.include_router(users_router)
 v1_router.include_router(organizations_router)
+v1_router.include_router(ai_router)
 v1_router.include_router(connectors_router)
 v1_router.include_router(scans_router)
 v1_router.include_router(enrichment_router)
 v1_router.include_router(files_router)
+v1_router.include_router(local_agents_router)
 v1_router.include_router(embedding_router)
 v1_router.include_router(intelligence_router)
 v1_router.include_router(search_router)
@@ -50,3 +56,5 @@ v1_router.include_router(notifications_router)
 v1_router.include_router(automation_templates_router)
 v1_router.include_router(storage_router)
 v1_router.include_router(archives_router)
+v1_router.include_router(organization_router)
+v1_router.include_router(actions_router)

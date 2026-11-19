@@ -17,6 +17,8 @@ class CitationRepository:
         snippet: str | None,
         confidence: float,
         retrieval_method: str,
+        page_number: int | None = None,
+        passage_index: int | None = None,
     ) -> Citation:
         citation = Citation(
             message_id=message_id,
@@ -24,6 +26,8 @@ class CitationRepository:
             snippet=snippet[:1024] if snippet else None,
             confidence=confidence,
             retrieval_method=retrieval_method,
+            page_number=page_number,
+            passage_index=passage_index,
         )
         self._session.add(citation)
         self._session.flush()

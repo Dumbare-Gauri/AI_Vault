@@ -1,4 +1,5 @@
 import uuid
+from datetime import UTC, datetime
 
 from sqlalchemy.orm import Session
 
@@ -19,8 +20,13 @@ class ConversationMessageRepository:
         provider: str | None = None,
         token_usage: int | None = None,
         tool_name: str | None = None,
+        blocks: list | None = None,
     ) -> ConversationMessage:
         message = ConversationMessage(
+            # Stamped now, not at transaction start: a question and its answer
+            # are saved in one transaction and must still read back in order.
+            created_at=datetime.now(UTC),
+            blocks=blocks or [],
             conversation_id=conversation_id,
             role=role,
             content=content,
@@ -37,7 +43,7 @@ class ConversationMessageRepository:
         return (
             self._session.query(ConversationMessage)
             .filter_by(conversation_id=conversation_id)
-            .order_by(ConversationMessage.created_at)
+            .order_by(ConversationMessage.created_at, ConversationMessage.role.desc())
             .all()
         )
 
@@ -52,7 +58,7 @@ class ConversationMessageRepository:
         rows = (
             self._session.query(ConversationMessage)
             .filter_by(conversation_id=conversation_id)
-            .order_by(ConversationMessage.created_at.desc())
+            .order_by(ConversationMessage.created_at.desc(), ConversationMessage.role)
             .limit(limit)
             .all()
         )

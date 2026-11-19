@@ -70,3 +70,44 @@ class DependencyUnavailableError(VaultError):
 
     http_status = 503
     code = "dependency_unavailable"
+
+
+class AIUnavailableError(DependencyUnavailableError):
+    """The AI reasoning service (GLM via OpenRouter) could not produce a
+    usable answer. Deliberately *not* an `UnauthorizedError` even when the
+    provider rejects our API key: a 401 from the AI provider means the
+    server's key is bad, not that the caller's session expired, and
+    surfacing it as HTTP 401 would make the frontend log the user out.
+    `reason` lets callers degrade precisely (retry, fall back to
+    deterministic output, or fail fast)."""
+
+    code = "ai_unavailable"
+
+    NOT_CONFIGURED = "not_configured"
+    AUTH_FAILED = "auth_failed"
+    RATE_LIMITED = "rate_limited"
+    TIMEOUT = "timeout"
+    UNREACHABLE = "unreachable"
+    INVALID_RESPONSE = "invalid_response"
+    PROVIDER_ERROR = "provider_error"
+    QUOTA_EXCEEDED = "quota_exceeded"
+    REJECTED_REQUEST = "rejected_request"
+    _NON_RETRYABLE = frozenset(
+        {NOT_CONFIGURED, AUTH_FAILED, INVALID_RESPONSE, QUOTA_EXCEEDED, REJECTED_REQUEST}
+    )
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        reason: str,
+        retry_after_seconds: float | None = None,
+        details: dict | None = None,
+    ) -> None:
+        super().__init__(message, details={**(details or {}), "reason": reason})
+        self.reason = reason
+        self.retry_after_seconds = retry_after_seconds
+
+    @property
+    def retryable(self) -> bool:
+        return self.reason not in self._NON_RETRYABLE

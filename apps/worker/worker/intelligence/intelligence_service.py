@@ -3,7 +3,12 @@ from datetime import UTC, datetime
 
 from sqlalchemy.orm import Session
 
-from vault_shared import DependencyUnavailableError, UnauthorizedError, get_logger
+from vault_shared import (
+    AIUnavailableError,
+    DependencyUnavailableError,
+    UnauthorizedError,
+    get_logger,
+)
 from vault_shared.ai_gateway import AIGateway
 from vault_shared.ai_gateway.org_completion_provider import resolve_org_completion_provider
 from vault_shared.db.models import File, IntelligenceJob, IntelligenceStatus
@@ -130,6 +135,30 @@ class IntelligenceService:
             self._events.record(intelligence_job_id=job.id, event_type="intelligence_cancelled")
             self._db.commit()
             return
+        except AIUnavailableError as exc:
+            if exc.retryable:
+                logger.warning(
+                    "intelligence_job_dependency_unavailable",
+                    extra={"intelligence_job_id": str(job.id), "reason": exc.reason},
+                )
+                self._db.rollback()
+                raise
+            # A bad key, exhausted credits, or an unusable response won't fix
+            # itself on retry — fail the job now with a clear reason instead
+            # of burning the whole retry budget.
+            logger.warning(
+                "intelligence_job_failed_non_retryable",
+                extra={"intelligence_job_id": str(job.id), "reason": exc.reason},
+            )
+            self._db.rollback()
+            self._jobs.mark_failed(job, error=f"AI provider error: {exc.reason}")
+            self._events.record(
+                intelligence_job_id=job.id,
+                event_type="intelligence_failed",
+                message=f"AI provider error: {exc.reason}",
+            )
+            self._db.commit()
+            return
         except DependencyUnavailableError:
             # Left RUNNING, not FAILED — `worker.tasks.intelligence.run_intelligence`
             # retries the whole job on this specific error, same pattern as
@@ -160,23 +189,33 @@ class IntelligenceService:
         try:
             self._analyze_file(file)
             self._progress.increment_processed(job.id)
+        except AIUnavailableError as exc:
+            # An unusable response to *this file's* prompt is a per-file
+            # problem; every other AI failure (auth, quota, rate limit,
+            # unreachable) affects the whole job identically.
+            if exc.reason != AIUnavailableError.INVALID_RESPONSE:
+                raise
+            self._record_file_failure(job, file, exc)
         except (DependencyUnavailableError, UnauthorizedError):
             # A provider-connectivity or auth problem affects every
             # remaining file identically — a whole-job condition.
             raise
         except Exception as exc:  # noqa: BLE001 - one file's failure must not stop the job
-            logger.exception(
-                "file_intelligence_failed",
-                extra={"file_id": str(file.id), "job_id": str(job.id)},
-            )
-            self._db.rollback()
-            self._progress.increment_failed(job.id)
-            self._events.record(
-                intelligence_job_id=job.id,
-                event_type="file_intelligence_failed",
-                message=str(exc),
-                metadata={"file_id": str(file.id), "file_name": file.name},
-            )
+            self._record_file_failure(job, file, exc)
+
+    def _record_file_failure(self, job: IntelligenceJob, file: File, exc: Exception) -> None:
+        logger.exception(
+            "file_intelligence_failed",
+            extra={"file_id": str(file.id), "job_id": str(job.id)},
+        )
+        self._db.rollback()
+        self._progress.increment_failed(job.id)
+        self._events.record(
+            intelligence_job_id=job.id,
+            event_type="file_intelligence_failed",
+            message=str(exc),
+            metadata={"file_id": str(file.id), "file_name": file.name},
+        )
 
     def _analyze_file(self, file: File) -> None:
         extraction = self._extractions.get_by_file_id(file.id)

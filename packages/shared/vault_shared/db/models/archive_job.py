@@ -2,7 +2,7 @@ import enum
 import uuid
 from datetime import datetime
 
-from sqlalchemy import BigInteger, DateTime, ForeignKey, Integer, String, func
+from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, Integer, String, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -49,6 +49,20 @@ class ArchiveJob(Base):
     file_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     manifest: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
     created_by_user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
+
+    # Where the archive lives in the user's own connected storage. A job is
+    # only COMPLETED once the provider reports this file with the exact
+    # size and checksum written (`verified_at`). The object-storage copy is
+    # a secondary download cache, not the archive of record.
+    destination_provider_file_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    destination_path: Mapped[str | None] = mapped_column(String(4096), nullable=True)
+    destination_web_view_link: Mapped[str | None] = mapped_column(String(2048), nullable=True)
+    archive_md5: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    archive_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Originals are only ever trashed after `verified_at` is set.
+    remove_originals: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    originals_removed_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

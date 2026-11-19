@@ -55,7 +55,10 @@ class EnrichmentJobService:
         job = self._jobs.get_by_id(enrichment_job_id)
         if job is None:
             raise NotFoundError("Enrichment job not found.")
-        self._get_owned_connector(job.connector_id, organization_id=organization_id)
+        try:
+            self._get_owned_connector(job.connector_id, organization_id=organization_id)
+        except NotFoundError:
+            raise NotFoundError("Enrichment job not found.") from None
         return job
 
     def get_progress(self, enrichment_job_id: uuid.UUID) -> EnrichmentProgress | None:

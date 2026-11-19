@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import DateTime, Float, ForeignKey, String, func
+from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -19,9 +19,8 @@ class Citation(Base):
     `File` it names. `retrieval_method` records *how* this file was found
     (metadata search, semantic search, or both) — the explainability the
     phase spec asks for isn't just "here's a file," it's "here's why this
-    file, found by which method, with what confidence." No in-document
-    location (page/line) is tracked in this phase — see ADR-018's scope
-    notes."""
+    file, found by which method, with what confidence." For an answer drawn
+    from file content, `page_number`/`passage_index` say exactly where."""
 
     __tablename__ = "citations"
 
@@ -37,6 +36,8 @@ class Citation(Base):
     snippet: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     confidence: Mapped[float] = mapped_column(Float, nullable=False)
     retrieval_method: Mapped[str] = mapped_column(String(20), nullable=False)
+    page_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    passage_index: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 

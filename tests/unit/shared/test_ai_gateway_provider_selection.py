@@ -57,16 +57,35 @@ def test_stays_on_the_stub_when_provider_is_set_but_no_key_is_configured(
     assert gateway.completion_provider_name == "extractive_fallback"
 
 
-def test_uses_the_real_provider_only_when_both_provider_and_key_are_set(
+def test_uses_the_real_provider_only_when_provider_key_and_model_are_all_set(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _override_settings(
-        monkeypatch, completion_provider="openai_compatible", completion_api_key="a-real-key"
+        monkeypatch,
+        completion_provider="openai_compatible",
+        completion_api_key="a-real-key",
+        completion_model_name="z-ai/glm-test",
     )
 
     gateway = get_ai_gateway()
 
     assert gateway.completion_provider_name == "openai_compatible"
+    assert gateway.completion_model_name == "z-ai/glm-test"
+
+
+def test_a_configured_key_without_a_model_name_keeps_the_stub(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The model slug is never guessed — a half-configured provider must
+    degrade to the deterministic stub, not fail every AI call."""
+    _override_settings(
+        monkeypatch,
+        completion_provider="openai_compatible",
+        completion_api_key="a-real-key",
+        completion_model_name="",
+    )
+
+    assert get_ai_gateway().completion_provider_name == "extractive_fallback"
 
 
 def test_stub_provider_class_matches_the_default_regardless_of_key(

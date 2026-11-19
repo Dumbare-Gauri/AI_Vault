@@ -16,6 +16,7 @@ from app.presentation.api.v1.router import v1_router
 from vault_shared import configure_logging, get_logger, get_settings
 from vault_shared.ai_gateway import get_ai_gateway
 from vault_shared.db.session import get_engine
+from vault_shared.settings import enforce_production_settings
 
 logger = get_logger("app.lifespan")
 
@@ -52,6 +53,7 @@ async def _lifespan(_: FastAPI) -> AsyncIterator[None]:
 
 def create_app() -> FastAPI:
     settings = get_settings()
+    enforce_production_settings(settings)
     configure_logging(settings.service_name, settings.log_level)
     configure_observability(settings.service_name)
 

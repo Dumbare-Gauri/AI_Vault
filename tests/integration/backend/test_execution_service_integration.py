@@ -86,7 +86,9 @@ def _provision_user(db: Session):
     return session.user
 
 
-def _provision_connector(db: Session, *, organization_id: uuid.UUID, user_id: uuid.UUID, granted_scopes: str):
+def _provision_connector(
+    db: Session, *, organization_id: uuid.UUID, user_id: uuid.UUID, granted_scopes: str
+):
     connector = StorageConnectorRepository(db).upsert_connected(
         organization_id=organization_id,
         provider=ConnectorProvider.GOOGLE_WORKSPACE,
@@ -105,9 +107,14 @@ def _provision_connector(db: Session, *, organization_id: uuid.UUID, user_id: uu
     return connector
 
 
-def _provision_file(db: Session, *, connector_id: uuid.UUID, name: str, provider_file_id: str, size_bytes: int = 100):
+def _provision_file(
+    db: Session, *, connector_id: uuid.UUID, name: str, provider_file_id: str, size_bytes: int = 100
+):
     source = StorageSourceRepository(db).upsert(
-        connector_id=connector_id, provider_drive_id="root", name="My Drive", drive_type=DriveType.MY_DRIVE
+        connector_id=connector_id,
+        provider_drive_id="root",
+        name="My Drive",
+        drive_type=DriveType.MY_DRIVE,
     )
     now = datetime.now(UTC)
     file = FileRepository(db).upsert(
@@ -229,12 +236,16 @@ def test_create_plan_builds_a_step_per_affected_file_with_low_risk(db: Session) 
     file_a = _provision_file(db, connector_id=connector.id, name="A.txt", provider_file_id="f-a")
     file_b = _provision_file(db, connector_id=connector.id, name="B.txt", provider_file_id="f-b")
     recommendation = _provision_recommendation(
-        db, organization_id=user.organization_id, rule_name="duplicate_files",
+        db,
+        organization_id=user.organization_id,
+        rule_name="duplicate_files",
         affected_file_ids=[file_a.id, file_b.id],
     )
     service = ExecutionPlanService(db)
 
-    plan = service.create_plan(recommendation.id, organization_id=user.organization_id, user_id=user.id)
+    plan = service.create_plan(
+        recommendation.id, organization_id=user.organization_id, user_id=user.id
+    )
 
     assert plan.status == ExecutionPlanStatus.PENDING_APPROVAL
     assert plan.risk_level == "low"
@@ -257,13 +268,17 @@ def test_create_plan_rejects_a_non_executable_rule(db: Session) -> None:
     )
     file_a = _provision_file(db, connector_id=connector.id, name="A.txt", provider_file_id="f-a")
     recommendation = _provision_recommendation(
-        db, organization_id=user.organization_id, rule_name="orphaned_ownership",
+        db,
+        organization_id=user.organization_id,
+        rule_name="orphaned_ownership",
         affected_file_ids=[file_a.id],
     )
     service = ExecutionPlanService(db)
 
     with pytest.raises(ValidationError):
-        service.create_plan(recommendation.id, organization_id=user.organization_id, user_id=user.id)
+        service.create_plan(
+            recommendation.id, organization_id=user.organization_id, user_id=user.id
+        )
 
 
 @requires_infra
@@ -274,13 +289,18 @@ def test_create_plan_rejects_a_resolved_recommendation(db: Session) -> None:
     )
     file_a = _provision_file(db, connector_id=connector.id, name="A.txt", provider_file_id="f-a")
     recommendation = _provision_recommendation(
-        db, organization_id=user.organization_id, rule_name="duplicate_files",
-        affected_file_ids=[file_a.id], status=RecommendationStatus.RESOLVED,
+        db,
+        organization_id=user.organization_id,
+        rule_name="duplicate_files",
+        affected_file_ids=[file_a.id],
+        status=RecommendationStatus.RESOLVED,
     )
     service = ExecutionPlanService(db)
 
     with pytest.raises(ConflictError):
-        service.create_plan(recommendation.id, organization_id=user.organization_id, user_id=user.id)
+        service.create_plan(
+            recommendation.id, organization_id=user.organization_id, user_id=user.id
+        )
 
 
 @requires_infra
@@ -291,14 +311,18 @@ def test_create_plan_rejects_a_second_plan_while_one_is_active(db: Session) -> N
     )
     file_a = _provision_file(db, connector_id=connector.id, name="A.txt", provider_file_id="f-a")
     recommendation = _provision_recommendation(
-        db, organization_id=user.organization_id, rule_name="duplicate_files",
+        db,
+        organization_id=user.organization_id,
+        rule_name="duplicate_files",
         affected_file_ids=[file_a.id],
     )
     service = ExecutionPlanService(db)
     service.create_plan(recommendation.id, organization_id=user.organization_id, user_id=user.id)
 
     with pytest.raises(ConflictError):
-        service.create_plan(recommendation.id, organization_id=user.organization_id, user_id=user.id)
+        service.create_plan(
+            recommendation.id, organization_id=user.organization_id, user_id=user.id
+        )
 
 
 @requires_infra
@@ -312,12 +336,16 @@ def test_create_plan_computes_high_risk_for_many_files(db: Session) -> None:
         for i in range(101)
     ]
     recommendation = _provision_recommendation(
-        db, organization_id=user.organization_id, rule_name="archive_candidates",
+        db,
+        organization_id=user.organization_id,
+        rule_name="archive_candidates",
         affected_file_ids=[f.id for f in files],
     )
     service = ExecutionPlanService(db)
 
-    plan = service.create_plan(recommendation.id, organization_id=user.organization_id, user_id=user.id)
+    plan = service.create_plan(
+        recommendation.id, organization_id=user.organization_id, user_id=user.id
+    )
 
     assert plan.risk_level == "high"
 
@@ -349,14 +377,48 @@ def _provision_duplicate_group(
 
 
 @requires_infra
+def test_refreshing_duplicate_groups_never_erases_the_action_taken_on_them(db: Session) -> None:
+    """Storage analysis rebuilds duplicate groups after every cleanup; the
+    cleanup itself is a record of a real change in Drive and must survive."""
+    user = _provision_user(db)
+    connector = _provision_connector(
+        db, organization_id=user.organization_id, user_id=user.id, granted_scopes=DRIVE_WRITE_SCOPE
+    )
+    keep = _provision_file(db, connector_id=connector.id, name="keep.txt", provider_file_id="k")
+    dupe = _provision_file(db, connector_id=connector.id, name="dupe.txt", provider_file_id="d")
+    group = _provision_duplicate_group(
+        db, organization_id=user.organization_id, keep_file=keep, other_files=[dupe]
+    )
+    service = ExecutionPlanService(db)
+    plan = service.create_plan_from_duplicate_group(
+        group.id, organization_id=user.organization_id, user_id=user.id
+    )
+    db.commit()
+
+    db.delete(group)
+    db.commit()
+    db.expire_all()
+
+    detail = service.get_detail(plan.id, organization_id=user.organization_id)
+    assert detail.plan.duplicate_group_id is None
+    assert [s.target_file_id for s in detail.steps] == [dupe.id]
+
+
+@requires_infra
 def test_create_plan_from_duplicate_group_targets_only_non_keep_members(db: Session) -> None:
     user = _provision_user(db)
     connector = _provision_connector(
         db, organization_id=user.organization_id, user_id=user.id, granted_scopes=DRIVE_WRITE_SCOPE
     )
-    keep = _provision_file(db, connector_id=connector.id, name="keep.txt", provider_file_id="f-keep")
-    dupe_a = _provision_file(db, connector_id=connector.id, name="dupe_a.txt", provider_file_id="f-a")
-    dupe_b = _provision_file(db, connector_id=connector.id, name="dupe_b.txt", provider_file_id="f-b")
+    keep = _provision_file(
+        db, connector_id=connector.id, name="keep.txt", provider_file_id="f-keep"
+    )
+    dupe_a = _provision_file(
+        db, connector_id=connector.id, name="dupe_a.txt", provider_file_id="f-a"
+    )
+    dupe_b = _provision_file(
+        db, connector_id=connector.id, name="dupe_b.txt", provider_file_id="f-b"
+    )
     group = _provision_duplicate_group(
         db, organization_id=user.organization_id, keep_file=keep, other_files=[dupe_a, dupe_b]
     )
@@ -383,8 +445,12 @@ def test_create_plan_from_duplicate_group_rejects_a_second_plan_while_one_is_act
     connector = _provision_connector(
         db, organization_id=user.organization_id, user_id=user.id, granted_scopes=DRIVE_WRITE_SCOPE
     )
-    keep = _provision_file(db, connector_id=connector.id, name="keep.txt", provider_file_id="f-keep")
-    dupe = _provision_file(db, connector_id=connector.id, name="dupe.txt", provider_file_id="f-dupe")
+    keep = _provision_file(
+        db, connector_id=connector.id, name="keep.txt", provider_file_id="f-keep"
+    )
+    dupe = _provision_file(
+        db, connector_id=connector.id, name="dupe.txt", provider_file_id="f-dupe"
+    )
     group = _provision_duplicate_group(
         db, organization_id=user.organization_id, keep_file=keep, other_files=[dupe]
     )
@@ -405,10 +471,17 @@ def test_create_plan_from_duplicate_group_rejects_another_organizations_group(
 ) -> None:
     user_a = _provision_user(db)
     connector_a = _provision_connector(
-        db, organization_id=user_a.organization_id, user_id=user_a.id, granted_scopes=DRIVE_WRITE_SCOPE
+        db,
+        organization_id=user_a.organization_id,
+        user_id=user_a.id,
+        granted_scopes=DRIVE_WRITE_SCOPE,
     )
-    keep = _provision_file(db, connector_id=connector_a.id, name="keep.txt", provider_file_id="f-keep")
-    dupe = _provision_file(db, connector_id=connector_a.id, name="dupe.txt", provider_file_id="f-dupe")
+    keep = _provision_file(
+        db, connector_id=connector_a.id, name="keep.txt", provider_file_id="f-keep"
+    )
+    dupe = _provision_file(
+        db, connector_id=connector_a.id, name="dupe.txt", provider_file_id="f-dupe"
+    )
     group = _provision_duplicate_group(
         db, organization_id=user_a.organization_id, keep_file=keep, other_files=[dupe]
     )
@@ -428,8 +501,12 @@ def test_create_ad_hoc_plan_targets_exactly_the_selected_files(db: Session) -> N
     connector = _provision_connector(
         db, organization_id=user.organization_id, user_id=user.id, granted_scopes=DRIVE_WRITE_SCOPE
     )
-    file_a = _provision_file(db, connector_id=connector.id, name="old_a.pdf", provider_file_id="f-a")
-    file_b = _provision_file(db, connector_id=connector.id, name="old_b.pdf", provider_file_id="f-b")
+    file_a = _provision_file(
+        db, connector_id=connector.id, name="old_a.pdf", provider_file_id="f-a"
+    )
+    file_b = _provision_file(
+        db, connector_id=connector.id, name="old_b.pdf", provider_file_id="f-b"
+    )
     service = ExecutionPlanService(db)
 
     plan = service.create_ad_hoc_plan(
@@ -604,13 +681,19 @@ def test_create_ad_hoc_plan_silently_drops_a_file_id_from_another_organization(
     never trust the request."""
     user_a = _provision_user(db)
     connector_a = _provision_connector(
-        db, organization_id=user_a.organization_id, user_id=user_a.id, granted_scopes=DRIVE_WRITE_SCOPE
+        db,
+        organization_id=user_a.organization_id,
+        user_id=user_a.id,
+        granted_scopes=DRIVE_WRITE_SCOPE,
     )
     file_a = _provision_file(db, connector_id=connector_a.id, name="a.pdf", provider_file_id="f-a")
 
     user_b = _provision_user(db)
     connector_b = _provision_connector(
-        db, organization_id=user_b.organization_id, user_id=user_b.id, granted_scopes=DRIVE_WRITE_SCOPE
+        db,
+        organization_id=user_b.organization_id,
+        user_id=user_b.id,
+        granted_scopes=DRIVE_WRITE_SCOPE,
     )
     file_b = _provision_file(db, connector_id=connector_b.id, name="b.pdf", provider_file_id="f-b")
 
@@ -635,8 +718,10 @@ def test_create_ad_hoc_plan_rejects_an_empty_selection(db: Session) -> None:
 
     with pytest.raises(ValidationError):
         service.create_ad_hoc_plan(
-            [], action_type=ExecutionActionType.ARCHIVE,
-            organization_id=user.organization_id, user_id=user.id,
+            [],
+            action_type=ExecutionActionType.ARCHIVE,
+            organization_id=user.organization_id,
+            user_id=user.id,
         )
 
 
@@ -647,12 +732,16 @@ def test_create_permanent_delete_plan_targets_only_trashed_and_archived_files(db
         db, organization_id=user.organization_id, user_id=user.id, granted_scopes=DRIVE_WRITE_SCOPE
     )
     files = FileRepository(db)
-    trashed = _provision_file(db, connector_id=connector.id, name="trashed.pdf", provider_file_id="f-a")
+    trashed = _provision_file(
+        db, connector_id=connector.id, name="trashed.pdf", provider_file_id="f-a"
+    )
     files.mark_trashed(trashed, trashed=True)
     _provision_completed_archive(
         db, organization_id=user.organization_id, user_id=user.id, file_ids=[trashed.id]
     )
-    active = _provision_file(db, connector_id=connector.id, name="active.pdf", provider_file_id="f-b")
+    active = _provision_file(
+        db, connector_id=connector.id, name="active.pdf", provider_file_id="f-b"
+    )
     service = ExecutionPlanService(db)
 
     plan = service.create_permanent_delete_plan(
@@ -671,7 +760,9 @@ def test_create_permanent_delete_plan_rejects_when_nothing_is_eligible(db: Sessi
     connector = _provision_connector(
         db, organization_id=user.organization_id, user_id=user.id, granted_scopes=DRIVE_WRITE_SCOPE
     )
-    active = _provision_file(db, connector_id=connector.id, name="active.pdf", provider_file_id="f-a")
+    active = _provision_file(
+        db, connector_id=connector.id, name="active.pdf", provider_file_id="f-a"
+    )
     service = ExecutionPlanService(db)
 
     with pytest.raises(ValidationError):
@@ -692,7 +783,9 @@ def test_create_permanent_delete_plan_rejects_a_trashed_file_with_no_archive_bac
     connector = _provision_connector(
         db, organization_id=user.organization_id, user_id=user.id, granted_scopes=DRIVE_WRITE_SCOPE
     )
-    trashed = _provision_file(db, connector_id=connector.id, name="trashed.pdf", provider_file_id="f-a")
+    trashed = _provision_file(
+        db, connector_id=connector.id, name="trashed.pdf", provider_file_id="f-a"
+    )
     FileRepository(db).mark_trashed(trashed, trashed=True)
     service = ExecutionPlanService(db)
 
@@ -713,7 +806,9 @@ def test_create_permanent_delete_plan_rejects_a_file_whose_backing_archive_was_d
     connector = _provision_connector(
         db, organization_id=user.organization_id, user_id=user.id, granted_scopes=DRIVE_WRITE_SCOPE
     )
-    trashed = _provision_file(db, connector_id=connector.id, name="trashed.pdf", provider_file_id="f-a")
+    trashed = _provision_file(
+        db, connector_id=connector.id, name="trashed.pdf", provider_file_id="f-a"
+    )
     FileRepository(db).mark_trashed(trashed, trashed=True)
     archive_job = _provision_completed_archive(
         db, organization_id=user.organization_id, user_id=user.id, file_ids=[trashed.id]
@@ -752,7 +847,9 @@ def test_create_permanent_delete_plan_excludes_already_permanently_deleted_files
 # ----------------------------------------------------------------------
 
 
-def _provision_plan_with_approval(db: Session, *, user, granted_scopes: str, rule_name: str = "duplicate_files"):
+def _provision_plan_with_approval(
+    db: Session, *, user, granted_scopes: str, rule_name: str = "duplicate_files"
+):
     connector = _provision_connector(
         db, organization_id=user.organization_id, user_id=user.id, granted_scopes=granted_scopes
     )
@@ -779,20 +876,30 @@ def test_decide_approve_is_blocked_when_the_connector_lacks_write_scope(db: Sess
 
     with pytest.raises(ValidationError):
         service.decide(
-            approval.id, organization_id=user.organization_id, user_id=user.id,
-            decision="approve", comments=None, ip_address=None,
+            approval.id,
+            organization_id=user.organization_id,
+            user_id=user.id,
+            decision="approve",
+            comments=None,
+            ip_address=None,
         )
 
 
 @requires_infra
-def test_decide_approve_creates_an_execution_job_when_permissions_are_satisfied(db: Session) -> None:
+def test_decide_approve_creates_an_execution_job_when_permissions_are_satisfied(
+    db: Session,
+) -> None:
     user = _provision_user(db)
     plan, approval = _provision_plan_with_approval(db, user=user, granted_scopes=DRIVE_WRITE_SCOPE)
     service = ApprovalService(db)
 
     decided = service.decide(
-        approval.id, organization_id=user.organization_id, user_id=user.id,
-        decision="approve", comments="go ahead", ip_address="127.0.0.1",
+        approval.id,
+        organization_id=user.organization_id,
+        user_id=user.id,
+        decision="approve",
+        comments="go ahead",
+        ip_address="127.0.0.1",
     )
 
     assert decided.status == ApprovalStatus.APPROVED
@@ -806,46 +913,78 @@ def test_decide_approve_creates_an_execution_job_when_permissions_are_satisfied(
 
 
 @requires_infra
-def test_auto_decide_as_creator_approves_and_creates_a_job(db: Session) -> None:
-    """Instant-execution mode's own path — same effect as a human's
-    `decide(approve)`, just invoked automatically by the creator's own
-    request instead of a separate click."""
+def test_require_approval_false_approves_and_starts_the_job_with_no_approval_request(
+    db: Session,
+) -> None:
+    """ADR-026's replacement for the old auto-approval hop: a direct plan
+    is approved and its job started in the one `create_plan` call, with no
+    `ApprovalRequest` ever created."""
     user = _provision_user(db)
-    plan, _approval = _provision_plan_with_approval(db, user=user, granted_scopes=DRIVE_WRITE_SCOPE)
-    service = ApprovalService(db)
-
-    decided = service.auto_decide_as_creator(
-        plan.id, organization_id=user.organization_id, user_id=user.id
+    connector = _provision_connector(
+        db, organization_id=user.organization_id, user_id=user.id, granted_scopes=DRIVE_WRITE_SCOPE
+    )
+    file_a = _provision_file(
+        db, connector_id=connector.id, name="A.txt", provider_file_id=f"f-{uuid.uuid4().hex[:8]}"
+    )
+    recommendation = _provision_recommendation(
+        db,
+        organization_id=user.organization_id,
+        rule_name="duplicate_files",
+        affected_file_ids=[file_a.id],
     )
 
-    assert decided.status == ApprovalStatus.APPROVED
-    updated_plan = ExecutionPlanRepository(db).get_by_id(plan.id)
-    assert updated_plan.status == ExecutionPlanStatus.APPROVED
+    plan = ExecutionPlanService(db).create_plan(
+        recommendation.id,
+        organization_id=user.organization_id,
+        user_id=user.id,
+        require_approval=False,
+    )
 
+    assert plan.status == ExecutionPlanStatus.APPROVED
+    assert ApprovalRequestRepository(db).get_by_plan(plan.id) is None
     jobs = ExecutionJobRepository(db).list_for_plan(plan.id)
     assert len(jobs) == 1
     assert jobs[0].triggered_by_user_id == user.id
 
 
 @requires_infra
-def test_auto_decide_as_creator_raises_when_permissions_are_not_satisfied(db: Session) -> None:
-    """The connector lacks write scope — auto-approval must fail loudly
-    (not silently no-op) so the caller (the execution-plans router) can
-    leave the plan PENDING_APPROVAL for a human to retry later."""
+def test_require_approval_false_fails_loudly_when_permissions_are_not_satisfied(
+    db: Session,
+) -> None:
+    """The connector lacks write scope — this must fail the request
+    outright (ADR-026), not leave a plan silently waiting for a review
+    nobody performs anymore."""
     user = _provision_user(db)
-    plan, _approval = _provision_plan_with_approval(
-        db, user=user, granted_scopes="https://www.googleapis.com/auth/drive.readonly"
+    connector = _provision_connector(
+        db,
+        organization_id=user.organization_id,
+        user_id=user.id,
+        granted_scopes="https://www.googleapis.com/auth/drive.readonly",
     )
-    service = ApprovalService(db)
+    file_a = _provision_file(
+        db, connector_id=connector.id, name="A.txt", provider_file_id=f"f-{uuid.uuid4().hex[:8]}"
+    )
+    recommendation = _provision_recommendation(
+        db,
+        organization_id=user.organization_id,
+        rule_name="duplicate_files",
+        affected_file_ids=[file_a.id],
+    )
+    service = ExecutionPlanService(db)
 
     with pytest.raises(ValidationError):
-        service.auto_decide_as_creator(
-            plan.id, organization_id=user.organization_id, user_id=user.id
+        service.create_plan(
+            recommendation.id,
+            organization_id=user.organization_id,
+            user_id=user.id,
+            require_approval=False,
         )
 
-    untouched_plan = ExecutionPlanRepository(db).get_by_id(plan.id)
-    assert untouched_plan.status == ExecutionPlanStatus.PENDING_APPROVAL
-    assert ExecutionJobRepository(db).list_for_plan(plan.id) == []
+    # Nothing was left half-created: the plan was flushed but never
+    # committed, so the session rolling back on close discards it entirely
+    # — no dangling plan for a mutation that was never going to run.
+    db.rollback()
+    assert ExecutionPlanRepository(db).list_for_organization(user.organization_id) == []
 
 
 @requires_infra
@@ -855,8 +994,12 @@ def test_decide_reject_is_terminal_and_creates_no_job(db: Session) -> None:
     service = ApprovalService(db)
 
     decided = service.decide(
-        approval.id, organization_id=user.organization_id, user_id=user.id,
-        decision="reject", comments=None, ip_address=None,
+        approval.id,
+        organization_id=user.organization_id,
+        user_id=user.id,
+        decision="reject",
+        comments=None,
+        ip_address=None,
     )
 
     assert decided.status == ApprovalStatus.REJECTED
@@ -866,21 +1009,30 @@ def test_decide_reject_is_terminal_and_creates_no_job(db: Session) -> None:
 
     with pytest.raises(ConflictError):
         service.decide(
-            approval.id, organization_id=user.organization_id, user_id=user.id,
-            decision="approve", comments=None, ip_address=None,
+            approval.id,
+            organization_id=user.organization_id,
+            user_id=user.id,
+            decision="approve",
+            comments=None,
+            ip_address=None,
         )
 
 
 @requires_infra
 def test_bulk_decide_isolates_a_bad_id_from_the_rest(db: Session) -> None:
     user = _provision_user(db)
-    _plan1, approval1 = _provision_plan_with_approval(db, user=user, granted_scopes=DRIVE_WRITE_SCOPE)
+    _plan1, approval1 = _provision_plan_with_approval(
+        db, user=user, granted_scopes=DRIVE_WRITE_SCOPE
+    )
     service = ApprovalService(db)
 
     results = service.bulk_decide(
         [approval1.id, uuid.uuid4()],
-        organization_id=user.organization_id, user_id=user.id,
-        decision="reject", comments=None, ip_address=None,
+        organization_id=user.organization_id,
+        user_id=user.id,
+        decision="reject",
+        comments=None,
+        ip_address=None,
     )
 
     assert len(results) == 1
@@ -898,8 +1050,12 @@ def test_cancel_rejects_an_already_completed_job(db: Session) -> None:
     user = _provision_user(db)
     plan, approval = _provision_plan_with_approval(db, user=user, granted_scopes=DRIVE_WRITE_SCOPE)
     ApprovalService(db).decide(
-        approval.id, organization_id=user.organization_id, user_id=user.id,
-        decision="approve", comments=None, ip_address=None,
+        approval.id,
+        organization_id=user.organization_id,
+        user_id=user.id,
+        decision="approve",
+        comments=None,
+        ip_address=None,
     )
     jobs = ExecutionJobRepository(db)
     job = jobs.list_for_plan(plan.id)[0]
@@ -916,8 +1072,12 @@ def test_pause_only_allowed_while_running(db: Session) -> None:
     user = _provision_user(db)
     plan, approval = _provision_plan_with_approval(db, user=user, granted_scopes=DRIVE_WRITE_SCOPE)
     ApprovalService(db).decide(
-        approval.id, organization_id=user.organization_id, user_id=user.id,
-        decision="approve", comments=None, ip_address=None,
+        approval.id,
+        organization_id=user.organization_id,
+        user_id=user.id,
+        decision="approve",
+        comments=None,
+        ip_address=None,
     )
     jobs = ExecutionJobRepository(db)
     job = jobs.list_for_plan(plan.id)[0]
@@ -937,8 +1097,12 @@ def test_resume_only_allowed_while_paused(db: Session) -> None:
     user = _provision_user(db)
     plan, approval = _provision_plan_with_approval(db, user=user, granted_scopes=DRIVE_WRITE_SCOPE)
     ApprovalService(db).decide(
-        approval.id, organization_id=user.organization_id, user_id=user.id,
-        decision="approve", comments=None, ip_address=None,
+        approval.id,
+        organization_id=user.organization_id,
+        user_id=user.id,
+        decision="approve",
+        comments=None,
+        ip_address=None,
     )
     jobs = ExecutionJobRepository(db)
     job = jobs.list_for_plan(plan.id)[0]
@@ -985,4 +1149,6 @@ def test_trigger_rollback_rejects_an_unknown_plan(db: Session) -> None:
     service = ExecutionJobService(db)
 
     with pytest.raises(NotFoundError):
-        service.trigger_rollback(uuid.uuid4(), organization_id=user.organization_id, user_id=user.id)
+        service.trigger_rollback(
+            uuid.uuid4(), organization_id=user.organization_id, user_id=user.id
+        )

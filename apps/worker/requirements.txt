@@ -15,3 +15,7 @@ python-pptx>=1.0,<2
 # with a span, a no-op until vault_shared's configure_tracing() actually
 # installs an exporter.
 opentelemetry-instrumentation-celery>=0.48b0,<1
+
+# Floors for transitive dependencies flagged HIGH by the CI Trivy scan.
+setuptools>=78.1.1
+urllib3>=2.8.0

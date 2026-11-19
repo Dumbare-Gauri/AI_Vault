@@ -42,6 +42,16 @@ AI_PROVIDER_LATENCY_SECONDS = Histogram(
     "AI Gateway provider call latency in seconds",
     ["provider", "operation"],
 )
+AI_TOKENS_TOTAL = Counter(
+    "vault_ai_tokens_total",
+    "Tokens reported by the AI provider (cost proxy). Never carries content.",
+    ["provider", "model"],
+)
+AI_FAILURES_TOTAL = Counter(
+    "vault_ai_failures_total",
+    "AI Gateway completion failures by normalized reason",
+    ["provider", "reason"],
+)
 WORKFLOW_EXECUTIONS_TOTAL = Counter(
     "vault_workflow_executions_total",
     "Workflow executions by terminal status",
@@ -78,6 +88,14 @@ def record_ai_provider_latency(*, provider: str, operation: str, duration_second
     AI_PROVIDER_LATENCY_SECONDS.labels(provider=provider, operation=operation).observe(
         duration_seconds
     )
+
+
+def record_ai_tokens(*, provider: str, model: str, tokens: int) -> None:
+    AI_TOKENS_TOTAL.labels(provider=provider, model=model).inc(tokens)
+
+
+def record_ai_failure(*, provider: str, reason: str) -> None:
+    AI_FAILURES_TOTAL.labels(provider=provider, reason=reason).inc()
 
 
 def record_workflow_execution(status: str) -> None:

@@ -32,7 +32,9 @@ class ArchiveJobRepository:
     def get_by_id(self, archive_job_id: uuid.UUID) -> ArchiveJob | None:
         return self._session.get(ArchiveJob, archive_job_id)
 
-    def get_owned(self, archive_job_id: uuid.UUID, *, organization_id: uuid.UUID) -> ArchiveJob | None:
+    def get_owned(
+        self, archive_job_id: uuid.UUID, *, organization_id: uuid.UUID
+    ) -> ArchiveJob | None:
         return (
             self._session.query(ArchiveJob)
             .filter_by(id=archive_job_id, organization_id=organization_id)
@@ -41,9 +43,7 @@ class ArchiveJobRepository:
 
     def get_by_plan_id(self, execution_plan_id: uuid.UUID) -> ArchiveJob | None:
         return (
-            self._session.query(ArchiveJob)
-            .filter_by(execution_plan_id=execution_plan_id)
-            .first()
+            self._session.query(ArchiveJob).filter_by(execution_plan_id=execution_plan_id).first()
         )
 
     def list_for_organization(
@@ -62,11 +62,18 @@ class ArchiveJobRepository:
         self,
         archive_job: ArchiveJob,
         *,
-        object_storage_key: str,
+        object_storage_key: str | None,
         original_size_bytes: int,
         compressed_size_bytes: int,
         file_count: int,
         manifest: list[dict],
+        destination_provider_file_id: str | None = None,
+        destination_path: str | None = None,
+        destination_web_view_link: str | None = None,
+        archive_md5: str | None = None,
+        archive_sha256: str | None = None,
+        verified_at: datetime | None = None,
+        originals_removed_count: int = 0,
     ) -> None:
         archive_job.status = ArchiveJobStatus.COMPLETED
         archive_job.object_storage_key = object_storage_key
@@ -74,6 +81,13 @@ class ArchiveJobRepository:
         archive_job.compressed_size_bytes = compressed_size_bytes
         archive_job.file_count = file_count
         archive_job.manifest = manifest
+        archive_job.destination_provider_file_id = destination_provider_file_id
+        archive_job.destination_path = destination_path
+        archive_job.destination_web_view_link = destination_web_view_link
+        archive_job.archive_md5 = archive_md5
+        archive_job.archive_sha256 = archive_sha256
+        archive_job.verified_at = verified_at
+        archive_job.originals_removed_count = originals_removed_count
         archive_job.completed_at = datetime.now(UTC)
         self._session.flush()
 

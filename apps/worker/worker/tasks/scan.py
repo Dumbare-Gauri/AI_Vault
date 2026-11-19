@@ -4,7 +4,6 @@ from celery import Task
 from sqlalchemy.orm import Session
 
 from vault_shared import DependencyUnavailableError, get_logger
-from vault_shared.connectors.google_drive import GoogleDriveClient
 from vault_shared.connectors.google_workspace import get_google_workspace_oauth_client
 from vault_shared.db.models import (
     EnrichmentTrigger,
@@ -19,6 +18,7 @@ from vault_shared.db.repositories import (
     StorageConnectorRepository,
 )
 from vault_shared.db.session import get_session_factory
+from vault_shared.storage.default_registry import build_storage_registry
 from vault_shared.workflow_events import fire_workflow_event
 from worker.celery_app import celery_app
 from worker.scanner.scan_service import ScannerService
@@ -46,8 +46,9 @@ def run_scan(self: Task, scan_job_id: str) -> None:
     try:
         service = ScannerService(
             session,
-            drive_client=GoogleDriveClient(),
-            oauth_client=get_google_workspace_oauth_client(),
+            storage=build_storage_registry(
+                session, oauth_client=get_google_workspace_oauth_client()
+            ),
         )
         service.run(uuid.UUID(scan_job_id))
         _enqueue_enrichment_if_scan_completed(session, scan_job_id)

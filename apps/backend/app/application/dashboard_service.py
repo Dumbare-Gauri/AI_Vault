@@ -10,8 +10,12 @@ from vault_shared.db.repositories import (
     DashboardSnapshotRepository,
     EmbeddingJobRepository,
     EnrichmentJobRepository,
+    FileIntelligenceRepository,
+    FileLifecycleRepository,
     FileRepository,
     InsightRecordRepository,
+    OrganizationEntityRepository,
+    OrganizationRecommendationRepository,
     RecommendationJobRepository,
     ScanJobRepository,
     StorageConnectorRepository,
@@ -28,6 +32,14 @@ class _StatusedJob(Protocol):
 
 
 @dataclass(frozen=True)
+class IntelligenceSummary:
+    files_analyzed: int
+    entities_by_type: dict[str, int]
+    lifecycle_by_state: dict[str, int]
+    organize_suggestions: int
+
+
+@dataclass(frozen=True)
 class DashboardOverview:
     connectors: list[StorageConnector]
     latest_snapshot: DashboardSnapshot | None
@@ -39,6 +51,7 @@ class DashboardOverview:
     latest_enrichment_status: str | None
     latest_embedding_status: str | None
     latest_recommendation_status: str | None
+    intelligence: IntelligenceSummary
 
 
 class DashboardService:
@@ -56,6 +69,10 @@ class DashboardService:
         self._recommendation_jobs = RecommendationJobRepository(db)
         self._insights = InsightRecordRepository(db)
         self._snapshots = DashboardSnapshotRepository(db)
+        self._intelligence = FileIntelligenceRepository(db)
+        self._lifecycles = FileLifecycleRepository(db)
+        self._entities = OrganizationEntityRepository(db)
+        self._organization_recommendations = OrganizationRecommendationRepository(db)
 
     def get_overview(self, organization_id: uuid.UUID) -> DashboardOverview:
         connectors = self._connectors.list_for_organization(organization_id)
@@ -92,6 +109,16 @@ class DashboardService:
                 job.status
                 if (job := self._recommendation_jobs.get_latest_for_organization(organization_id))
                 else None
+            ),
+            intelligence=IntelligenceSummary(
+                files_analyzed=self._intelligence.count_analyzed_for_organization(organization_id),
+                entities_by_type=self._entities.count_active_by_type(organization_id),
+                lifecycle_by_state=self._lifecycles.count_states_for_organization(organization_id),
+                organize_suggestions=(
+                    self._organization_recommendations.count_active_for_organization(
+                        organization_id
+                    )
+                ),
             ),
         )
 

@@ -79,7 +79,7 @@ class Settings(BaseSettings):
     # is a kill switch a founder can flip without a deploy if rollback
     # itself ever needs to be disabled.
     execution_max_retries: int = 3
-    execution_timeout_seconds: int = 300
+    execution_timeout_seconds: int = 1800
     approval_expiry_hours: int = 72
     execution_rollback_enabled: bool = True
 
@@ -112,22 +112,32 @@ class Settings(BaseSettings):
     # staleness for skipping the DB entirely on repeat loads.
     dashboard_cache_ttl_seconds: int = 30
 
-    # Phase 2 (AI File Intelligence). `completion_provider` selects the
-    # AIGateway's completion adapter (see `ai_gateway/__init__.py`'s
-    # `get_ai_gateway()`) — "extractive" is today's deterministic stub
-    # (ADR-018), unchanged by default. Switching to "openai_compatible"
-    # only takes effect once `completion_api_key` is also set; if the key
-    # is empty, `get_ai_gateway()` deliberately still returns the stub so
-    # flipping this setting alone can never silently break every existing
-    # `AIGateway.complete()` caller (RAG chat included). Defaults point at
-    # Moonshot's Kimi API, but any OpenAI-compatible chat completions
-    # endpoint (GLM, etc.) works via `completion_api_base_url`/
-    # `completion_model_name` alone — no code change.
+    # AI reasoning service. AI Vault's assistant is GLM served through
+    # OpenRouter; OpenRouter is only the model gateway. `completion_provider`
+    # selects the AIGateway's completion adapter (see `ai_gateway/
+    # __init__.py`'s `get_ai_gateway()`) — "extractive" is the deterministic
+    # no-AI fallback, the default. "openai_compatible" (the OpenRouter chat
+    # completions API) only takes effect once BOTH `completion_api_key` and
+    # `completion_model_name` are set; otherwise the gateway deliberately
+    # keeps the fallback so a half-configured setting can never break every
+    # `AIGateway.complete()` caller. The model slug is never defaulted here:
+    # it must be copied from openrouter.ai's model catalog, not guessed.
     completion_provider: Literal["extractive", "openai_compatible"] = "extractive"
-    completion_api_base_url: str = "https://api.moonshot.ai/v1"
+    completion_api_base_url: str = "https://openrouter.ai/api/v1"
     completion_api_key: str = ""
-    completion_model_name: str = "kimi-k2-0711-preview"
+    completion_model_name: str = ""
     completion_request_timeout_seconds: int = 60
+    # Optional OpenRouter app-attribution headers (HTTP-Referer / X-Title).
+    completion_http_referer: str = ""
+    completion_app_title: str = "AI Vault"
+    ai_temperature: float = 0.0
+    # Gateway-level resilience for every completion call: bounded retry of
+    # transient failures (rate limit / timeout / 5xx), and a per-process
+    # request cap protecting the provider quota. 0 disables the cap.
+    ai_gateway_max_attempts: int = 3
+    ai_gateway_retry_base_delay_seconds: float = 1.0
+    ai_gateway_retry_max_delay_seconds: float = 10.0
+    ai_gateway_max_requests_per_minute: int = 60
 
     # AI Storage Assistant (ADR-024) — extends the existing "Ask Vault"
     # conversation system (ConversationService) with deterministic
@@ -162,16 +172,64 @@ class Settings(BaseSettings):
     object_storage_secret_key: str = "vault-minio-secret"
     object_storage_bucket: str = "vault-archives"
     object_storage_secure: bool = False
-    # Bounds per-file worker memory while building an archive zip —
-    # `GoogleDriveClient.download_file`/`export_file` return full bytes in
-    # memory, there's no streaming download today. A file over this size is
-    # skipped (its step fails individually) rather than risking the whole
-    # worker process.
-    archive_max_file_size_bytes: int = 200 * 1024**2
+    # Bounds per-file worker memory while building an archive zip — reads are
+    # streamed from the storage adapter but still collected into `bytes` here
+    # (`read_bounded`) since `zipfile.writestr` needs the whole file at once.
+    # A file over this size is skipped (its step fails individually) rather
+    # than risking the whole worker process.
+    archive_max_file_size_bytes: int = 2 * 1024**3
 
     @property
     def cors_origins_list(self) -> list[str]:
         return [origin.strip() for origin in self.cors_allow_origins.split(",") if origin.strip()]
+
+    def production_problems(self) -> list[str]:
+        """Settings that are acceptable for local development but unsafe in
+        production. Messages name the setting, never its value."""
+        # Imported here: settings is imported by nearly everything, and only
+        # this check needs the Fernet class.
+        from cryptography.fernet import Fernet
+
+        problems: list[str] = []
+        if (
+            self.jwt_secret == _DEFAULT_JWT_SECRET
+            or self.jwt_secret.lower().startswith("changeme")
+            or len(self.jwt_secret) < 32
+        ):
+            problems.append(
+                "JWT_SECRET is a placeholder or development default, or shorter than 32 characters"
+            )
+        try:
+            Fernet(self.connector_encryption_key.encode())
+        except (ValueError, TypeError):
+            problems.append("CONNECTOR_ENCRYPTION_KEY is empty or not a valid Fernet key")
+        if not self.cookie_secure:
+            problems.append("COOKIE_SECURE must be true")
+        if not self.google_client_id or not self.google_client_secret:
+            problems.append("GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET are not set")
+        if (self.object_storage_access_key, self.object_storage_secret_key) == _DEFAULT_OBJECT_KEYS:
+            problems.append("OBJECT_STORAGE_ACCESS_KEY / SECRET_KEY are the development defaults")
+        if any("localhost" in origin or "127.0.0.1" in origin for origin in self.cors_origins_list):
+            problems.append("CORS_ALLOW_ORIGINS allows localhost")
+        if not self.frontend_url.startswith("https://"):
+            problems.append("FRONTEND_URL must use https")
+        return problems
+
+
+_DEFAULT_JWT_SECRET = "changeme-in-env-use-a-real-32-byte-secret"
+_DEFAULT_OBJECT_KEYS = ("vault-minio", "vault-minio-secret")
+
+
+def enforce_production_settings(settings: Settings) -> None:
+    """Refuses to start a production process with development defaults. A
+    no-op in development and test."""
+    if settings.environment != "production":
+        return
+    problems = settings.production_problems()
+    if problems:
+        raise RuntimeError(
+            "Refusing to start in production with unsafe configuration: " + "; ".join(problems)
+        )
 
 
 @lru_cache

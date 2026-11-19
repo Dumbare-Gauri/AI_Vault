@@ -5,6 +5,7 @@ from urllib.parse import urlparse
 
 import pytest
 from sqlalchemy.orm import Session
+
 from vault_shared import DependencyUnavailableError, get_settings
 from vault_shared.connectors.google_workspace import GoogleAccountInfo, GoogleTokenSet
 from vault_shared.db.models import (
@@ -30,6 +31,7 @@ from vault_shared.db.repositories import (
 )
 from vault_shared.db.session import get_session_factory
 from vault_shared.security.encryption import encrypt_token
+from vault_shared.storage.default_registry import build_storage_registry
 from worker.enrichment.enrichment_service import EnrichmentService
 
 
@@ -116,6 +118,18 @@ class _FakeGoogleDriveClient:
     def export_file(self, *, access_token: str, file_id: str, export_mime_type: str) -> bytes:
         raise NotImplementedError
 
+    def stream_file(self, *, access_token: str, file_id: str):
+        return iter([self.download_file(access_token=access_token, file_id=file_id)])
+
+    def stream_export(self, *, access_token: str, file_id: str, export_mime_type: str):
+        return iter(
+            [
+                self.export_file(
+                    access_token=access_token, file_id=file_id, export_mime_type=export_mime_type
+                )
+            ]
+        )
+
     def list_shared_drives(self, *, access_token: str) -> list:
         return []
 
@@ -155,9 +169,14 @@ def _provision_connector(db: Session, *, organization_id: uuid.UUID, user_id: uu
     return connector
 
 
-def _provision_file(db: Session, *, connector_id: uuid.UUID, name: str, mime_type: str, provider_file_id: str):
+def _provision_file(
+    db: Session, *, connector_id: uuid.UUID, name: str, mime_type: str, provider_file_id: str
+):
     source = StorageSourceRepository(db).upsert(
-        connector_id=connector_id, provider_drive_id="root", name="My Drive", drive_type=DriveType.MY_DRIVE
+        connector_id=connector_id,
+        provider_drive_id="root",
+        name="My Drive",
+        drive_type=DriveType.MY_DRIVE,
     )
     now = datetime.now(UTC)
     file = FileRepository(db).upsert(
@@ -208,7 +227,12 @@ def test_enrichment_processes_pending_files_and_persists_metadata_and_classifica
     job = _create_job(db, connector_id=connector.id)
 
     drive = _FakeGoogleDriveClient(content_by_file_id={"f-invoice": b"invoice text"})
-    service = EnrichmentService(db, drive_client=drive, oauth_client=_FakeGoogleWorkspaceOAuthClient())
+    service = EnrichmentService(
+        db,
+        storage=build_storage_registry(
+            db, oauth_client=_FakeGoogleWorkspaceOAuthClient(), drive_client=drive
+        ),
+    )
 
     service.run(job.id)
 
@@ -232,12 +256,21 @@ def test_enrichment_is_resumable_and_skips_already_enriched_files(db: Session) -
     user = _provision_user(db)
     connector = _provision_connector(db, organization_id=user.organization_id, user_id=user.id)
     _provision_file(
-        db, connector_id=connector.id, name="Report.txt", mime_type="text/plain", provider_file_id="f-1"
+        db,
+        connector_id=connector.id,
+        name="Report.txt",
+        mime_type="text/plain",
+        provider_file_id="f-1",
     )
     job = _create_job(db, connector_id=connector.id)
 
     drive = _FakeGoogleDriveClient(content_by_file_id={"f-1": b"report text"})
-    service = EnrichmentService(db, drive_client=drive, oauth_client=_FakeGoogleWorkspaceOAuthClient())
+    service = EnrichmentService(
+        db,
+        storage=build_storage_registry(
+            db, oauth_client=_FakeGoogleWorkspaceOAuthClient(), drive_client=drive
+        ),
+    )
     service.run(job.id)
     assert drive.download_calls == 1
 
@@ -257,15 +290,28 @@ def test_enrichment_discovers_relationships_across_files_in_the_same_job(db: Ses
     user = _provision_user(db)
     connector = _provision_connector(db, organization_id=user.organization_id, user_id=user.id)
     _provision_file(
-        db, connector_id=connector.id, name="Report_v1.txt", mime_type="text/plain", provider_file_id="f-v1"
+        db,
+        connector_id=connector.id,
+        name="Report_v1.txt",
+        mime_type="text/plain",
+        provider_file_id="f-v1",
     )
     _provision_file(
-        db, connector_id=connector.id, name="Report_v2.txt", mime_type="text/plain", provider_file_id="f-v2"
+        db,
+        connector_id=connector.id,
+        name="Report_v2.txt",
+        mime_type="text/plain",
+        provider_file_id="f-v2",
     )
     job = _create_job(db, connector_id=connector.id)
 
     drive = _FakeGoogleDriveClient(content_by_file_id={"f-v1": b"v1", "f-v2": b"v2"})
-    service = EnrichmentService(db, drive_client=drive, oauth_client=_FakeGoogleWorkspaceOAuthClient())
+    service = EnrichmentService(
+        db,
+        storage=build_storage_registry(
+            db, oauth_client=_FakeGoogleWorkspaceOAuthClient(), drive_client=drive
+        ),
+    )
 
     service.run(job.id)
 
@@ -284,17 +330,30 @@ def test_a_single_files_unexpected_failure_does_not_stop_the_job(db: Session) ->
     user = _provision_user(db)
     connector = _provision_connector(db, organization_id=user.organization_id, user_id=user.id)
     good_file = _provision_file(
-        db, connector_id=connector.id, name="Good.txt", mime_type="text/plain", provider_file_id="f-good"
+        db,
+        connector_id=connector.id,
+        name="Good.txt",
+        mime_type="text/plain",
+        provider_file_id="f-good",
     )
     _provision_file(
-        db, connector_id=connector.id, name="Bad.txt", mime_type="text/plain", provider_file_id="f-bad"
+        db,
+        connector_id=connector.id,
+        name="Bad.txt",
+        mime_type="text/plain",
+        provider_file_id="f-bad",
     )
     job = _create_job(db, connector_id=connector.id)
 
     drive = _FakeGoogleDriveClient(
         content_by_file_id={"f-good": b"good text"}, raise_for_file_id="f-bad"
     )
-    service = EnrichmentService(db, drive_client=drive, oauth_client=_FakeGoogleWorkspaceOAuthClient())
+    service = EnrichmentService(
+        db,
+        storage=build_storage_registry(
+            db, oauth_client=_FakeGoogleWorkspaceOAuthClient(), drive_client=drive
+        ),
+    )
 
     service.run(job.id)
 
@@ -312,12 +371,21 @@ def test_dependency_unavailable_leaves_the_job_running_for_a_celery_level_retry(
     user = _provision_user(db)
     connector = _provision_connector(db, organization_id=user.organization_id, user_id=user.id)
     _provision_file(
-        db, connector_id=connector.id, name="Report.txt", mime_type="text/plain", provider_file_id="f-1"
+        db,
+        connector_id=connector.id,
+        name="Report.txt",
+        mime_type="text/plain",
+        provider_file_id="f-1",
     )
     job = _create_job(db, connector_id=connector.id)
 
     drive = _FakeGoogleDriveClient(raise_dependency_unavailable=True)
-    service = EnrichmentService(db, drive_client=drive, oauth_client=_FakeGoogleWorkspaceOAuthClient())
+    service = EnrichmentService(
+        db,
+        storage=build_storage_registry(
+            db, oauth_client=_FakeGoogleWorkspaceOAuthClient(), drive_client=drive
+        ),
+    )
 
     with pytest.raises(DependencyUnavailableError):
         service.run(job.id)
@@ -331,7 +399,11 @@ def test_cancellation_stops_the_job_cleanly(db: Session) -> None:
     user = _provision_user(db)
     connector = _provision_connector(db, organization_id=user.organization_id, user_id=user.id)
     _provision_file(
-        db, connector_id=connector.id, name="Report.txt", mime_type="text/plain", provider_file_id="f-1"
+        db,
+        connector_id=connector.id,
+        name="Report.txt",
+        mime_type="text/plain",
+        provider_file_id="f-1",
     )
     job = _create_job(db, connector_id=connector.id)
     jobs = EnrichmentJobRepository(db)
@@ -339,7 +411,12 @@ def test_cancellation_stops_the_job_cleanly(db: Session) -> None:
     db.commit()
 
     drive = _FakeGoogleDriveClient(content_by_file_id={"f-1": b"text"})
-    service = EnrichmentService(db, drive_client=drive, oauth_client=_FakeGoogleWorkspaceOAuthClient())
+    service = EnrichmentService(
+        db,
+        storage=build_storage_registry(
+            db, oauth_client=_FakeGoogleWorkspaceOAuthClient(), drive_client=drive
+        ),
+    )
 
     service.run(job.id)
 

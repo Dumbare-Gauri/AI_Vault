@@ -1,12 +1,13 @@
 from unittest.mock import MagicMock
 
+from fastapi.testclient import TestClient
+
 from app.main import app
 from app.presentation.dependencies.auth import get_current_user
 from app.presentation.dependencies.services import (
     get_ai_provider_config_service,
     get_organization_service,
 )
-from fastapi.testclient import TestClient
 
 client = TestClient(app)
 
@@ -89,7 +90,20 @@ def test_get_ai_provider_config_reports_unconfigured_by_default(owner_user) -> N
         app.dependency_overrides.pop(get_ai_provider_config_service, None)
 
     assert response.status_code == 200
-    assert response.json() == {"configured": False, "model_name": None}
+    body = response.json()
+    assert (body["configured"], body["model_name"], body["provider"]) == (False, None, None)
+    assert {option["id"] for option in body["available_providers"]} == {
+        "openrouter",
+        "openai",
+        "anthropic",
+        "gemini",
+        "ollama",
+        "zai",
+        "deepseek",
+        "groq",
+        "mistral",
+        "xai",
+    }
 
 
 def test_a_member_cannot_set_the_ai_provider_config(member_user) -> None:
@@ -130,7 +144,9 @@ def test_owner_can_set_the_ai_provider_config(owner_user) -> None:
 
     fake_service = MagicMock()
     config = AIProviderConfig(
-        organization_id=owner_user.organization_id, model_name="z-ai/glm-5.2:free"
+        organization_id=owner_user.organization_id,
+        model_name="z-ai/glm-5.2:free",
+        provider="anthropic",
     )
     fake_service.set.return_value = config
 
@@ -139,16 +155,23 @@ def test_owner_can_set_the_ai_provider_config(owner_user) -> None:
     try:
         response = client.put(
             "/v1/organizations/current/ai-provider",
-            json={"api_key": "sk-or-v1-test", "model_name": "z-ai/glm-5.2:free"},
+            json={
+                "api_key": "sk-or-v1-test",
+                "model_name": "z-ai/glm-5.2:free",
+                "provider": "anthropic",
+            },
         )
     finally:
         app.dependency_overrides.pop(get_current_user, None)
         app.dependency_overrides.pop(get_ai_provider_config_service, None)
 
     assert response.status_code == 200
-    assert response.json() == {"configured": True, "model_name": "z-ai/glm-5.2:free"}
+    assert (response.json()["configured"], response.json()["provider"]) == (True, "anthropic")
     fake_service.set.assert_called_once_with(
-        owner_user.organization_id, api_key="sk-or-v1-test", model_name="z-ai/glm-5.2:free"
+        owner_user.organization_id,
+        api_key="sk-or-v1-test",
+        model_name="z-ai/glm-5.2:free",
+        provider="anthropic",
     )
 
 

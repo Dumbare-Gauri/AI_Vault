@@ -112,7 +112,7 @@ def test_list_duplicates_passes_pagination_params(as_member, fake_storage_servic
 
     assert response.status_code == 200
     fake_storage_service.list_duplicate_groups.assert_called_once_with(
-        as_member.organization_id, limit=10, offset=20
+        as_member.organization_id, limit=10, offset=20, connector_id=None
     )
 
 

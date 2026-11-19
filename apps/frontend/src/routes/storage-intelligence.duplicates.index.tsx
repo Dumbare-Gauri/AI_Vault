@@ -5,6 +5,7 @@ import { ChevronLeft, ChevronRight, Copy } from "lucide-react";
 import { useState } from "react";
 
 import { AppShell } from "@/components/app-shell/app-shell";
+import { StorageScopeSwitcher, useStorageScope } from "@/components/storage-intelligence/storage-scope-switcher";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -12,6 +13,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { apiClient } from "@/lib/api-client";
 import { formatBytes } from "@/lib/format-bytes";
 import { useAuthStore } from "@/stores/auth-store";
+import { scopedPath } from "@/stores/storage-scope-store";
 
 export const Route = createFileRoute("/storage-intelligence/duplicates/")({
   beforeLoad: () => {
@@ -26,12 +28,13 @@ const PAGE_SIZE = 20;
 
 function DuplicateGroupsPage() {
   const [page, setPage] = useState(0);
+  const { connectorId } = useStorageScope();
 
   const groupsQuery = useQuery({
-    queryKey: ["storage-intelligence", "duplicates", page],
+    queryKey: ["storage-intelligence", "duplicates", page, connectorId],
     queryFn: () =>
       apiClient.get<DuplicateGroupListResponse>(
-        `/v1/storage/duplicates?limit=${PAGE_SIZE}&offset=${page * PAGE_SIZE}`,
+        scopedPath(`/v1/storage/duplicates?limit=${PAGE_SIZE}&offset=${page * PAGE_SIZE}`, connectorId),
       ),
   });
 
@@ -54,6 +57,7 @@ function DuplicateGroupsPage() {
               : "Exact-duplicate groups, based on real content checksums."}
           </p>
         </div>
+        <StorageScopeSwitcher />
 
         {groupsQuery.isLoading && (
           <div className="flex flex-col gap-2">

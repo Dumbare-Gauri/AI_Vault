@@ -1,4 +1,5 @@
 from vault_shared.errors import (
+    AIUnavailableError,
     ConflictError,
     DependencyUnavailableError,
     ForbiddenError,
@@ -20,6 +21,7 @@ from vault_shared.logging import (
 from vault_shared.settings import Settings, get_settings
 
 __all__ = [
+    "AIUnavailableError",
     "ConflictError",
     "DependencyUnavailableError",
     "ForbiddenError",

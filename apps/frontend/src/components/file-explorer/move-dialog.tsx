@@ -13,6 +13,7 @@ import {
 } from "@/components/ui/command";
 import { toast } from "@/components/ui/toaster";
 import { ApiError, apiClient } from "@/lib/api-client";
+import { pluralFiles, trackAction } from "@/lib/storage-action";
 
 interface MoveDialogProps {
   onOpenChange: (open: boolean) => void;
@@ -56,11 +57,9 @@ export function MoveDialog({ onOpenChange, connectorId, fileIds, onMoved }: Move
         action_type: "move_file",
         new_parent_id: folder.provider_file_id,
       }),
-    onSuccess: (_plan, folder) => {
+    onSuccess: (plan, folder) => {
       void queryClient.invalidateQueries({ queryKey: ["files"] });
-      toast.success(`Moving to "${folder.name}" now`, {
-        description: "Runs immediately — no approval step required.",
-      });
+      void trackAction(plan.id, `Moving ${pluralFiles(fileIds.length)} to "${folder.name}"…`);
       onOpenChange(false);
       onMoved?.();
     },

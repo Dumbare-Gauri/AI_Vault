@@ -44,22 +44,18 @@ class ExecutionPlan(Base):
         ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True
     )
     recommendation_id: Mapped[uuid.UUID | None] = mapped_column(
-        ForeignKey("recommendations.id", ondelete="CASCADE"), nullable=True, index=True
+        ForeignKey("recommendations.id", ondelete="SET NULL"), nullable=True, index=True
     )
     duplicate_group_id: Mapped[uuid.UUID | None] = mapped_column(
-        ForeignKey("duplicate_groups.id", ondelete="CASCADE"), nullable=True, index=True
+        ForeignKey("duplicate_groups.id", ondelete="SET NULL"), nullable=True, index=True
     )
-    created_by_user_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("users.id"), nullable=False
-    )
+    created_by_user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
     status: Mapped[str] = mapped_column(
         String(30), nullable=False, default=ExecutionPlanStatus.PENDING_APPROVAL, index=True
     )
     target_provider: Mapped[str] = mapped_column(String(50), nullable=False)
     estimated_impact: Mapped[str] = mapped_column(Text, nullable=False)
-    estimated_storage_savings_bytes: Mapped[int | None] = mapped_column(
-        BigInteger, nullable=True
-    )
+    estimated_storage_savings_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     risk_level: Mapped[str] = mapped_column(String(20), nullable=False)
     rollback_available: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     required_permissions: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)

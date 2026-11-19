@@ -49,7 +49,7 @@ class DuplicateFilesRule:
 
     def evaluate(self, context: RuleContext) -> RuleResult | None:
         groups: dict[str, list] = defaultdict(list)
-        for row in context.rows:
+        for row in context.owned_rows:
             if row.metadata and row.metadata.duplicate_group_key:
                 groups[row.metadata.duplicate_group_key].append(row)
 
@@ -91,7 +91,7 @@ class ArchiveCandidateRule:
     category = RecommendationCategory.STORAGE_OPTIMIZATION
 
     def evaluate(self, context: RuleContext) -> RuleResult | None:
-        stale = [row for row in context.rows if _is_stale(row.file, days=_ARCHIVE_STALE_DAYS)]
+        stale = [row for row in context.owned_rows if _is_stale(row.file, days=_ARCHIVE_STALE_DAYS)]
         if not stale:
             return None
 
@@ -118,7 +118,7 @@ class LargeUnusedFilesRule:
     def evaluate(self, context: RuleContext) -> RuleResult | None:
         candidates = [
             row
-            for row in context.rows
+            for row in context.owned_rows
             if (row.file.size_bytes or 0) > _LARGE_FILE_BYTES
             and _is_stale(row.file, days=_LARGE_UNUSED_STALE_DAYS)
         ]

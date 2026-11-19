@@ -24,10 +24,11 @@ export const Route = createFileRoute("/chat/")({
 
 const SUGGESTIONS = [
   "What is consuming the most storage?",
-  "Find the latest marketing presentation.",
-  "Show me files nobody has opened in a year.",
-  "Show me duplicates.",
-  "What should I clean up first?",
+  "Show me every duplicate file",
+  "How much storage can I recover?",
+  "Find all PDFs from last year",
+  "Which files can I safely archive?",
+  "Organize my project files",
 ];
 
 function ChatPage() {
@@ -85,7 +86,7 @@ function ChatPage() {
             <div>
               <h1 className="text-base font-semibold">Ask Vault</h1>
               <p className="text-xs text-muted-foreground">
-                Ask anything about your organization&rsquo;s files, in plain language.
+                Ask about your files or tell Vault what to change. Nothing changes until you confirm.
               </p>
             </div>
           </div>
@@ -113,7 +114,13 @@ function ChatPage() {
               <textarea
                 value={question}
                 onChange={(event) => setQuestion(event.target.value)}
-                placeholder="Free 200 GB of storage. What's using the most space? Find last year's invoices…"
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" && !event.shiftKey) {
+                    event.preventDefault();
+                    event.currentTarget.form?.requestSubmit();
+                  }
+                }}
+                placeholder="Ask about your files, or tell Vault what to do — “find the Blarrow invoices”, “delete duplicate videos”…"
                 rows={3}
                 autoFocus
                 className="w-full resize-none rounded-xl border border-input bg-card p-3 text-sm shadow-clay-inset placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"

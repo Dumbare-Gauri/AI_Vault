@@ -30,6 +30,10 @@ class RuleContext:
 
     organization_id: uuid.UUID
     rows: list[FileRow]
+    # Files this account owns — the only ones that use its storage and that
+    # AI Vault can trash or archive. Storage rules read these; sharing and
+    # security rules read every row.
+    owned_rows: list[FileRow]
     relationships: list[FileRelationship]
     connector_count: int
     embedded_file_ids: set[uuid.UUID]

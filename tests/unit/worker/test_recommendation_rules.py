@@ -82,10 +82,12 @@ def _context(
     rows: list[FileRow],
     *,
     relationships: list[FileRelationship] | None = None,
+    owner: str = "owner@acme.com",
 ) -> RuleContext:
     return RuleContext(
         organization_id=uuid.uuid4(),
         rows=rows,
+        owned_rows=[row for row in rows if row.file.owner_email == owner],
         relationships=relationships or [],
         connector_count=1,
         embedded_file_ids=set(),
@@ -125,6 +127,16 @@ def test_archive_candidate_rule_fires_for_stale_files() -> None:
 
     assert result is not None
     assert result.affected_file_ids == [str(old_file.id)]
+
+
+def test_storage_rules_ignore_files_someone_else_owns() -> None:
+    """A file shared with this account uses its owner's storage, not this
+    account's — and AI Vault can't trash it."""
+    shared_in = _file(modified_at=_OLD, size_bytes=500 * 1024 * 1024, owner_email="x@other.com")
+    context = _context([_row(shared_in)])
+
+    assert ArchiveCandidateRule().evaluate(context) is None
+    assert LargeUnusedFilesRule().evaluate(context) is None
 
 
 def test_archive_candidate_rule_does_not_fire_for_recent_files() -> None:

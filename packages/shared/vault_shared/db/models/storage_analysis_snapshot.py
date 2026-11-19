@@ -28,6 +28,10 @@ class StorageAnalysisSnapshot(Base):
     storage_analysis_job_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("storage_analysis_jobs.id", ondelete="SET NULL"), nullable=True
     )
+    # NULL for the whole organization; set for one connected storage's own view.
+    connector_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("storage_connectors.id", ondelete="CASCADE"), nullable=True, index=True
+    )
 
     total_size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
     total_files: Mapped[int] = mapped_column(Integer, nullable=False, default=0)

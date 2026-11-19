@@ -1,0 +1,5 @@
+# Non-secret fixtures: a dev placeholder key once committed to .env.example
+# (not the deployed key) and the CI-only CONNECTOR_ENCRYPTION_KEY in ci.yml.
+87638d9dd1643b4da0b903d843d6fbccf6bec19d:.env.example:generic-api-key:50
+9783d015dfdb0540a7a00ad674ff126fa0499352:.github/workflows/ci.yml:generic-api-key:74
+9783d015dfdb0540a7a00ad674ff126fa0499352:.github/workflows/ci.yml:generic-api-key:139

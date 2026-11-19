@@ -88,3 +88,18 @@ class TestDownloadFileContentAccess:
             pytest.raises(ForbiddenError),
         ):
             _client().download_file(access_token="token", file_id="file-1")
+
+
+class TestSuccessfulStatusCodes:
+    def test_delete_file_treats_204_no_content_as_success(self) -> None:
+        with patch("requests.request", return_value=_response(204, {})) as request:
+            _client().delete_file(access_token="token", file_id="file-1")
+
+        assert request.call_args.args[0] == "DELETE"
+
+    def test_a_5xx_is_still_a_retryable_failure(self) -> None:
+        with (
+            patch("requests.request", return_value=_response(500, {})),
+            pytest.raises(DependencyUnavailableError),
+        ):
+            _client().delete_file(access_token="token", file_id="file-1")

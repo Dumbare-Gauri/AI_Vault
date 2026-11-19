@@ -30,6 +30,8 @@ export interface Recommendation {
   created_at: string;
   updated_at: string;
   resolved_at: string | null;
+  /** Whether "Do it" can carry this out in storage; otherwise review-only. */
+  actionable: boolean;
 }
 
 export interface RecommendationListResponse {

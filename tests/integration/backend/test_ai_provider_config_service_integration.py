@@ -8,9 +8,10 @@ import uuid
 from urllib.parse import urlparse
 
 import pytest
-from app.application.ai_provider_config_service import AIProviderConfigService
 from cryptography.fernet import Fernet
 from sqlalchemy.orm import Session
+
+from app.application.ai_provider_config_service import AIProviderConfigService
 from vault_shared import ValidationError, get_settings
 from vault_shared.db.repositories import OrganizationRepository
 from vault_shared.db.session import get_session_factory
@@ -71,16 +72,20 @@ def test_setting_a_new_org_requires_an_api_key(db: Session, encryption_key) -> N
     service = AIProviderConfigService(db)
 
     with pytest.raises(ValidationError):
-        service.set(org.id, api_key=None, model_name="z-ai/glm-5.2:free")
+        service.set(org.id, api_key=None, model_name="z-ai/glm-5.2:free", provider="openrouter")
 
 
 @requires_infra
 def test_a_blank_api_key_on_update_keeps_the_existing_key(db: Session, encryption_key) -> None:
     org = _provision_org(db)
     service = AIProviderConfigService(db)
-    service.set(org.id, api_key="sk-or-v1-original-key", model_name="z-ai/glm-4.7")
+    service.set(
+        org.id, api_key="sk-or-v1-original-key", model_name="z-ai/glm-4.7", provider="openrouter"
+    )
 
-    updated = service.set(org.id, api_key=None, model_name="z-ai/glm-5.2:free")
+    updated = service.set(
+        org.id, api_key=None, model_name="z-ai/glm-5.2:free", provider="openrouter"
+    )
 
     assert updated.model_name == "z-ai/glm-5.2:free"
     assert decrypt_token(updated.api_key_encrypted) == "sk-or-v1-original-key"
@@ -90,9 +95,13 @@ def test_a_blank_api_key_on_update_keeps_the_existing_key(db: Session, encryptio
 def test_a_new_api_key_on_update_replaces_the_existing_key(db: Session, encryption_key) -> None:
     org = _provision_org(db)
     service = AIProviderConfigService(db)
-    service.set(org.id, api_key="sk-or-v1-original-key", model_name="z-ai/glm-4.7")
+    service.set(
+        org.id, api_key="sk-or-v1-original-key", model_name="z-ai/glm-4.7", provider="openrouter"
+    )
 
-    updated = service.set(org.id, api_key="sk-or-v1-new-key", model_name="z-ai/glm-4.7")
+    updated = service.set(
+        org.id, api_key="sk-or-v1-new-key", model_name="z-ai/glm-4.7", provider="openrouter"
+    )
 
     assert decrypt_token(updated.api_key_encrypted) == "sk-or-v1-new-key"
 
@@ -104,7 +113,9 @@ def test_get_status_reflects_what_was_set(db: Session, encryption_key) -> None:
 
     assert service.get_status(org.id) is None
 
-    service.set(org.id, api_key="sk-or-v1-test", model_name="z-ai/glm-5.2:free")
+    service.set(
+        org.id, api_key="sk-or-v1-test", model_name="z-ai/glm-5.2:free", provider="openrouter"
+    )
 
     status = service.get_status(org.id)
     assert status is not None
@@ -115,7 +126,9 @@ def test_get_status_reflects_what_was_set(db: Session, encryption_key) -> None:
 def test_clear_removes_the_config(db: Session, encryption_key) -> None:
     org = _provision_org(db)
     service = AIProviderConfigService(db)
-    service.set(org.id, api_key="sk-or-v1-test", model_name="z-ai/glm-5.2:free")
+    service.set(
+        org.id, api_key="sk-or-v1-test", model_name="z-ai/glm-5.2:free", provider="openrouter"
+    )
 
     service.clear(org.id)
 
@@ -139,7 +152,9 @@ def test_test_with_no_stored_key_and_no_candidate_key_reports_failure(
     org = _provision_org(db)
     service = AIProviderConfigService(db)
 
-    success, error = service.test(org.id, api_key=None, model_name="z-ai/glm-5.2:free")
+    success, error = service.test(
+        org.id, api_key=None, model_name="z-ai/glm-5.2:free", provider="openrouter"
+    )
 
     assert success is False
     assert error is not None

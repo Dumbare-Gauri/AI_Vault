@@ -12,6 +12,8 @@ from vault_shared.db.session import Base
 class DriveType(enum.StrEnum):
     MY_DRIVE = "my_drive"
     SHARED_DRIVE = "shared_drive"
+    # An authorized folder or drive on a Local Agent's machine.
+    LOCAL_FOLDER = "local_folder"
 
 
 class StorageSource(Base):

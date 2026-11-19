@@ -7,13 +7,14 @@ import type {
   Organization,
 } from "@vault/types";
 import { Building2, KeyRound } from "lucide-react";
-import { useForm } from "react-hook-form";
+import { Controller, useForm, useWatch } from "react-hook-form";
 import { z } from "zod";
 
 import { AppShell } from "@/components/app-shell/app-shell";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { apiClient } from "@/lib/api-client";
 import { useAuthStore } from "@/stores/auth-store";
@@ -37,6 +38,7 @@ const renameSchema = z.object({
 type RenameForm = z.infer<typeof renameSchema>;
 
 const aiProviderSchema = z.object({
+  provider: z.string().min(1, "Choose a provider"),
   api_key: z.string(),
   model_name: z.string().min(1, "Model is required").max(200, "Model name is too long"),
 });
@@ -74,37 +76,53 @@ function OrganizationPage() {
     formState: aiProviderFormState,
     reset: resetAiProviderForm,
     getValues: getAiProviderValues,
+    control: aiProviderControl,
   } = useForm<AIProviderForm>({
     resolver: zodResolver(aiProviderSchema),
     values: aiProviderQuery.data
-      ? { api_key: "", model_name: aiProviderQuery.data.model_name ?? "" }
+      ? {
+          provider: aiProviderQuery.data.provider ?? "openrouter",
+          api_key: "",
+          model_name: aiProviderQuery.data.model_name ?? "",
+        }
       : undefined,
   });
+  const providerOptions = aiProviderQuery.data?.available_providers ?? [];
+  const chosenProvider = useWatch({ control: aiProviderControl, name: "provider" });
+  const selectedProvider = providerOptions.find((option) => option.id === chosenProvider);
+  const savedProvider = providerOptions.find(
+    (option) => option.id === aiProviderQuery.data?.provider,
+  );
 
   const saveAiProviderMutation = useMutation({
     mutationFn: (values: AIProviderForm) =>
       apiClient.put<AIProviderConfig>("/v1/organizations/current/ai-provider", {
+        provider: values.provider,
         api_key: values.api_key.trim() === "" ? null : values.api_key,
         model_name: values.model_name,
       }),
     onSuccess: (updated) => {
       queryClient.setQueryData(["ai-provider-config"], updated);
-      resetAiProviderForm({ api_key: "", model_name: updated.model_name ?? "" });
+      resetAiProviderForm({
+        provider: updated.provider ?? "openrouter",
+        api_key: "",
+        model_name: updated.model_name ?? "",
+      });
     },
   });
 
   const removeAiProviderMutation = useMutation({
     mutationFn: () => apiClient.delete<void>("/v1/organizations/current/ai-provider"),
     onSuccess: () => {
-      const cleared: AIProviderConfig = { configured: false, model_name: null };
-      queryClient.setQueryData(["ai-provider-config"], cleared);
-      resetAiProviderForm({ api_key: "", model_name: "" });
+      void queryClient.invalidateQueries({ queryKey: ["ai-provider-config"] });
+      resetAiProviderForm({ provider: "openrouter", api_key: "", model_name: "" });
     },
   });
 
   const testAiProviderMutation = useMutation({
     mutationFn: (values: AIProviderForm) =>
       apiClient.post<AIProviderConfigTestResponse>("/v1/organizations/current/ai-provider/test", {
+        provider: values.provider,
         api_key: values.api_key.trim() === "" ? null : values.api_key,
         model_name: values.model_name,
       }),
@@ -166,16 +184,42 @@ function OrganizationPage() {
               >
                 <p className="text-sm text-muted-foreground">
                   {aiProviderQuery.data.configured
-                    ? `Configured via OpenRouter (model ${aiProviderQuery.data.model_name}).`
-                    : "Using the instance's default provider."}
+                    ? `Using ${savedProvider?.label ?? "a custom provider"} (model ${aiProviderQuery.data.model_name}).`
+                    : "Using the server's default AI. Add your own key to choose a provider."}
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  Your key stays on the server, encrypted. AI only ever sees file names and
+                  short summaries — never your storage credentials.
                 </p>
 
+                <label className="text-sm font-medium" htmlFor="provider">
+                  Provider
+                </label>
+                <Controller
+                  name="provider"
+                  control={aiProviderControl}
+                  render={({ field }) => (
+                    <Select value={field.value} onValueChange={field.onChange}>
+                      <SelectTrigger id="provider">
+                        <SelectValue placeholder="Choose a provider" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {providerOptions.map((option) => (
+                          <SelectItem key={option.id} value={option.id}>
+                            {option.label}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  )}
+                />
+
                 <label className="text-sm font-medium" htmlFor="model_name">
-                  OpenRouter model
+                  Model
                 </label>
                 <Input
                   id="model_name"
-                  placeholder="z-ai/glm-5.2:free"
+                  placeholder={selectedProvider?.model_hint ?? "model name"}
                   {...registerAiProvider("model_name")}
                 />
                 {aiProviderFormState.errors.model_name && (
@@ -185,16 +229,17 @@ function OrganizationPage() {
                 )}
 
                 <label className="text-sm font-medium" htmlFor="api_key">
-                  OpenRouter API key
+                  {selectedProvider?.label ?? "Provider"} API key
                 </label>
                 <Input
                   id="api_key"
                   type="password"
                   autoComplete="off"
                   placeholder={
-                    aiProviderQuery.data.configured
+                    aiProviderQuery.data.configured &&
+                    aiProviderQuery.data.provider === selectedProvider?.id
                       ? "Leave blank to keep the saved key"
-                      : "sk-or-v1-..."
+                      : "Paste your API key"
                   }
                   {...registerAiProvider("api_key")}
                 />

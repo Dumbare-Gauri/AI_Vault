@@ -54,7 +54,10 @@ class EmbeddingJobService:
         job = self._jobs.get_by_id(embedding_job_id)
         if job is None:
             raise NotFoundError("Embedding job not found.")
-        self._get_owned_connector(job.connector_id, organization_id=organization_id)
+        try:
+            self._get_owned_connector(job.connector_id, organization_id=organization_id)
+        except NotFoundError:
+            raise NotFoundError("Embedding job not found.") from None
         return job
 
     def get_progress(self, embedding_job_id: uuid.UUID) -> EmbeddingProgress | None:

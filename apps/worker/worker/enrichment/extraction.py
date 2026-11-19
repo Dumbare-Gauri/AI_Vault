@@ -9,8 +9,15 @@ from pptx import Presentation
 from pypdf import PdfReader
 
 from vault_shared import ForbiddenError, get_logger
-from vault_shared.connectors.google_drive import GoogleDriveClient
 from vault_shared.db.models import ExtractionStatus, File
+from vault_shared.grounding import PAGE_BREAK
+from vault_shared.storage import (
+    ExportPurpose,
+    ProviderFileId,
+    StorageAdapter,
+    StorageContentTooLargeError,
+    read_bounded,
+)
 
 logger = get_logger("worker.enrichment.extraction")
 
@@ -28,14 +35,6 @@ _MAX_EXTRACTED_CHARS = 200_000
 # Search Preparation), not a full data export — bounded to keep it small.
 _MAX_XLSX_ROWS_PER_SHEET = 500
 
-# Native Google Workspace types have no raw bytes — Drive must *export* them
-# to a requested MIME type instead of a plain download.
-_GOOGLE_NATIVE_EXPORTS: dict[str, tuple[str, str]] = {
-    "application/vnd.google-apps.document": ("text/plain", "google_doc_export"),
-    "application/vnd.google-apps.presentation": ("text/plain", "google_slides_export"),
-    "application/vnd.google-apps.spreadsheet": ("text/csv", "google_sheets_export"),
-}
-
 
 def _extract_plain_text(content: bytes) -> str:
     return content.decode("utf-8", errors="replace")
@@ -43,7 +42,8 @@ def _extract_plain_text(content: bytes) -> str:
 
 def _extract_pdf(content: bytes) -> str:
     reader = PdfReader(io.BytesIO(content))
-    return "\n".join(page.extract_text() or "" for page in reader.pages)
+    # Pages stay separable so answers can cite the page they came from.
+    return PAGE_BREAK.join(page.extract_text() or "" for page in reader.pages)
 
 
 def _extract_docx(content: bytes) -> str:
@@ -72,7 +72,7 @@ def _extract_pptx(content: bytes) -> str:
     return "\n".join(lines)
 
 
-# Binary formats downloaded via `GoogleDriveClient.download_file` (raw bytes).
+# Binary formats read as raw bytes through the storage adapter.
 _MIME_EXTRACTORS: dict[str, tuple[str, Callable[[bytes], str]]] = {
     "text/plain": ("plain_text", _extract_plain_text),
     "text/markdown": ("plain_text", _extract_plain_text),
@@ -88,7 +88,8 @@ _MIME_EXTRACTORS: dict[str, tuple[str, Callable[[bytes], str]]] = {
     ),
 }
 
-_CONTROL_CHARS_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
+# Form feed (\x0c) is kept: it is the page break `PAGE_BREAK` relies on.
+_CONTROL_CHARS_RE = re.compile(r"[\x00-\x08\x0b\x0e-\x1f]")
 
 
 def _sanitize(text: str) -> str:
@@ -124,31 +125,26 @@ class ContentExtractionService:
     reported as a normal outcome instead, so neither ever stops the rest of
     the enrichment run."""
 
-    def __init__(self, drive_client: GoogleDriveClient) -> None:
-        self._drive = drive_client
-
-    def extract(self, *, access_token: str, file: File) -> ExtractionOutcome:
+    def extract(self, *, storage: StorageAdapter, file: File) -> ExtractionOutcome:
         if file.size_bytes is not None and file.size_bytes > _MAX_EXTRACTION_SIZE_BYTES:
-            return ExtractionOutcome(
-                status=ExtractionStatus.SKIPPED_TOO_LARGE,
-                extractor_name=None,
-                text=None,
-                char_count=None,
-                error=None,
-            )
+            return self._too_large()
 
         mime_type = file.mime_type or ""
+        file_id = ProviderFileId(file.provider_file_id)
 
-        if mime_type in _GOOGLE_NATIVE_EXPORTS:
-            export_mime_type, extractor_name = _GOOGLE_NATIVE_EXPORTS[mime_type]
+        # A provider-native document has no raw bytes; the adapter says how it
+        # is exported for text extraction (and what to call that extractor).
+        export_format = storage.export_format_for(mime_type, ExportPurpose.TEXT_EXTRACTION)
+        if export_format is not None:
+            extractor_name = export_format.label
             try:
-                content = self._drive.export_file(
-                    access_token=access_token,
-                    file_id=file.provider_file_id,
-                    export_mime_type=export_mime_type,
+                content = read_bounded(
+                    storage.export(file_id, export_format), max_bytes=_MAX_EXTRACTION_SIZE_BYTES
                 )
             except ForbiddenError:
                 return self._forbidden(extractor_name)
+            except StorageContentTooLargeError:
+                return self._too_large()
             return self._finish(extractor_name, _extract_plain_text, content)
 
         if mime_type not in _MIME_EXTRACTORS:
@@ -162,12 +158,22 @@ class ContentExtractionService:
 
         extractor_name, extract_fn = _MIME_EXTRACTORS[mime_type]
         try:
-            content = self._drive.download_file(
-                access_token=access_token, file_id=file.provider_file_id
-            )
+            content = read_bounded(storage.open_read(file_id), max_bytes=_MAX_EXTRACTION_SIZE_BYTES)
         except ForbiddenError:
             return self._forbidden(extractor_name)
+        except StorageContentTooLargeError:
+            return self._too_large()
         return self._finish(extractor_name, extract_fn, content)
+
+    @staticmethod
+    def _too_large() -> ExtractionOutcome:
+        return ExtractionOutcome(
+            status=ExtractionStatus.SKIPPED_TOO_LARGE,
+            extractor_name=None,
+            text=None,
+            char_count=None,
+            error=None,
+        )
 
     @staticmethod
     def _forbidden(extractor_name: str) -> ExtractionOutcome:

@@ -2,6 +2,9 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, createFileRoute, redirect } from "@tanstack/react-router";
 import type {
   DuplicateGroupListResponse,
+  EntityType,
+  OrganizationEntityListResponse,
+  OrganizationRecommendationListResponse,
   StorageFileListResponse,
   StorageOverview,
   StorageStatistics,
@@ -12,6 +15,7 @@ import {
   Copy,
   Eye,
   FileWarning,
+  FolderTree,
   HardDrive,
   RefreshCw,
   Sparkles,
@@ -19,16 +23,24 @@ import {
 import type { LucideIcon } from "lucide-react";
 
 import { AppShell } from "@/components/app-shell/app-shell";
+import {
+  StorageScopeNote,
+  StorageScopeSwitcher,
+  useStorageScope,
+} from "@/components/storage-intelligence/storage-scope-switcher";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Skeleton } from "@/components/ui/skeleton";
-import { apiClient } from "@/lib/api-client";
+import { toast } from "@/components/ui/toaster";
+import { ApiError, apiClient } from "@/lib/api-client";
 import { formatBytes } from "@/lib/format-bytes";
 import { formatRelativeTime } from "@/lib/format-relative-time";
+import { entityTypeLabel } from "@/lib/organization-style";
 import { analysisStatusBadgeVariant, analysisStatusLabel } from "@/lib/storage-intelligence-style";
 import { useAuthStore } from "@/stores/auth-store";
+import { scopedPath } from "@/stores/storage-scope-store";
 
 export const Route = createFileRoute("/storage-intelligence/")({
   beforeLoad: () => {
@@ -68,24 +80,30 @@ function StorageIntelligencePage() {
   const queryClient = useQueryClient();
   const user = useAuthStore((state) => state.user);
   const canManage = user?.role === "owner" || user?.role === "admin";
+  const { connectorId, connector } = useStorageScope();
 
   const overviewQuery = useQuery({
-    queryKey: ["storage-intelligence", "overview"],
-    queryFn: () => apiClient.get<StorageOverview>("/v1/storage/overview"),
+    queryKey: ["storage-intelligence", "overview", connectorId],
+    queryFn: () => apiClient.get<StorageOverview>(scopedPath("/v1/storage/overview", connectorId)),
   });
   const statisticsQuery = useQuery({
-    queryKey: ["storage-intelligence", "statistics"],
-    queryFn: () => apiClient.get<StorageStatistics>("/v1/storage/statistics"),
+    queryKey: ["storage-intelligence", "statistics", connectorId],
+    queryFn: () =>
+      apiClient.get<StorageStatistics>(scopedPath("/v1/storage/statistics", connectorId)),
   });
   const duplicatesQuery = useQuery({
-    queryKey: ["storage-intelligence", "duplicates", "preview"],
+    queryKey: ["storage-intelligence", "duplicates", "preview", connectorId],
     queryFn: () =>
-      apiClient.get<DuplicateGroupListResponse>("/v1/storage/duplicates?limit=5&offset=0"),
+      apiClient.get<DuplicateGroupListResponse>(
+        scopedPath("/v1/storage/duplicates?limit=5&offset=0", connectorId),
+      ),
   });
   const largeFilesQuery = useQuery({
-    queryKey: ["storage-intelligence", "large-files", "preview"],
+    queryKey: ["storage-intelligence", "large-files", "preview", connectorId],
     queryFn: () =>
-      apiClient.get<StorageFileListResponse>("/v1/storage/large-files?limit=5&offset=0"),
+      apiClient.get<StorageFileListResponse>(
+        scopedPath("/v1/storage/large-files?limit=5&offset=0", connectorId),
+      ),
   });
 
   const analyzeMutation = useMutation({
@@ -95,8 +113,38 @@ function StorageIntelligencePage() {
     },
   });
 
+  const entitiesQuery = useQuery({
+    queryKey: ["organization", "entities"],
+    queryFn: () => apiClient.get<OrganizationEntityListResponse>("/v1/organization/entities"),
+  });
+  const organizationRecommendationsQuery = useQuery({
+    queryKey: ["organization-recommendations", "active", "preview"],
+    queryFn: () =>
+      apiClient.get<OrganizationRecommendationListResponse>(
+        "/v1/organization-recommendations?status=active",
+      ),
+  });
+  const analyzeOrganizationMutation = useMutation({
+    mutationFn: () => apiClient.post("/v1/organization/analyze"),
+    onSuccess: () => {
+      toast.success("Analyzing your organization — this can take a few minutes.");
+      void queryClient.invalidateQueries({ queryKey: ["organization"] });
+      void queryClient.invalidateQueries({ queryKey: ["organization-recommendations"] });
+    },
+    onError: (error) => {
+      toast.error(
+        error instanceof ApiError ? error.message : "Couldn't start the organization analysis.",
+      );
+    },
+  });
+
   const overview = overviewQuery.data;
   const hasAnalysis = overview?.last_analyzed_at != null;
+  const entityCountsByType = new Map<EntityType, number>();
+  for (const entity of entitiesQuery.data?.items ?? []) {
+    const current = entityCountsByType.get(entity.entity_type) ?? 0;
+    entityCountsByType.set(entity.entity_type, current + 1);
+  }
 
   return (
     <AppShell title="Storage Intelligence">
@@ -122,6 +170,59 @@ function StorageIntelligencePage() {
             </Button>
           )}
         </div>
+
+        <div className="flex flex-col gap-2">
+          <StorageScopeSwitcher />
+          <StorageScopeNote connector={connector} />
+        </div>
+
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between">
+            <CardTitle className="flex items-center gap-2">
+              <FolderTree className="size-4 text-primary" /> Organization
+            </CardTitle>
+            {canManage && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => analyzeOrganizationMutation.mutate()}
+                disabled={analyzeOrganizationMutation.isPending}
+              >
+                <RefreshCw className="size-4" />
+                {analyzeOrganizationMutation.isPending ? "Starting…" : "Analyze organization"}
+              </Button>
+            )}
+          </CardHeader>
+          <CardContent>
+            {entitiesQuery.isLoading ? (
+              <Skeleton className="h-10 rounded-lg" />
+            ) : entityCountsByType.size === 0 ? (
+              <p className="text-sm text-muted-foreground">
+                No projects, clients, or campaigns discovered yet — run an analysis to find ones
+                scattered across your Drive.
+              </p>
+            ) : (
+              <div className="flex flex-wrap items-center gap-4">
+                {Array.from(entityCountsByType.entries()).map(([entityType, count]) => (
+                  <div key={entityType} className="flex flex-col">
+                    <span className="text-2xl font-semibold tracking-tight">{count}</span>
+                    <span className="text-xs text-muted-foreground">
+                      {entityTypeLabel(entityType)}
+                      {count === 1 ? "" : "s"}
+                    </span>
+                  </div>
+                ))}
+                <Link
+                  to="/recommendations"
+                  className="ml-auto flex items-center gap-1.5 text-sm text-primary hover:underline"
+                >
+                  {organizationRecommendationsQuery.data?.items.length ?? 0} recommendation
+                  {organizationRecommendationsQuery.data?.items.length === 1 ? "" : "s"}
+                </Link>
+              </div>
+            )}
+          </CardContent>
+        </Card>
 
         {overviewQuery.isLoading && (
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
@@ -154,7 +255,7 @@ function StorageIntelligencePage() {
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
               <StatCard
                 icon={HardDrive}
-                label="Storage used"
+                label="Indexed files"
                 value={formatBytes(overview.total_size_bytes ?? 0)}
                 sub={`${(overview.total_files ?? 0).toLocaleString()} files`}
               />
@@ -237,7 +338,7 @@ function StorageIntelligencePage() {
                         to="/storage-intelligence/large-files"
                         className="flex items-center justify-between py-2 hover:text-primary"
                       >
-                        <span>Large unused files</span>
+                        <span>Large files (over 100 MB)</span>
                         <span className="text-muted-foreground">
                           {formatBytes(overview.large_file_bytes ?? 0)}
                         </span>

@@ -78,9 +78,7 @@ class DuplicateDetector:
                 recommended_keep_reason=reason,
                 recommended_keep_confidence=confidence,
             )
-            self._groups.replace_members(
-                group, [(f.id, f.id == keep_file.id) for f in members]
-            )
+            self._groups.replace_members(group, [(f.id, f.id == keep_file.id) for f in members])
 
             total_file_count += len(members)
             total_recoverable += recoverable
@@ -108,14 +106,19 @@ def _recommend_keep(members: list[File]) -> tuple[File, str, float]:
     Confidence reflects how much the signals agree: unanimous agreement
     (one file wins both signals outright) reports higher confidence than a
     close/ambiguous call."""
+    # The database returns duplicates in no defined order, so two copies that
+    # tie on both signals must not be separated by row order. Oldest-created
+    # first (the original), then name, makes the choice reproducible; the
+    # scoring sort below is stable, so it only breaks exact ties.
+    ordered = sorted(members, key=lambda f: (_created_sort_key(f), f.name))
     scored = sorted(
-        members,
+        ordered,
         key=lambda f: (_is_structured_location(f.path), _modified_sort_key(f)),
         reverse=True,
     )
     best = scored[0]
     structured = _is_structured_location(best.path)
-    is_most_recent = best is max(members, key=_modified_sort_key)
+    is_most_recent = best is max(ordered, key=_modified_sort_key)
 
     if structured and is_most_recent:
         reason = f"Most recently modified copy in a structured location ({best.path})."
@@ -125,8 +128,7 @@ def _recommend_keep(members: list[File]) -> tuple[File, str, float]:
         confidence = 0.65
     elif is_most_recent:
         reason = (
-            f"Most recently modified copy, though its location may not be canonical "
-            f"({best.path})."
+            f"Most recently modified copy, though its location may not be canonical ({best.path})."
         )
         confidence = 0.55
     else:
@@ -143,3 +145,7 @@ def _is_structured_location(path: str) -> bool:
 
 def _modified_sort_key(file: File) -> datetime:
     return file.provider_modified_at or datetime.min.replace(tzinfo=UTC)
+
+
+def _created_sort_key(file: File) -> datetime:
+    return file.provider_created_at or datetime.max.replace(tzinfo=UTC)

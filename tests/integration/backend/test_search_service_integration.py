@@ -4,10 +4,11 @@ from datetime import UTC, datetime
 from urllib.parse import urlparse
 
 import pytest
+from sqlalchemy.orm import Session
+
 from app.application.auth_service import AuthService
 from app.application.search_service import SearchService
 from app.infrastructure.auth.google_identity import GoogleUserInfo
-from sqlalchemy.orm import Session
 from vault_shared import get_settings
 from vault_shared.ai_gateway import AIGateway
 from vault_shared.ai_gateway.interfaces import EmbeddingResult
@@ -15,6 +16,7 @@ from vault_shared.ai_gateway.providers import ExtractiveCompletionProvider
 from vault_shared.db.models import ConnectorProvider, DriveType
 from vault_shared.db.repositories import (
     EmbeddingRepository,
+    FileExtractionRepository,
     FileRepository,
     StorageConnectorRepository,
     StorageSourceRepository,
@@ -104,7 +106,10 @@ def _provision_connector(db: Session, *, organization_id: uuid.UUID, user_id: uu
 
 def _provision_file(db: Session, *, connector_id: uuid.UUID, name: str):
     source = StorageSourceRepository(db).upsert(
-        connector_id=connector_id, provider_drive_id="root", name="My Drive", drive_type=DriveType.MY_DRIVE
+        connector_id=connector_id,
+        provider_drive_id="root",
+        name="My Drive",
+        drive_type=DriveType.MY_DRIVE,
     )
     now = datetime.now(UTC)
     file = FileRepository(db).upsert(
@@ -184,7 +189,9 @@ def test_search_ranks_semantic_matches_by_similarity(db: Session) -> None:
     service = SearchService(db, ai_gateway=gateway)
 
     results = service.search(
-        "content that means the same as alpha", organization_id=user.organization_id, user_id=user.id
+        "content that means the same thing",
+        organization_id=user.organization_id,
+        user_id=user.id,
     )
 
     assert [r.file.id for r in results] == [aligned.id]
@@ -237,6 +244,90 @@ def test_search_marks_a_file_found_by_both_methods(db: Session) -> None:
     assert results[0].retrieval_method == "both"
 
 
+def _embed(db: Session, file_id, vector: list[float], content_hash: str) -> None:
+    EmbeddingRepository(db).upsert(
+        file_id=file_id,
+        model_name="test",
+        model_version="1",
+        dimensions=4,
+        vector=vector,
+        content_hash=content_hash,
+        embedded_at=datetime.now(UTC),
+    )
+
+
+@requires_infra
+def test_exact_matches_are_not_padded_with_similar_content(db: Session) -> None:
+    user = _provision_user(db)
+    connector = _provision_connector(db, organization_id=user.organization_id, user_id=user.id)
+    exact = _provision_file(db, connector_id=connector.id, name="Acme invoice.pdf")
+    similar = _provision_file(db, connector_id=connector.id, name="Quarterly statement.pdf")
+    _embed(db, exact.id, [0.0, 1.0, 0.0, 0.0], "hash-exact")
+    _embed(db, similar.id, [1.0, 0.0, 0.0, 0.0], "hash-similar")
+    db.commit()
+    gateway = AIGateway(
+        embedding_provider=_FixedVectorEmbeddingProvider([1.0, 0.0, 0.0, 0.0]),
+        completion_provider=ExtractiveCompletionProvider(),
+    )
+
+    outcome = SearchService(db, ai_gateway=gateway).find(
+        "acme invoice", organization_id=user.organization_id, user_id=user.id
+    )
+
+    assert [r.file.id for r in outcome.results] == [exact.id]
+
+
+@requires_infra
+def test_similar_content_is_offered_when_nothing_matches_exactly(db: Session) -> None:
+    user = _provision_user(db)
+    connector = _provision_connector(db, organization_id=user.organization_id, user_id=user.id)
+    similar = _provision_file(db, connector_id=connector.id, name="Quarterly statement.pdf")
+    other = _provision_file(db, connector_id=connector.id, name="Holiday photo.jpg")
+    _embed(db, similar.id, [1.0, 0.0, 0.0, 0.0], "hash-similar")
+    _embed(db, other.id, [-1.0, 0.0, 0.0, 0.0], "hash-other")
+    db.commit()
+    gateway = AIGateway(
+        embedding_provider=_FixedVectorEmbeddingProvider([1.0, 0.0, 0.0, 0.0]),
+        completion_provider=ExtractiveCompletionProvider(),
+    )
+
+    outcome = SearchService(db, ai_gateway=gateway).find(
+        "billing", organization_id=user.organization_id, user_id=user.id
+    )
+
+    assert [r.file.id for r in outcome.results] == [similar.id]
+    assert any("similar content" in part for part in outcome.understood)
+
+
+@requires_infra
+def test_a_file_is_found_by_words_inside_it_when_no_name_matches(db: Session) -> None:
+    user = _provision_user(db)
+    connector = _provision_connector(db, organization_id=user.organization_id, user_id=user.id)
+    contract = _provision_file(db, connector_id=connector.id, name="Blarrow_Contract_2026.pdf")
+    FileExtractionRepository(db).upsert(
+        file_id=contract.id,
+        status="success",
+        extractor_name="pdf_text",
+        extracted_text="Payment Terms. The client will pay INR 2,50,000.",
+        char_count=48,
+        error=None,
+        extracted_at=datetime.now(UTC),
+    )
+    db.commit()
+    gateway = AIGateway(
+        embedding_provider=_FixedVectorEmbeddingProvider([1.0, 0.0, 0.0, 0.0]),
+        completion_provider=ExtractiveCompletionProvider(),
+    )
+
+    outcome = SearchService(db, ai_gateway=gateway).find(
+        "contract mentioning the payment amount",
+        organization_id=user.organization_id,
+        user_id=user.id,
+    )
+
+    assert [r.file.id for r in outcome.results] == [contract.id]
+
+
 @requires_infra
 def test_search_never_returns_another_organizations_files(db: Session) -> None:
     user = _provision_user(db)
@@ -256,3 +347,123 @@ def test_search_never_returns_another_organizations_files(db: Session) -> None:
     )
 
     assert results == []
+
+
+def _file(
+    db: Session,
+    *,
+    connector_id: uuid.UUID,
+    name: str,
+    path: str | None = None,
+    size: int = 1024,
+    modified: datetime | None = None,
+    mime: str = "application/octet-stream",
+    trashed: bool = False,
+):
+    source = StorageSourceRepository(db).upsert(
+        connector_id=connector_id,
+        provider_drive_id="root",
+        name="My Drive",
+        drive_type=DriveType.MY_DRIVE,
+    )
+    when = modified or datetime.now(UTC)
+    file = FileRepository(db).upsert(
+        storage_source_id=source.id,
+        provider_file_id=str(uuid.uuid4()),
+        provider_parent_id=None,
+        parent_folder_id=None,
+        name=name,
+        path=path or f"/{name}",
+        mime_type=mime,
+        size_bytes=size,
+        owner_email="founder@acme.com",
+        is_shared=False,
+        permissions_summary=None,
+        version_id=None,
+        checksum=None,
+        web_view_link=None,
+        provider_created_at=when,
+        provider_modified_at=when,
+        provider_viewed_at=None,
+        scanned_at=when,
+    )
+    if trashed:
+        FileRepository(db).mark_trashed(file, trashed=True)
+    db.commit()
+    return file
+
+
+def _find(db: Session, user, text: str) -> list[str]:  # noqa: ANN001
+    gateway = AIGateway(
+        embedding_provider=_FixedVectorEmbeddingProvider([0.0, 0.0, 0.0]),
+        completion_provider=ExtractiveCompletionProvider(),
+    )
+    outcome = SearchService(db, ai_gateway=gateway).find(
+        text, organization_id=user.organization_id, user_id=user.id
+    )
+    return sorted(result.file.name for result in outcome.results)
+
+
+@pytest.fixture
+def messy_drive(db: Session):
+    user = _provision_user(db)
+    connector = _provision_connector(db, organization_id=user.organization_id, user_id=user.id)
+    c = connector.id
+    _file(db, connector_id=c, name="train.py", path="/Code/ml/train.py")
+    _file(db, connector_id=c, name="analysis.ipynb", path="/Code/analysis.ipynb")
+    _file(
+        db,
+        connector_id=c,
+        name="Blarrow_Business_Plan.xlsx",
+        path="/Docs/Blarrow_Business_Plan.xlsx",
+    )
+    _file(
+        db,
+        connector_id=c,
+        name="hero.png",
+        path="/Clients/Blarrow/Website/hero.png",
+        mime="image/png",
+    )
+    _file(db, connector_id=c, name="big-video.mp4", size=900 * 1024**2, mime="video/mp4")
+    _file(db, connector_id=c, name="old-report.pdf", modified=datetime(2021, 6, 1, tzinfo=UTC))
+    _file(db, connector_id=c, name="trashed.py", trashed=True)
+    return user
+
+
+@requires_infra
+def test_python_files_are_found_by_type(db: Session, messy_drive) -> None:  # noqa: ANN001
+    assert _find(db, messy_drive, "Find all Python files") == ["analysis.ipynb", "train.py"]
+
+
+@requires_infra
+def test_size_filter(db: Session, messy_drive) -> None:  # noqa: ANN001
+    assert _find(db, messy_drive, "files larger than 500 MB") == ["big-video.mp4"]
+
+
+@requires_infra
+def test_date_filter(db: Session, messy_drive) -> None:  # noqa: ANN001
+    assert _find(db, messy_drive, "files modified before 2023") == ["old-report.pdf"]
+
+
+@requires_infra
+def test_a_client_name_matches_file_names_and_folder_paths(db: Session, messy_drive) -> None:  # noqa: ANN001
+    assert _find(db, messy_drive, "Find Blarrow files") == [
+        "Blarrow_Business_Plan.xlsx",
+        "hero.png",
+    ]
+
+
+@requires_infra
+def test_images_for_a_client(db: Session, messy_drive) -> None:  # noqa: ANN001
+    assert _find(db, messy_drive, "Blarrow images") == ["hero.png"]
+
+
+@requires_infra
+def test_trashed_files_are_never_returned(db: Session, messy_drive) -> None:  # noqa: ANN001
+    assert "trashed.py" not in _find(db, messy_drive, "python")
+
+
+@requires_infra
+def test_another_organization_never_sees_these_files(db: Session, messy_drive) -> None:  # noqa: ANN001
+    stranger = _provision_user(db)
+    assert _find(db, stranger, "Find all Python files") == []

@@ -13,6 +13,12 @@ class RelationshipType(enum.StrEnum):
     SEQUENTIAL_VERSION = "sequential_version"
     DUPLICATE_CANDIDATE = "duplicate_candidate"
     SHARED_OWNERSHIP = "shared_ownership"
+    # Phase 2 — embedding-based similarity (`worker.relationships.
+    # near_duplicate_service`), computed off `EmbeddingJob` completion
+    # since it needs `Embedding` rows that don't exist yet when
+    # `RelationshipDiscoveryService.discover()` runs. Excludes pairs
+    # already sharing a DUPLICATE_CANDIDATE edge (same checksum).
+    NEAR_DUPLICATE = "near_duplicate"
 
 
 class FileRelationship(Base):
