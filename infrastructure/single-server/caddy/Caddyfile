@@ -3,7 +3,6 @@
 # redirects plain HTTP to HTTPS. Behind it, `web` (nginx) serves the app and
 # proxies the API exactly as before.
 {
-	email {$ACME_EMAIL}
 	servers {
 		protocols h1 h2
 	}
