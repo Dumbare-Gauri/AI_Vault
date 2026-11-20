@@ -11,7 +11,7 @@
       "Condition": {
         "StringEquals": {
           "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
-          "token.actions.githubusercontent.com:sub": "repo:Dumbare-Gauri/AI_Vault:environment:staging"
+          "token.actions.githubusercontent.com:sub": "repo:Dumbare-Gauri@114731507/AI_Vault@1330013481:environment:staging"
         }
       }
     }
