@@ -12,8 +12,6 @@ REPO="${REPO:-Dumbare-Gauri/AI_Vault}"
 PRODUCTION_REVIEWERS="${PRODUCTION_REVIEWERS:-Dumbare-Gauri Env1sage}"
 API=(gh api -H "Accept: application/vnd.github+json")
 
-command -v jq >/dev/null || { echo "Install jq first" >&2; exit 1; }
-
 [ "$("${API[@]}" "repos/$REPO" --jq .permissions.admin)" = "true" ] \
   || { echo "You need admin rights on $REPO" >&2; exit 1; }
 
@@ -36,9 +34,11 @@ echo "==> Actions: read-only token, approval for outside contributors"
   -f approval_policy=all_external_contributors
 
 echo "==> Environments"
-reviewers_json="$(for login in $PRODUCTION_REVIEWERS; do
-  "${API[@]}" "users/$login" --jq '{type: "User", id: .id}'
-done | jq -s .)"
+reviewers=()
+for login in $PRODUCTION_REVIEWERS; do
+  reviewers+=("{\"type\": \"User\", \"id\": $("${API[@]}" "users/$login" --jq .id)}")
+done
+reviewers_json="[$(IFS=,; echo "${reviewers[*]}")]"
 
 environment() {
   local name="$1" branch="$2" body="$3"
@@ -59,25 +59,28 @@ echo "==> Branch rulesets"
 ruleset() {
   local branch="$1" approvals="$2" code_owners="$3" up_to_date="$4"
   local body
-  body="$(jq -n --arg branch "$branch" --argjson approvals "$approvals" --argjson owners "$code_owners" --argjson strict "$up_to_date" '{
-    name: "protect-\($branch)",
-    target: "branch",
-    enforcement: "active",
-    conditions: {ref_name: {include: ["refs/heads/\($branch)"], exclude: []}},
-    rules: [
-      {type: "deletion"},
-      {type: "non_fast_forward"},
-      {type: "pull_request", parameters: {
-        required_approving_review_count: $approvals,
-        dismiss_stale_reviews_on_push: true,
-        require_code_owner_review: $owners,
-        require_last_push_approval: false,
-        required_review_thread_resolution: true}},
-      {type: "required_status_checks", parameters: {
-        strict_required_status_checks_policy: $strict,
-        required_status_checks: [
-          {context: "PR validation passed"}]}}
-    ]}')"
+  body="$(cat <<EOF
+{
+  "name": "protect-$branch",
+  "target": "branch",
+  "enforcement": "active",
+  "conditions": {"ref_name": {"include": ["refs/heads/$branch"], "exclude": []}},
+  "rules": [
+    {"type": "deletion"},
+    {"type": "non_fast_forward"},
+    {"type": "pull_request", "parameters": {
+      "required_approving_review_count": $approvals,
+      "dismiss_stale_reviews_on_push": true,
+      "require_code_owner_review": $code_owners,
+      "require_last_push_approval": false,
+      "required_review_thread_resolution": true}},
+    {"type": "required_status_checks", "parameters": {
+      "strict_required_status_checks_policy": $up_to_date,
+      "required_status_checks": [{"context": "PR validation passed"}]}}
+  ]
+}
+EOF
+)"
   local id
   id="$("${API[@]}" "repos/$REPO/rulesets" --jq ".[] | select(.name == \"protect-$branch\") | .id")"
   if [ -n "$id" ]; then
