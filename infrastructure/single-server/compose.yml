@@ -21,7 +21,7 @@ x-app-env: &app-env
     OBJECT_STORAGE_ENDPOINT_URL: ""
     OBJECT_STORAGE_SECURE: "true"
     OBJECT_STORAGE_BUCKET: ${ARCHIVE_BUCKET:?}
-    AWS_DEFAULT_REGION: ${AWS_REGION:-ap-south-1}
+    AWS_DEFAULT_REGION: ${AWS_REGION:-ap-southeast-2}
     # Everything that names the public address derives from PUBLIC_URL, so
     # changing the domain is a one-line change (plus PUBLIC_HOST).
     FRONTEND_URL: ${PUBLIC_URL:?}

@@ -1,7 +1,8 @@
 # AI Vault on EC2 (staging + production)
 
 The low-cost deployment, built for a public launch: each environment runs
-on **its own EC2 instance** in `ap-south-1` with Docker Compose, behind HTTPS
+on **its own EC2 instance** in `ap-southeast-2` (Sydney — the only region
+the hosting account's organization allows) with Docker Compose, behind HTTPS
 that ends on the instance itself. No RDS, ElastiCache, load balancer, NAT
 gateway or CloudFront. (The larger ECS/RDS/ALB design in
 `infrastructure/terraform/` is the scale-out path; it is not used yet.)
@@ -119,20 +120,20 @@ compressed size; the worker refuses a job that would leave less than
 `ARCHIVE_FREE_SPACE_RESERVE_BYTES` free. Put `/var/lib/docker/volumes` on a
 separate EBS volume before allowing very large archives in production.
 
-## Monthly cost (ap-south-1, on-demand, approximate USD)
+## Monthly cost (ap-southeast-2, on-demand, approximate USD)
 
 | | Staging, ~40 h/week | Staging, always on | Production |
 |---|---|---|---|
-| EC2 | ~$4 (t3.small) | ~$16 | ~$33 (t3.medium) |
+| EC2 ($0.0264 / $0.0528 per hour) | ~$5 (t3.small) | ~$19 | ~$39 (t3.medium) |
 | EBS gp3 (30 / 30 / 40 GB) | ~$3 | ~$3 | ~$4 |
 | Public IPv4 (charged even when stopped) | ~$3.65 | ~$3.65 | ~$3.65 |
 | S3 backups + archive cache | <$1 | <$1 | ~$1–3, grows with use |
 | Domain + DNS (shared) | — | — | ~$1.50 |
 | Certificates, Budgets, basic alarms | $0 | $0 | $0 |
-| **Total** | **~$11** | **~$23** | **~$43–46** |
+| **Total** | **~$12** | **~$26** | **~$49–52** |
 
-Both: **~$55** (staging part-time) or ~$67. Not included: 18 % GST if
-billed by AWS India, t3 surplus CPU, data out beyond 100 GB/month, the AI
+Both: **~$62** (staging part-time) or ~$76. Not included: tax, t3 surplus
+CPU, data out beyond 100 GB/month, the AI
 model provider, and Google's CASA assessment (below). A 1-year Compute
 Savings Plan cuts EC2 by about 30 % once the size is settled.
 
