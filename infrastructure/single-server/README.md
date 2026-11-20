@@ -122,17 +122,17 @@ separate EBS volume before allowing very large archives in production.
 
 ## Monthly cost (ap-southeast-2, on-demand, approximate USD)
 
-| | Staging, ~40 h/week | Staging, always on | Production |
+| | Staging, used ~3 h/day (idle stop) | Staging, always on | Production |
 |---|---|---|---|
-| EC2 ($0.0264 / $0.0528 per hour) | ~$5 (t3.small) | ~$19 | ~$39 (t3.medium) |
+| EC2 ($0.0264 / $0.0528 per hour) | ~$2.50 (t3.small) | ~$19 | ~$39 (t3.medium) |
 | EBS gp3 (30 / 30 / 40 GB) | ~$3 | ~$3 | ~$4 |
 | Public IPv4 (charged even when stopped) | ~$3.65 | ~$3.65 | ~$3.65 |
 | S3 backups + archive cache | <$1 | <$1 | ~$1–3, grows with use |
 | Domain + DNS (shared) | — | — | ~$1.50 |
 | Certificates, Budgets, basic alarms | $0 | $0 | $0 |
-| **Total** | **~$12** | **~$26** | **~$49–52** |
+| **Total** | **~$9** | **~$26** | **~$49–52** |
 
-Both: **~$62** (staging part-time) or ~$76. Not included: tax, t3 surplus
+Both: **~$60** (staging idle-stopped) or ~$76. Not included: tax, t3 surplus
 CPU, data out beyond 100 GB/month, the AI
 model provider, and Google's CASA assessment (below). A 1-year Compute
 Savings Plan cuts EC2 by about 30 % once the size is settled.
@@ -208,9 +208,11 @@ on the staging instance only, so it cannot reach production data.
 roles can read SSM command output account-wide
 (`ssm:GetCommandInvocation` on `*`); that output contains no secrets.
 
-**Staging stops itself at 22:00 IST** (`aivault-autostop.timer`, skipped
-while a deploy runs). The next merge to `main` starts it; to use it
-without deploying, start it in the EC2 console.
+**Staging runs only while it's used.** `idle-stop.sh` (every 10 minutes)
+stops the instance after 60 minutes with no API requests from outside and
+no deploy; it never stops a deploy in progress. A merge to `main` starts
+it again, and so does **Actions → Start staging → Run workflow** (about two
+minutes). While stopped it costs only its disk and IP (~$6.50/month).
 
 ### One-time GitHub setup (repository admin only)
 

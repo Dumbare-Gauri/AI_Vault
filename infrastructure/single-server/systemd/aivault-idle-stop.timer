@@ -1,0 +1,9 @@
+[Unit]
+Description=Check every 10 minutes whether the AI Vault staging server is idle
+
+[Timer]
+OnBootSec=15min
+OnUnitActiveSec=10min
+
+[Install]
+WantedBy=timers.target

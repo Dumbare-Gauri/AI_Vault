@@ -67,11 +67,11 @@ chmod 600 "$BASE/.env"
 echo "==> Scheduled jobs"
 install -m 644 "$HERE"/systemd/aivault-backup@.service "$HERE"/systemd/aivault-backup@.timer /etc/systemd/system/
 if [ "$ENV_NAME" = staging ]; then
-  install -m 644 "$HERE"/systemd/aivault-autostop.service "$HERE"/systemd/aivault-autostop.timer /etc/systemd/system/
+  install -m 644 "$HERE"/systemd/aivault-idle-stop.service "$HERE"/systemd/aivault-idle-stop.timer /etc/systemd/system/
 fi
 systemctl daemon-reload
 systemctl enable --now "aivault-backup@$ENV_NAME.timer"
-[ "$ENV_NAME" != staging ] || systemctl enable --now aivault-autostop.timer
+[ "$ENV_NAME" != staging ] || systemctl enable --now aivault-idle-stop.timer
 
 cat <<EOF
 

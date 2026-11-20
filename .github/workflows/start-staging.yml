@@ -1,0 +1,50 @@
+name: Start staging
+
+# Staging stops itself after an hour without use. This wakes it without
+# deploying anything: Actions → Start staging → Run workflow.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: deploy-staging
+  cancel-in-progress: false
+
+jobs:
+  start:
+    name: Start staging
+    runs-on: ubuntu-latest
+    environment:
+      name: staging
+      url: ${{ vars.PUBLIC_URL }}
+    timeout-minutes: 15
+    env:
+      INSTANCE_ID: ${{ vars.AIVAULT_INSTANCE_ID }}
+    steps:
+      - name: Get short-lived AWS credentials for staging
+        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4.3.1
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ap-southeast-2
+          role-session-name: aivault-staging-start-${{ github.run_id }}
+
+      - name: Start the server and wait for the app
+        env:
+          PUBLIC_URL: ${{ vars.PUBLIC_URL }}
+        run: |
+          set -euo pipefail
+          state="$(aws ec2 describe-instances --instance-ids "$INSTANCE_ID" \
+            --query 'Reservations[0].Instances[0].State.Name' --output text)"
+          [ "$state" != stopping ] || aws ec2 wait instance-stopped --instance-ids "$INSTANCE_ID"
+          [ "$state" = running ] || aws ec2 start-instances --instance-ids "$INSTANCE_ID" >/dev/null
+          aws ec2 wait instance-running --instance-ids "$INSTANCE_ID"
+          for _ in $(seq 1 60); do
+            if curl -fsS -o /dev/null "$PUBLIC_URL/health/live"; then
+              echo "### Staging is up: $PUBLIC_URL" >> "$GITHUB_STEP_SUMMARY"; exit 0
+            fi
+            sleep 10
+          done
+          echo "::error::The server started but $PUBLIC_URL did not answer within 10 minutes"; exit 1
