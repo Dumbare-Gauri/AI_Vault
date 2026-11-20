@@ -4,7 +4,8 @@ name: Deploy to server
 # GitHub environment, so it gets that environment's variables, branch
 # restriction and (for production) approval gate, and its OIDC token can
 # only assume that environment's IAM role. That role may run only
-# AIVault-Deploy-<environment> on the server — see infrastructure/single-server.
+# AIVault-Deploy-<environment> on that environment's own server — see
+# infrastructure/single-server.
 on:
   workflow_call:
     inputs:
@@ -44,8 +45,29 @@ jobs:
         uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4.3.1
         with:
           role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
-          aws-region: ap-south-1
+          aws-region: ap-southeast-2
           role-session-name: aivault-${{ inputs.environment }}-${{ github.run_id }}
+
+      # Staging stops itself every night to save cost; a deploy wakes it.
+      # Production is never started or stopped by a workflow.
+      - name: Start the staging server if it is stopped
+        if: inputs.environment == 'staging'
+        run: |
+          set -euo pipefail
+          state() { aws ec2 describe-instances --instance-ids "$INSTANCE_ID" \
+            --query 'Reservations[0].Instances[0].State.Name' --output text; }
+          [ "$(state)" != stopping ] || aws ec2 wait instance-stopped --instance-ids "$INSTANCE_ID"
+          if [ "$(state)" = running ]; then echo "Already running"; exit 0; fi
+          aws ec2 start-instances --instance-ids "$INSTANCE_ID" >/dev/null
+          aws ec2 wait instance-running --instance-ids "$INSTANCE_ID"
+          for _ in $(seq 1 60); do
+            ping="$(aws ssm describe-instance-information \
+              --filters "Key=InstanceIds,Values=$INSTANCE_ID" \
+              --query 'InstanceInformationList[0].PingStatus' --output text)"
+            [ "$ping" = Online ] && { echo "Started"; exit 0; }
+            sleep 10
+          done
+          echo "::error::Staging server started but SSM did not come online"; exit 1
 
       - name: Deploy on the server and wait for the result
         run: |

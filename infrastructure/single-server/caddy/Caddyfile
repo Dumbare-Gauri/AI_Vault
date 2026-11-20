@@ -1,0 +1,23 @@
+# HTTPS for this environment's public address. Caddy obtains and renews the
+# Let's Encrypt certificate itself (port 80 must be reachable for that) and
+# redirects plain HTTP to HTTPS. Behind it, `web` (nginx) serves the app and
+# proxies the API exactly as before.
+{
+	servers {
+		protocols h1 h2
+	}
+}
+
+{$PUBLIC_HOST} {
+	# Only content-hashed static files are compressed; API answers carry
+	# tokens and personal data, so they are never compressed (BREACH).
+	@assets path /assets/*
+	encode @assets zstd gzip
+
+	header Strict-Transport-Security "max-age=31536000"
+	header -Server
+
+	# Caddy trusts no proxy, so it replaces any X-Forwarded-For the client
+	# sent with the client's real address; nginx then believes only Caddy.
+	reverse_proxy web:80
+}

@@ -1,0 +1,7 @@
+[Unit]
+Description=Stop the AI Vault staging server when nobody is using it
+After=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/aivault/staging/src/infrastructure/single-server/idle-stop.sh

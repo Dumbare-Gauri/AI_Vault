@@ -2,18 +2,29 @@
   "Version": "2012-10-17",
   "Statement": [
     {
-      "Sid": "RunOnlyTheStagingDeployDocumentOnTheAIVaultServer",
+      "Sid": "RunOnlyTheStagingDeployDocumentOnTheStagingServer",
       "Effect": "Allow",
       "Action": "ssm:SendCommand",
       "Resource": [
-        "arn:aws:ssm:ap-south-1:<ACCOUNT_ID>:document/AIVault-Deploy-staging",
-        "arn:aws:ec2:ap-south-1:<ACCOUNT_ID>:instance/<INSTANCE_ID>"
+        "arn:aws:ssm:ap-southeast-2:<ACCOUNT_ID>:document/AIVault-Deploy-staging",
+        "arn:aws:ec2:ap-southeast-2:<ACCOUNT_ID>:instance/<STAGING_INSTANCE_ID>"
       ]
     },
     {
-      "Sid": "ReadTheResultOfThatCommand",
+      "Sid": "StartTheStagingServerIfItIsStopped",
       "Effect": "Allow",
-      "Action": ["ssm:GetCommandInvocation", "ssm:ListCommandInvocations"],
+      "Action": "ec2:StartInstances",
+      "Resource": "arn:aws:ec2:ap-southeast-2:<ACCOUNT_ID>:instance/<STAGING_INSTANCE_ID>"
+    },
+    {
+      "Sid": "ReadServerStateAndCommandResults",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:DescribeInstances",
+        "ssm:DescribeInstanceInformation",
+        "ssm:GetCommandInvocation",
+        "ssm:ListCommandInvocations"
+      ],
       "Resource": "*"
     }
   ]

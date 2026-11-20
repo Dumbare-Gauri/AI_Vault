@@ -3,12 +3,9 @@
 # Google OAuth callback all live on one address. Rendered at container
 # start from environment variables (nginx image's /etc/nginx/templates).
 
-# Which client address to believe. Requests that arrive straight from the
-# internet (IP mode) are believed as they are: the default trusts no proxy,
-# so a client can't fake its address with an X-Forwarded-For header. Behind
-# CloudFront (HTTPS mode), set TRUSTED_PROXY_CIDR=0.0.0.0/0 — safe only
-# because the security group then admits nothing but CloudFront — and the
-# viewer address CloudFront appends is used.
+# Which client address to believe: only the X-Forwarded-For set by Caddy
+# (`edge`, TRUSTED_PROXY_CIDR = this environment's Docker network). Caddy
+# replaces anything the client sent, so a client can't fake its address.
 set_real_ip_from ${TRUSTED_PROXY_CIDR};
 real_ip_header X-Forwarded-For;
 real_ip_recursive off;
@@ -21,9 +18,9 @@ server {
     # Local Agent scan batches and archive uploads are larger than the default 1 MB.
     client_max_body_size 50m;
 
-    # Behind CloudFront, CloudFront adds this header with a shared secret;
-    # a request that reaches the server any other way is refused. Empty in
-    # IP mode, where there is no CloudFront to add it.
+    # Only if a CloudFront distribution is ever put in front: it adds this
+    # header with a shared secret, and a request without it is refused.
+    # Empty (no CloudFront) lets every request through.
     if ($http_x_origin_verify != "${ORIGIN_VERIFY_SECRET}") {
         return 403;
     }

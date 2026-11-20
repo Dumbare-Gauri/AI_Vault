@@ -1,14 +1,13 @@
-# AI Vault on one server, one copy per environment.
+# One AI Vault environment on its own EC2 instance (staging and production
+# each get one):
 #
-#   docker compose -p aivault-staging    --env-file /opt/aivault/staging/.env    -f compose.yml up -d
-#   docker compose -p aivault-production --env-file /opt/aivault/production/.env -f compose.yml up -d
+#   docker compose -p aivault-<env> --env-file /opt/aivault/<env>/.env -f compose.yml up -d
 #
-# The project name (-p) gives each environment its own containers, network
-# and volumes; its .env gives it its own database, Redis, S3 bucket,
-# secrets, Google OAuth client and public port. Nothing is shared between
-# the two copies but the machine. Only `web` publishes a port; the
-# database, Redis, API and workers are reachable from inside their own
-# environment's network only.
+# Its .env gives it its own database, Redis, S3 buckets, secrets, Google
+# OAuth client and public address. Only `edge` (Caddy, HTTPS) is reachable
+# from outside; `web` (nginx) listens on the server's loopback for
+# deploy.sh's health check; the database, Redis, API and workers are
+# reachable from inside this environment's network only.
 
 x-app-env: &app-env
   env_file:
@@ -22,9 +21,9 @@ x-app-env: &app-env
     OBJECT_STORAGE_ENDPOINT_URL: ""
     OBJECT_STORAGE_SECURE: "true"
     OBJECT_STORAGE_BUCKET: ${ARCHIVE_BUCKET:?}
-    AWS_DEFAULT_REGION: ${AWS_REGION:-ap-south-1}
+    AWS_DEFAULT_REGION: ${AWS_REGION:-ap-southeast-2}
     # Everything that names the public address derives from PUBLIC_URL, so
-    # moving from an IP to CloudFront or a domain is a one-line change.
+    # changing the domain is a one-line change (plus PUBLIC_HOST).
     FRONTEND_URL: ${PUBLIC_URL:?}
     CORS_ALLOW_ORIGINS: ${PUBLIC_URL}
     GOOGLE_WORKSPACE_REDIRECT_URI: ${PUBLIC_URL}/connectors/google/callback
@@ -88,6 +87,8 @@ services:
   backend:
     <<: *app-env
     image: aivault-backend:${IMAGE_TAG}
+    # Built here by `migrate`, never pulled from a registry.
+    pull_policy: never
     # --proxy-headers: the client address comes from `web` (nginx), which
     # sets it; the API is reachable from nothing else.
     command:
@@ -128,6 +129,14 @@ services:
       # that would leave less than ARCHIVE_FREE_SPACE_RESERVE_BYTES free.
       - archive-tmp:/archive-tmp
       - model-cache:/home/vault_app/gensim-data
+    # The image's check (`celery inspect ping`) starts a Python process; on a
+    # small instance busy building a release that takes longer than 5 s.
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A worker.celery_app inspect ping --timeout 10 || exit 1"]
+      interval: 30s
+      timeout: 30s
+      retries: 5
+      start_period: 120s
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -140,13 +149,22 @@ services:
   scheduler:
     <<: *app-env
     image: aivault-worker:${IMAGE_TAG}
+    # Built here by `worker`, never pulled from a registry.
+    pull_policy: never
     command:
       [
         "celery", "-A", "worker.celery_app", "beat", "--loglevel=info",
         "--schedule", "/tmp/celerybeat-schedule",
       ]
+    # The image's check pings a worker, which Beat is not. Beat has nothing to
+    # ask, so healthy means its process is alive; `up --wait` (Compose 2.40+)
+    # rejects a service whose check is disabled.
     healthcheck:
-      disable: true
+      test: ["CMD-SHELL", "kill -0 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -165,19 +183,48 @@ services:
         VITE_GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:?}
     environment:
       BACKEND_UPSTREAM: backend:8000
-      TRUSTED_PROXY_CIDR: ${TRUSTED_PROXY_CIDR:-127.0.0.1/32}
+      # Only Caddy, on this network, may tell nginx who the client is.
+      TRUSTED_PROXY_CIDR: ${TRUSTED_PROXY_CIDR:-172.30.0.0/24}
       PUBLIC_SCHEME: ${PUBLIC_SCHEME:-https}
       ORIGIN_VERIFY_SECRET: ${ORIGIN_VERIFY_SECRET:-}
     ports:
-      - "${WEB_PORT:?}:80"
+      - "127.0.0.1:${WEB_PORT:?}:80"
     depends_on:
       backend:
         condition: service_healthy
     restart: unless-stopped
     mem_limit: 64m
 
+  # Terminates HTTPS for PUBLIC_HOST with an automatically renewed Let's
+  # Encrypt certificate, so traffic is encrypted all the way to this server.
+  edge:
+    image: caddy:2.10-alpine
+    environment:
+      PUBLIC_HOST: ${PUBLIC_HOST:?}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      web:
+        condition: service_started
+    restart: unless-stopped
+    mem_limit: 128m
+
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24
+
 volumes:
   postgres-data:
   redis-data:
   archive-tmp:
   model-cache:
+  # Certificates and the ACME account, kept so a restart doesn't re-issue.
+  caddy-data:
+  caddy-config:
